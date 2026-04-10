@@ -145,9 +145,17 @@ curl -s -X POST http://localhost:8000/repos/admin/my-repo/issues \
 
 ### Use with `gh` CLI
 
+The emulator uses Caddy to generate a self-signed TLS certificate. By default
+`gh` and `git` will reject it. You need to tell both tools to skip certificate
+verification:
+
 ```bash
-# Point gh at the emulator
+# Skip TLS verification for gh
 export GH_HOST=ghemu.local
+export GH_INSECURE=1
+
+# Skip TLS verification for git
+git config --global http.sslVerify false
 
 # Authenticate
 gh auth login --hostname ghemu.local --with-token <<< "$TOKEN"
@@ -156,6 +164,10 @@ gh auth login --hostname ghemu.local --with-token <<< "$TOKEN"
 gh repo list
 gh issue create --repo admin/my-repo --title "Test" --body "Hello"
 ```
+
+> **Note:** If you prefer not to disable TLS verification globally, you can
+> extract Caddy's root CA certificate from the container and add it to your
+> system trust store instead. See the Caddy documentation for details.
 
 ## Makefile Targets
 
