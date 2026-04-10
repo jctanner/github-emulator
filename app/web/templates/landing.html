@@ -1,0 +1,52 @@
+{% extends "base.html" %}
+{% from "_octicons.html" import repo_icon, star, repo_forked %}
+{% block title %}GitHub Emulator{% endblock %}
+
+{% block content %}
+<div class="Subhead">
+    <div class="Subhead-heading">Explore repositories</div>
+    <div class="Subhead-description">Recently updated repositories on this instance</div>
+    {% if current_user %}
+    <div class="Subhead-actions">
+        <a href="{{ url_prefix }}/new" class="btn btn-primary btn-sm">New repository</a>
+    </div>
+    {% endif %}
+</div>
+
+{% if repos %}
+<div class="Box">
+    {% for repo in repos %}
+    <div class="Box-row d-flex flex-items-center">
+        <div class="flex-auto">
+            <div class="d-flex flex-items-center mb-1">
+                <span class="color-fg-muted mr-1">{{ repo_icon(16) }}</span>
+                <a href="{{ url_prefix }}/{{ repo.owner_login }}/{{ repo.name }}" class="text-bold Link--primary f4">
+                    {{ repo.owner_login }}<span class="color-fg-muted">/</span>{{ repo.name }}
+                </a>
+                {% if repo.private %}
+                <span class="Label Label--secondary ml-2">Private</span>
+                {% else %}
+                <span class="Label Label--secondary ml-2">Public</span>
+                {% endif %}
+            </div>
+            {% if repo.description %}
+            <p class="color-fg-muted mb-1 f6">{{ repo.description }}</p>
+            {% endif %}
+            <div class="f6 color-fg-muted d-flex flex-items-center" style="gap:16px;">
+                {% if repo.language %}
+                <span>{{ repo.language }}</span>
+                {% endif %}
+                <span>Updated {{ repo.updated_at.strftime('%b %d, %Y') if repo.updated_at else 'N/A' }}</span>
+            </div>
+        </div>
+    </div>
+    {% endfor %}
+</div>
+{% else %}
+<div class="blankslate">
+    <span class="color-fg-muted">{{ repo_icon(24) }}</span>
+    <h3 class="blankslate-heading">No repositories yet</h3>
+    <p>Create one via the API or admin panel.</p>
+</div>
+{% endif %}
+{% endblock %}

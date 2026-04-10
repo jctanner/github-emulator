@@ -1,0 +1,70 @@
+{% extends "base.html" %}
+{% from "_octicons.html" import pencil %}
+{% block title %}Editing {{ path }} - {{ owner }}/{{ repo.name }} - GitHub Emulator{% endblock %}
+
+{% block subnav %}
+<div class="color-bg-default border-bottom">
+    <div class="container-xl px-3 px-md-4 px-lg-5 pt-3">
+        {% set active_tab = "code" %}
+        {% include "_repo_nav.html" %}
+    </div>
+</div>
+{% endblock %}
+
+{% block content %}
+{# ---- Breadcrumb ---- #}
+<div class="breadcrumb-nav mb-3 f5">
+    <a href="{{ url_prefix }}/{{ owner }}/{{ repo.name }}">{{ repo.name }}</a>
+    <span class="separator">/</span>
+    {% set parts = path.split('/') %}
+    {% for part in parts %}
+        {% if not loop.last %}
+        {% set partial = parts[:loop.index]|join('/') %}
+        <a href="{{ url_prefix }}/{{ owner }}/{{ repo.name }}/tree/{{ ref }}/{{ partial }}">{{ part }}</a>
+        <span class="separator">/</span>
+        {% else %}
+        <strong>{{ part }}</strong>
+        {% endif %}
+    {% endfor %}
+</div>
+
+{% if error %}
+<div class="flash flash-error mb-3">
+    {{ error }}
+</div>
+{% endif %}
+
+<form method="post">
+    <div class="Box">
+        <div class="Box-header d-flex flex-items-center">
+            <span class="color-fg-muted mr-2">{{ pencil(16) }}</span>
+            <h2 class="Box-title f5">Editing <strong>{{ path.split('/')[-1] }}</strong></h2>
+        </div>
+        <div class="Box-body">
+            <div class="form-group mb-3">
+                <div class="form-group-body">
+                    <textarea id="content" name="content" class="form-control input-block"
+                              rows="25" style="font-family:monospace;font-size:13px;tab-size:4;">{{ content }}</textarea>
+                </div>
+            </div>
+
+            <hr class="my-3">
+
+            <div class="form-group">
+                <div class="form-group-header">
+                    <label for="commit_message">Commit message</label>
+                </div>
+                <div class="form-group-body">
+                    <input type="text" id="commit_message" name="commit_message" class="form-control input-block"
+                           placeholder="Update {{ path.split('/')[-1] }}">
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <div class="mt-3">
+        <button type="submit" class="btn btn-primary">Commit changes</button>
+        <a href="{{ url_prefix }}/{{ owner }}/{{ repo.name }}/blob/{{ ref }}/{{ path }}" class="btn ml-2">Cancel</a>
+    </div>
+</form>
+{% endblock %}

@@ -1,0 +1,65 @@
+{% extends "base.html" %}
+{% from "_octicons.html" import history %}
+{% block title %}Commits · {{ owner }}/{{ repo.name }}{% endblock %}
+
+{% block subnav %}
+<div class="color-bg-default border-bottom">
+    <div class="container-xl px-3 px-md-4 px-lg-5 pt-3">
+        {% set active_tab = "code" %}
+        {% include "_repo_nav.html" %}
+    </div>
+</div>
+{% endblock %}
+
+{% block content %}
+<div class="d-flex flex-items-center mb-3">
+    <span class="color-fg-muted mr-2">{{ history(16) }}</span>
+    <h2 class="f3">Commits on <span class="branch-name">{{ ref }}</span></h2>
+</div>
+
+{% if commits %}
+<div class="Box">
+    {% for commit in commits %}
+    <div class="Box-row py-2">
+        <div class="d-flex flex-items-start flex-justify-between">
+            <div class="pr-3" style="min-width:0;flex:1;">
+                <a href="{{ url_prefix }}/{{ owner }}/{{ repo.name }}/commit/{{ commit.sha }}"
+                   class="Link--primary text-bold">{{ commit.message }}</a>
+                <div class="f6 color-fg-muted mt-1">
+                    <span class="text-bold">{{ commit.author_name }}</span>
+                    committed on {{ commit.author_date[:10] }}
+                </div>
+            </div>
+            <div class="d-flex flex-items-center flex-shrink-0">
+                <a href="{{ url_prefix }}/{{ owner }}/{{ repo.name }}/commit/{{ commit.sha }}"
+                   class="f6 Link--secondary text-mono">{{ commit.sha[:7] }}</a>
+            </div>
+        </div>
+    </div>
+    {% endfor %}
+</div>
+
+{# Pagination #}
+<div class="paginate-container mt-3">
+    <div class="BtnGroup">
+        {% if page > 1 %}
+        <a href="{{ url_prefix }}/{{ owner }}/{{ repo.name }}/commits/{{ ref }}?page={{ page - 1 }}"
+           class="btn btn-outline BtnGroup-item">Newer</a>
+        {% else %}
+        <span class="btn btn-outline BtnGroup-item disabled">Newer</span>
+        {% endif %}
+        {% if has_next %}
+        <a href="{{ url_prefix }}/{{ owner }}/{{ repo.name }}/commits/{{ ref }}?page={{ page + 1 }}"
+           class="btn btn-outline BtnGroup-item">Older</a>
+        {% else %}
+        <span class="btn btn-outline BtnGroup-item disabled">Older</span>
+        {% endif %}
+    </div>
+</div>
+{% else %}
+<div class="blankslate">
+    <h3 class="blankslate-heading">No commits yet</h3>
+    <p>This branch has no commit history.</p>
+</div>
+{% endif %}
+{% endblock %}

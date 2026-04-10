@@ -1,0 +1,66 @@
+<!DOCTYPE html>
+<html lang="en" data-color-mode="light" data-light-theme="light">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{% block title %}GitHub Emulator{% endblock %}</title>
+    <link rel="stylesheet" href="https://unpkg.com/@primer/css@21/dist/primer.css">
+    <link rel="stylesheet" href="{{ url_prefix }}/static/css/web.css">
+</head>
+<body>
+    {# ---- Dark header bar ---- #}
+    {% from "_octicons.html" import mark_github, search_icon %}
+    <header class="Header color-bg-default">
+        <div class="Header-item">
+            <a href="{{ url_prefix }}/" class="Header-link color-fg-on-emphasis" style="font-weight:600;">
+                <span class="mr-2">{{ mark_github(32) }}</span>
+                GitHub Emulator
+            </a>
+        </div>
+        <div class="Header-item Header-item--full">
+            <form action="{{ url_prefix }}/search" method="get" class="d-flex flex-items-center">
+                <input type="text" name="q" class="form-control input-sm header-search-input" placeholder="Search..." style="max-width:280px;" aria-label="Search">
+            </form>
+        </div>
+        <div class="Header-item">
+            <a href="{{ url_prefix }}/" class="Header-link color-fg-on-emphasis">Dashboard</a>
+        </div>
+        <div class="Header-item">
+            <a href="{{ url_prefix }}/search" class="Header-link color-fg-on-emphasis">Explore</a>
+        </div>
+        <div class="Header-item">
+            <a href="/admin/" class="Header-link color-fg-on-emphasis">Admin</a>
+        </div>
+        {% if current_user %}
+        <div class="Header-item">
+            <a href="{{ url_prefix }}/new" class="Header-link color-fg-on-emphasis" title="New repository">
+                <svg height="16" viewBox="0 0 16 16" width="16" fill="currentColor"><path d="M7.75 2a.75.75 0 0 1 .75.75V7h4.25a.75.75 0 0 1 0 1.5H8.5v4.25a.75.75 0 0 1-1.5 0V8.5H2.75a.75.75 0 0 1 0-1.5H7V2.75A.75.75 0 0 1 7.75 2Z"></path></svg>
+            </a>
+        </div>
+        <div class="Header-item">
+            <span class="Header-link color-fg-on-emphasis">{{ current_user.login }}</span>
+        </div>
+        <div class="Header-item">
+            <a href="{{ url_prefix }}/logout" class="Header-link color-fg-on-emphasis">Sign out</a>
+        </div>
+        {% else %}
+        <div class="Header-item">
+            <a href="{{ url_prefix }}/login" class="Header-link color-fg-on-emphasis">Sign in</a>
+        </div>
+        {% endif %}
+    </header>
+
+    {# ---- Optional subnav (repo tabs, etc.) ---- #}
+    {% block subnav %}{% endblock %}
+
+    {# ---- Main content ---- #}
+    <main class="container-xl px-3 px-md-4 px-lg-5 mt-4">
+        {% block content %}{% endblock %}
+    </main>
+
+    {# ---- Footer ---- #}
+    <footer class="container-xl px-3 px-md-4 px-lg-5 mt-6 mb-4 border-top pt-3">
+        <p class="color-fg-muted f6">&copy; GitHub Emulator v0.1.0</p>
+    </footer>
+</body>
+</html>

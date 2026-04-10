@@ -1,0 +1,67 @@
+{% extends "base.html" %}
+{% from "_octicons.html" import file_icon, pencil %}
+{% block title %}{{ path }} - {{ owner }}/{{ repo.name }} - GitHub Emulator{% endblock %}
+
+{% block subnav %}
+<div class="color-bg-default border-bottom">
+    <div class="container-xl px-3 px-md-4 px-lg-5 pt-3">
+        {% set active_tab = "code" %}
+        {% include "_repo_nav.html" %}
+    </div>
+</div>
+{% endblock %}
+
+{% block content %}
+{# ---- Breadcrumb ---- #}
+<div class="breadcrumb-nav mb-3 f5">
+    <a href="{{ url_prefix }}/{{ owner }}/{{ repo.name }}">{{ repo.name }}</a>
+    <span class="separator">/</span>
+    {% set parts = path.split('/') %}
+    {% for part in parts %}
+        {% if not loop.last %}
+        {% set partial = parts[:loop.index]|join('/') %}
+        <a href="{{ url_prefix }}/{{ owner }}/{{ repo.name }}/tree/{{ ref }}/{{ partial }}">{{ part }}</a>
+        <span class="separator">/</span>
+        {% else %}
+        <strong>{{ part }}</strong>
+        {% endif %}
+    {% endfor %}
+</div>
+
+{# ---- File viewer ---- #}
+{% if content is not none %}
+{% set lines = content.split('\n') %}
+<div class="Box">
+    <div class="Box-header d-flex flex-items-center flex-justify-between">
+        <div class="d-flex flex-items-center">
+            <span class="color-fg-muted mr-2">{{ file_icon(16) }}</span>
+            <strong class="f5">{{ path.split('/')[-1] }}</strong>
+        </div>
+        <div class="d-flex flex-items-center">
+            <span class="color-fg-muted f6 mr-2">{{ lines|length }} lines</span>
+            {% if current_user %}
+            <a href="{{ url_prefix }}/{{ owner }}/{{ repo.name }}/edit/{{ ref }}/{{ path }}"
+               class="btn btn-sm" title="Edit this file">{{ pencil(16) }}</a>
+            {% endif %}
+        </div>
+    </div>
+    <div class="Box-body p-0 overflow-auto">
+        <table class="blob-viewer">
+            <tbody>
+                {% for line in lines %}
+                <tr>
+                    <td id="L{{ loop.index }}" class="blob-num" data-line-number="{{ loop.index }}">{{ loop.index }}</td>
+                    <td class="blob-code"><span class="blob-code-inner">{{ line }}</span></td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+</div>
+{% else %}
+<div class="blankslate">
+    <h3 class="blankslate-heading">File not found</h3>
+    <p>This file does not exist at this ref, or is a binary file.</p>
+</div>
+{% endif %}
+{% endblock %}

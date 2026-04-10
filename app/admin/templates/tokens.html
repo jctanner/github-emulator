@@ -1,0 +1,43 @@
+{% extends "base.html" %}
+
+{% block title %}Tokens - GitHub Emulator Admin{% endblock %}
+
+{% block content %}
+<div class="d-flex flex-items-center flex-justify-between mb-3">
+    <h2 class="f2">Personal Access Tokens</h2>
+    <a href="/admin/tokens/create" class="btn btn-primary">Create Token</a>
+</div>
+
+<table class="admin-table">
+    <thead>
+        <tr>
+            <th>ID</th>
+            <th>User</th>
+            <th>Name</th>
+            <th>Prefix</th>
+            <th>Scopes</th>
+            <th>Created</th>
+            <th>Last Used</th>
+            <th class="actions">Actions</th>
+        </tr>
+    </thead>
+    <tbody>
+        {% for token in tokens %}
+        <tr>
+            <td>{{ token.id }}</td>
+            <td>{{ token.user.login if token.user else token.user_id }}</td>
+            <td>{{ token.name }}</td>
+            <td><code>{{ token.token_prefix or "" }}</code></td>
+            <td>{{ token.scopes | join(", ") if token.scopes else "" }}</td>
+            <td>{{ token.created_at.strftime('%Y-%m-%d %H:%M') if token.created_at else "" }}</td>
+            <td>{{ token.last_used_at.strftime('%Y-%m-%d %H:%M') if token.last_used_at else "Never" }}</td>
+            <td class="actions">
+                <form method="post" action="/admin/tokens/{{ token.id }}/revoke" class="inline-delete" onsubmit="return confirm('Revoke token {{ token.name }}?');">
+                    <button type="submit" class="btn btn-sm btn-danger">Revoke</button>
+                </form>
+            </td>
+        </tr>
+        {% endfor %}
+    </tbody>
+</table>
+{% endblock %}

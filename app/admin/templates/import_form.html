@@ -1,0 +1,62 @@
+{% extends "base.html" %}
+
+{% block title %}Import Repository - GitHub Emulator Admin{% endblock %}
+
+{% block content %}
+<div class="d-flex flex-items-center flex-justify-between mb-3">
+    <h2 class="f2">Import from GitHub</h2>
+    <a href="/admin/import/jobs" class="btn">View Jobs</a>
+</div>
+
+<div class="Box p-4">
+    <form method="post" action="/admin/import" class="admin-form">
+        <div class="form-group">
+            <label for="source_type">Import Type</label>
+            <select id="source_type" name="source_type" class="form-control" required onchange="updateSourceLabel()">
+                <option value="single">Single Repository</option>
+                <option value="user">All repos from a GitHub User</option>
+                <option value="org">All repos from a GitHub Organization</option>
+            </select>
+        </div>
+        <div class="form-group">
+            <label for="source" id="source_label">GitHub Repository URL</label>
+            <input type="text" id="source" name="source" class="form-control" placeholder="https://github.com/owner/repo" required>
+        </div>
+        <div class="form-group">
+            <label for="owner_id">Assign to Local User</label>
+            <select id="owner_id" name="owner_id" class="form-control" required>
+                <option value="">-- Select User --</option>
+                {% for user in users %}
+                <option value="{{ user.id }}">{{ user.login }} ({{ user.name or user.login }})</option>
+                {% endfor %}
+            </select>
+        </div>
+        <div class="form-group">
+            <label for="github_token">GitHub Token (optional)</label>
+            <input type="password" id="github_token" name="github_token" class="form-control" placeholder="ghp_...">
+            <span class="form-hint">Required for private repositories. The token is not stored.</span>
+        </div>
+        <div class="form-actions">
+            <button type="submit" class="btn btn-primary">Start Import</button>
+        </div>
+    </form>
+</div>
+
+<script>
+function updateSourceLabel() {
+    var st = document.getElementById('source_type').value;
+    var label = document.getElementById('source_label');
+    var input = document.getElementById('source');
+    if (st === 'single') {
+        label.textContent = 'GitHub Repository URL';
+        input.placeholder = 'https://github.com/owner/repo';
+    } else if (st === 'user') {
+        label.textContent = 'GitHub Username';
+        input.placeholder = 'octocat';
+    } else {
+        label.textContent = 'GitHub Organization';
+        input.placeholder = 'github';
+    }
+}
+</script>
+{% endblock %}

@@ -1,0 +1,87 @@
+{% extends "base.html" %}
+{% from "_octicons.html" import file_icon, file_directory, book, git_branch, plus, history, tag %}
+{% block title %}{{ owner }}/{{ repo.name }} - GitHub Emulator{% endblock %}
+
+{% block subnav %}
+<div class="color-bg-default border-bottom">
+    <div class="container-xl px-3 px-md-4 px-lg-5 pt-3">
+        {% set active_tab = "code" %}
+        {% include "_repo_nav.html" %}
+    </div>
+</div>
+{% endblock %}
+
+{% block content %}
+{# ---- About / description ---- #}
+{% if repo.description %}
+<p class="f4 color-fg-muted mb-3">{{ repo.description }}</p>
+{% endif %}
+
+{# ---- Branch selector ---- #}
+<div class="d-flex flex-items-center flex-justify-between mb-3">
+    <div class="d-flex flex-items-center">
+        <span class="color-fg-muted mr-1">{{ git_branch(16) }}</span>
+        <span class="branch-name">{{ default_branch }}</span>
+    </div>
+    {% if current_user %}
+    <a href="{{ url_prefix }}/{{ owner }}/{{ repo.name }}/new/{{ default_branch }}"
+       class="btn btn-sm btn-primary">{{ plus(16) }} Add file</a>
+    {% endif %}
+</div>
+
+{# ---- Stats bar (commits / branches / tags) ---- #}
+{% if commit_count is defined and commit_count %}
+<div class="d-flex flex-items-center color-fg-muted f6 mb-3" style="gap:12px;">
+    <a href="{{ url_prefix }}/{{ owner }}/{{ repo.name }}/commits/{{ default_branch }}"
+       class="Link--secondary d-flex flex-items-center">
+        <span class="mr-1">{{ history(16) }}</span>
+        <strong class="color-fg-default">{{ commit_count }}</strong>&nbsp;commit{{ 's' if commit_count != 1 else '' }}
+    </a>
+    <a href="{{ url_prefix }}/{{ owner }}/{{ repo.name }}/branches"
+       class="Link--secondary d-flex flex-items-center">
+        <span class="mr-1">{{ git_branch(16) }}</span>
+        <strong class="color-fg-default">{{ branch_count }}</strong>&nbsp;branch{{ 'es' if branch_count != 1 else '' }}
+    </a>
+    <a href="{{ url_prefix }}/{{ owner }}/{{ repo.name }}/tags"
+       class="Link--secondary d-flex flex-items-center">
+        <span class="mr-1">{{ tag(16) }}</span>
+        <strong class="color-fg-default">{{ tag_count }}</strong>&nbsp;tag{{ 's' if tag_count != 1 else '' }}
+    </a>
+</div>
+{% endif %}
+
+{# ---- File tree ---- #}
+{% if tree_entries is not none %}
+<div class="Box mb-3">
+    <div class="Box-header d-flex flex-items-center">
+        <h2 class="Box-title f5">Files</h2>
+    </div>
+    {% for entry in tree_entries %}
+    <div class="Box-row py-2 d-flex flex-items-center">
+        {% if entry.type == "tree" %}
+        <span class="color-fg-muted mr-2">{{ file_directory(16) }}</span>
+        <a href="{{ url_prefix }}/{{ owner }}/{{ repo.name }}/tree/{{ default_branch }}/{{ entry.name }}" class="Link--primary">{{ entry.name }}</a>
+        {% else %}
+        <span class="color-fg-muted mr-2">{{ file_icon(16) }}</span>
+        <a href="{{ url_prefix }}/{{ owner }}/{{ repo.name }}/blob/{{ default_branch }}/{{ entry.name }}" class="Link--primary">{{ entry.name }}</a>
+        {% endif %}
+    </div>
+    {% endfor %}
+</div>
+{% endif %}
+
+{# ---- README ---- #}
+{% if readme_content %}
+<div class="Box mb-3">
+    <div class="Box-header d-flex flex-items-center">
+        <span class="color-fg-muted mr-2">{{ book(16) }}</span>
+        <h2 class="Box-title f5">README</h2>
+    </div>
+    <div class="Box-body px-4 py-3">
+        <div class="markdown-body">
+            <pre style="white-space:pre-wrap;word-break:break-word;background:transparent;border:0;padding:0;margin:0;font-size:14px;">{{ readme_content }}</pre>
+        </div>
+    </div>
+</div>
+{% endif %}
+{% endblock %}

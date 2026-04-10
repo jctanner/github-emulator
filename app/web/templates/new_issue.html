@@ -1,0 +1,50 @@
+{% extends "base.html" %}
+{% from "_octicons.html" import issue_opened %}
+{% block title %}New Issue - {{ owner }}/{{ repo.name }} - GitHub Emulator{% endblock %}
+
+{% block subnav %}
+<div class="color-bg-default border-bottom">
+    <div class="container-xl px-3 px-md-4 px-lg-5 pt-3">
+        {% set active_tab = "issues" %}
+        {% include "_repo_nav.html" %}
+    </div>
+</div>
+{% endblock %}
+
+{% block content %}
+<div class="Subhead">
+    <div class="Subhead-heading">New issue</div>
+</div>
+
+{% if error %}
+<div class="flash flash-error mb-3">
+    {{ error }}
+</div>
+{% endif %}
+
+<form method="post" action="{{ url_prefix }}/{{ owner }}/{{ repo.name }}/issues/new">
+    <div class="Box p-4">
+        <div class="form-group">
+            <div class="form-group-header">
+                <label for="title">Title <span class="color-fg-danger">*</span></label>
+            </div>
+            <div class="form-group-body">
+                <input type="text" id="title" name="title" class="form-control input-block" required autofocus>
+            </div>
+        </div>
+
+        <div class="form-group mt-3">
+            <div class="form-group-header">
+                <label for="body">Description <span class="color-fg-muted f6">(optional)</span></label>
+            </div>
+            <div class="form-group-body">
+                <textarea id="body" name="body" class="form-control input-block" rows="8" placeholder="Leave a comment"></textarea>
+            </div>
+        </div>
+    </div>
+
+    <div class="mt-3">
+        <button type="submit" class="btn btn-primary">Submit new issue</button>
+    </div>
+</form>
+{% endblock %}

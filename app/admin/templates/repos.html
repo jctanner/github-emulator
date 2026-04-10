@@ -1,0 +1,41 @@
+{% extends "base.html" %}
+
+{% block title %}Repositories - GitHub Emulator Admin{% endblock %}
+
+{% block content %}
+<div class="d-flex flex-items-center flex-justify-between mb-3">
+    <h2 class="f2">Repositories</h2>
+</div>
+
+<table class="admin-table">
+    <thead>
+        <tr>
+            <th>ID</th>
+            <th>Full Name</th>
+            <th>Private</th>
+            <th>Fork</th>
+            <th>Default Branch</th>
+            <th>Created</th>
+            <th class="actions">Actions</th>
+        </tr>
+    </thead>
+    <tbody>
+        {% for repo in repos %}
+        <tr>
+            <td>{{ repo.id }}</td>
+            <td><a href="/admin/repos/{{ repo.id }}"><strong>{{ repo.full_name }}</strong></a></td>
+            <td>{{ "Yes" if repo.private else "No" }}</td>
+            <td>{{ "Yes" if repo.fork else "No" }}</td>
+            <td><span class="branch-name">{{ repo.default_branch }}</span></td>
+            <td>{{ repo.created_at.strftime('%Y-%m-%d %H:%M') if repo.created_at else "" }}</td>
+            <td class="actions">
+                <a href="/admin/repos/{{ repo.id }}" class="btn btn-sm">View</a>
+                <form method="post" action="/admin/repos/{{ repo.id }}/delete" class="inline-delete" onsubmit="return confirm('Delete repo {{ repo.full_name }}?');">
+                    <button type="submit" class="btn btn-sm btn-danger">Delete</button>
+                </form>
+            </td>
+        </tr>
+        {% endfor %}
+    </tbody>
+</table>
+{% endblock %}

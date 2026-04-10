@@ -1,0 +1,70 @@
+{% extends "base.html" %}
+{% block title %}{{ commit_info.message[:60] }} · {{ owner }}/{{ repo.name }}{% endblock %}
+
+{% block subnav %}
+<div class="color-bg-default border-bottom">
+    <div class="container-xl px-3 px-md-4 px-lg-5 pt-3">
+        {% set active_tab = "code" %}
+        {% include "_repo_nav.html" %}
+    </div>
+</div>
+{% endblock %}
+
+{% block content %}
+{# Commit header #}
+<div class="Box mb-3">
+    <div class="Box-header">
+        <h2 class="Box-title f4">{{ commit_info.message }}</h2>
+    </div>
+    <div class="Box-body">
+        {% if commit_info.body %}
+        <pre class="f6 color-fg-muted mb-3" style="white-space:pre-wrap;background:transparent;border:0;padding:0;margin:0;">{{ commit_info.body }}</pre>
+        {% endif %}
+        <div class="f6 mb-2">
+            <span class="text-bold">{{ commit_info.author.name }}</span>
+            <span class="color-fg-muted">&lt;{{ commit_info.author.email }}&gt;</span>
+            <span class="color-fg-muted ml-2">{{ commit_info.author.date }}</span>
+        </div>
+        <div class="f6 mb-2">
+            <span class="color-fg-muted">Commit</span>
+            <code class="text-mono f6">{{ commit_info.sha }}</code>
+        </div>
+        {% if commit_info.parents %}
+        <div class="f6">
+            <span class="color-fg-muted">Parent{{ 's' if commit_info.parents|length > 1 else '' }}</span>
+            {% for parent in commit_info.parents %}
+            <a href="{{ url_prefix }}/{{ owner }}/{{ repo.name }}/commit/{{ parent }}"
+               class="Link--secondary text-mono f6">{{ parent[:7] }}</a>
+            {% if not loop.last %} + {% endif %}
+            {% endfor %}
+        </div>
+        {% endif %}
+    </div>
+</div>
+
+{# Changed files #}
+{% if diff_files %}
+<div class="f6 color-fg-muted mb-2">Showing {{ diff_files|length }} changed file{{ 's' if diff_files|length != 1 else '' }}</div>
+{% for file in diff_files %}
+<div class="Box mb-3">
+    <div class="Box-header d-flex flex-items-center">
+        {% if file.status == "added" %}
+        <span class="Label Label--success mr-2">added</span>
+        {% elif file.status == "deleted" %}
+        <span class="Label Label--danger mr-2">deleted</span>
+        {% else %}
+        <span class="Label mr-2">modified</span>
+        {% endif %}
+        <span class="text-mono f6 text-bold">{{ file.filename }}</span>
+    </div>
+    <div class="Box-body p-0">
+        <pre class="f6 p-3" style="overflow-x:auto;margin:0;background:#f6f8fa;"><code>{{ file.patch }}</code></pre>
+    </div>
+</div>
+{% endfor %}
+{% else %}
+<div class="blankslate">
+    <p>No file changes in this commit.</p>
+</div>
+{% endif %}
+{% endblock %}

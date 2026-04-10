@@ -1,0 +1,45 @@
+{% extends "base.html" %}
+{% from "_octicons.html" import tag %}
+{% block title %}Tags · {{ owner }}/{{ repo.name }}{% endblock %}
+
+{% block subnav %}
+<div class="color-bg-default border-bottom">
+    <div class="container-xl px-3 px-md-4 px-lg-5 pt-3">
+        {% set active_tab = "code" %}
+        {% include "_repo_nav.html" %}
+    </div>
+</div>
+{% endblock %}
+
+{% block content %}
+<div class="d-flex flex-items-center mb-3">
+    <span class="color-fg-muted mr-2">{{ tag(16) }}</span>
+    <h2 class="f3">{{ tags|length }} tag{{ 's' if tags|length != 1 else '' }}</h2>
+</div>
+
+{% if tags %}
+<div class="Box">
+    {% for t in tags %}
+    <div class="Box-row d-flex flex-items-center flex-justify-between py-2">
+        <div class="d-flex flex-items-center" style="min-width:0;flex:1;">
+            <span class="color-fg-muted mr-2">{{ tag(16) }}</span>
+            <a href="{{ url_prefix }}/{{ owner }}/{{ repo.name }}/tree/{{ t.name }}"
+               class="text-bold Link--primary">{{ t.name }}</a>
+        </div>
+        <div class="d-flex flex-items-center flex-shrink-0 ml-3">
+            <a href="{{ url_prefix }}/{{ owner }}/{{ repo.name }}/commit/{{ t.sha }}"
+               class="f6 Link--secondary text-mono mr-3">{{ t.sha[:7] }}</a>
+            {% if t.date %}
+            <span class="f6 color-fg-muted">{{ t.date[:10] }}</span>
+            {% endif %}
+        </div>
+    </div>
+    {% endfor %}
+</div>
+{% else %}
+<div class="blankslate">
+    <h3 class="blankslate-heading">No tags</h3>
+    <p>This repository has no tags yet.</p>
+</div>
+{% endif %}
+{% endblock %}

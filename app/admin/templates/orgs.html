@@ -1,0 +1,44 @@
+{% extends "base.html" %}
+
+{% block title %}Organizations - GitHub Emulator Admin{% endblock %}
+
+{% block content %}
+<div class="d-flex flex-items-center flex-justify-between mb-3">
+    <h2 class="f2">Organizations</h2>
+    <a href="/admin/orgs/create" class="btn btn-primary">Create Organization</a>
+</div>
+
+<table class="admin-table">
+    <thead>
+        <tr>
+            <th>ID</th>
+            <th>Login</th>
+            <th>Name</th>
+            <th>Email</th>
+            <th>Members</th>
+            <th>Teams</th>
+            <th>Created</th>
+            <th class="actions">Actions</th>
+        </tr>
+    </thead>
+    <tbody>
+        {% for org in orgs %}
+        <tr>
+            <td>{{ org.id }}</td>
+            <td><strong>{{ org.login }}</strong></td>
+            <td>{{ org.name or "" }}</td>
+            <td>{{ org.email or "" }}</td>
+            <td>{{ org.members|length }}</td>
+            <td>{{ org.teams|length }}</td>
+            <td>{{ org.created_at.strftime('%Y-%m-%d %H:%M') if org.created_at else "" }}</td>
+            <td class="actions">
+                <a href="/admin/orgs/{{ org.id }}" class="btn btn-sm">Edit</a>
+                <form method="post" action="/admin/orgs/{{ org.id }}/delete" class="inline-delete" onsubmit="return confirm('Delete organization {{ org.login }}?');">
+                    <button type="submit" class="btn btn-sm btn-danger">Delete</button>
+                </form>
+            </td>
+        </tr>
+        {% endfor %}
+    </tbody>
+</table>
+{% endblock %}

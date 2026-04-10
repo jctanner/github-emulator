@@ -1,0 +1,83 @@
+{% extends "base.html" %}
+{% from "_octicons.html" import git_pull_request, git_merge, issue_closed, comment_icon %}
+{% block title %}{{ pr.title }} #{{ pr.number }} - {{ owner }}/{{ repo.name }} - GitHub Emulator{% endblock %}
+
+{% block subnav %}
+<div class="color-bg-default border-bottom">
+    <div class="container-xl px-3 px-md-4 px-lg-5 pt-3">
+        {% set active_tab = "pulls" %}
+        {% include "_repo_nav.html" %}
+    </div>
+</div>
+{% endblock %}
+
+{% block content %}
+{# ---- Title ---- #}
+<div class="gh-header mb-3">
+    <h1 class="f1-light mb-2">
+        {{ pr.title }}
+        <span class="color-fg-muted f1-light">#{{ pr.number }}</span>
+    </h1>
+    <div class="d-flex flex-items-center flex-wrap" style="gap:8px;">
+        {% if pr.merged %}
+        <span class="State State--merged">{{ git_merge(16) }} Merged</span>
+        {% elif pr.state == "open" %}
+        <span class="State State--open">{{ git_pull_request(16) }} Open</span>
+        {% else %}
+        <span class="State State--closed">{{ issue_closed(16) }} Closed</span>
+        {% endif %}
+        <span class="color-fg-muted">
+            <strong>{{ pr.user_login or 'unknown' }}</strong> wants to merge into
+            <span class="branch-name">{{ pr.base_label or pr.base_ref or '?' }}</span>
+            from
+            <span class="branch-name">{{ pr.head_label or pr.head_ref or '?' }}</span>
+        </span>
+    </div>
+</div>
+
+<hr class="mb-4">
+
+{# ---- PR body ---- #}
+{% if pr.body %}
+<div class="TimelineItem">
+    <div class="TimelineItem-avatar">
+        <span class="avatar-placeholder avatar-placeholder--medium">{{ (pr.user_login or 'U')[0] }}</span>
+    </div>
+    <div class="TimelineItem-body">
+        <div class="Box color-shadow-small">
+            <div class="Box-header d-flex flex-items-center">
+                <strong>{{ pr.user_login or 'unknown' }}</strong>
+                {% if pr.created_at %}
+                <span class="color-fg-muted ml-1">commented on {{ pr.created_at.strftime('%b %d, %Y') }}</span>
+                {% endif %}
+            </div>
+            <div class="Box-body">
+                <div class="comment-body">{{ pr.body }}</div>
+            </div>
+        </div>
+    </div>
+</div>
+{% endif %}
+
+{# ---- Comments ---- #}
+{% for comment in comments %}
+<div class="TimelineItem">
+    <div class="TimelineItem-avatar">
+        <span class="avatar-placeholder avatar-placeholder--medium">{{ (comment.user_login or 'U')[0] }}</span>
+    </div>
+    <div class="TimelineItem-body">
+        <div class="Box color-shadow-small">
+            <div class="Box-header d-flex flex-items-center">
+                <strong>{{ comment.user_login or 'unknown' }}</strong>
+                {% if comment.created_at %}
+                <span class="color-fg-muted ml-1">commented on {{ comment.created_at.strftime('%b %d, %Y') }}</span>
+                {% endif %}
+            </div>
+            <div class="Box-body">
+                <div class="comment-body">{{ comment.body }}</div>
+            </div>
+        </div>
+    </div>
+</div>
+{% endfor %}
+{% endblock %}

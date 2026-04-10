@@ -1,0 +1,46 @@
+{% extends "base.html" %}
+
+{% block title %}Issues &amp; Pull Requests - GitHub Emulator Admin{% endblock %}
+
+{% block content %}
+<h2 class="f2 mb-3">Issues &amp; Pull Requests</h2>
+
+<table class="admin-table">
+    <thead>
+        <tr>
+            <th>ID</th>
+            <th>Repository</th>
+            <th>#</th>
+            <th>Type</th>
+            <th>Title</th>
+            <th>State</th>
+            <th>Author</th>
+            <th>Created</th>
+            <th>Updated</th>
+        </tr>
+    </thead>
+    <tbody>
+        {% for issue in issues %}
+        <tr>
+            <td>{{ issue.id }}</td>
+            <td>{{ issue.repository.full_name if issue.repository else "" }}</td>
+            <td>{{ issue.number }}</td>
+            <td>{{ "PR" if issue.pull_request else "Issue" }}</td>
+            <td>{{ issue.title }}</td>
+            <td>
+                {% if issue.pull_request and issue.pull_request.merged %}
+                    <span class="Label" style="background:#8250df; color:#fff;">Merged</span>
+                {% elif issue.state == "open" %}
+                    <span class="Label" style="background:#1a7f37; color:#fff;">Open</span>
+                {% else %}
+                    <span class="Label" style="background:#cf222e; color:#fff;">Closed</span>
+                {% endif %}
+            </td>
+            <td>{{ issue.user.login if issue.user else "" }}</td>
+            <td>{{ issue.created_at.strftime('%Y-%m-%d %H:%M') if issue.created_at else "" }}</td>
+            <td>{{ issue.updated_at.strftime('%Y-%m-%d %H:%M') if issue.updated_at else "" }}</td>
+        </tr>
+        {% endfor %}
+    </tbody>
+</table>
+{% endblock %}

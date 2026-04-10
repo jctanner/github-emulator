@@ -1,0 +1,45 @@
+{% extends "base.html" %}
+
+{% block title %}{{ repo.full_name }} - GitHub Emulator Admin{% endblock %}
+
+{% block content %}
+<h2 class="f2 mb-3">{{ repo.full_name }}</h2>
+
+<div class="Box p-4 mb-3">
+    <table class="admin-table admin-detail">
+        <tbody>
+            <tr><td>ID</td><td>{{ repo.id }}</td></tr>
+            <tr><td>Owner</td><td>{{ repo.owner.login if repo.owner else repo.owner_id }}</td></tr>
+            <tr><td>Owner Type</td><td>{{ repo.owner_type }}</td></tr>
+            <tr><td>Name</td><td>{{ repo.name }}</td></tr>
+            <tr><td>Full Name</td><td>{{ repo.full_name }}</td></tr>
+            <tr><td>Description</td><td>{{ repo.description or "" }}</td></tr>
+            <tr><td>Private</td><td>{{ "Yes" if repo.private else "No" }}</td></tr>
+            <tr><td>Fork</td><td>{{ "Yes" if repo.fork else "No" }}</td></tr>
+            <tr><td>Default Branch</td><td><span class="branch-name">{{ repo.default_branch }}</span></td></tr>
+            <tr><td>Visibility</td><td>{{ repo.visibility }}</td></tr>
+            <tr><td>Language</td><td>{{ repo.language or "" }}</td></tr>
+            <tr><td>Archived</td><td>{{ "Yes" if repo.archived else "No" }}</td></tr>
+            <tr><td>Disabled</td><td>{{ "Yes" if repo.disabled else "No" }}</td></tr>
+            <tr><td>Forks</td><td>{{ repo.forks_count }}</td></tr>
+            <tr><td>Stars</td><td>{{ repo.stargazers_count }}</td></tr>
+            <tr><td>Watchers</td><td>{{ repo.watchers_count }}</td></tr>
+            <tr><td>Open Issues</td><td>{{ repo.open_issues_count }}</td></tr>
+            <tr><td>Size</td><td>{{ repo.size }} KB</td></tr>
+            <tr><td>Disk Path</td><td><code>{{ repo.disk_path or "" }}</code></td></tr>
+            <tr><td>Has Issues</td><td>{{ "Yes" if repo.has_issues else "No" }}</td></tr>
+            <tr><td>Has Wiki</td><td>{{ "Yes" if repo.has_wiki else "No" }}</td></tr>
+            <tr><td>Has Projects</td><td>{{ "Yes" if repo.has_projects else "No" }}</td></tr>
+            <tr><td>Is Template</td><td>{{ "Yes" if repo.is_template else "No" }}</td></tr>
+            <tr><td>Created</td><td>{{ repo.created_at.strftime('%Y-%m-%d %H:%M:%S') if repo.created_at else "" }}</td></tr>
+            <tr><td>Updated</td><td>{{ repo.updated_at.strftime('%Y-%m-%d %H:%M:%S') if repo.updated_at else "" }}</td></tr>
+            <tr><td>Pushed</td><td>{{ repo.pushed_at.strftime('%Y-%m-%d %H:%M:%S') if repo.pushed_at else "" }}</td></tr>
+        </tbody>
+    </table>
+</div>
+
+<form method="post" action="/admin/repos/{{ repo.id }}/delete" class="d-inline" onsubmit="return confirm('Are you sure you want to delete {{ repo.full_name }}? This cannot be undone.');">
+    <button type="submit" class="btn btn-danger">Delete Repository</button>
+</form>
+<a href="/admin/repos" class="btn ml-2">Back to Repositories</a>
+{% endblock %}

@@ -1,0 +1,42 @@
+{% extends "base.html" %}
+
+{% block title %}Users - GitHub Emulator Admin{% endblock %}
+
+{% block content %}
+<div class="d-flex flex-items-center flex-justify-between mb-3">
+    <h2 class="f2">Users</h2>
+    <a href="/admin/users/create" class="btn btn-primary">Create User</a>
+</div>
+
+<table class="admin-table">
+    <thead>
+        <tr>
+            <th>ID</th>
+            <th>Login</th>
+            <th>Name</th>
+            <th>Email</th>
+            <th>Admin</th>
+            <th>Created</th>
+            <th class="actions">Actions</th>
+        </tr>
+    </thead>
+    <tbody>
+        {% for user in users %}
+        <tr>
+            <td>{{ user.id }}</td>
+            <td><strong>{{ user.login }}</strong></td>
+            <td>{{ user.name or "" }}</td>
+            <td>{{ user.email or "" }}</td>
+            <td>{{ "Yes" if user.site_admin else "No" }}</td>
+            <td>{{ user.created_at.strftime('%Y-%m-%d %H:%M') if user.created_at else "" }}</td>
+            <td class="actions">
+                <a href="/admin/users/{{ user.id }}" class="btn btn-sm">Edit</a>
+                <form method="post" action="/admin/users/{{ user.id }}/delete" class="inline-delete" onsubmit="return confirm('Delete user {{ user.login }}?');">
+                    <button type="submit" class="btn btn-sm btn-danger">Delete</button>
+                </form>
+            </td>
+        </tr>
+        {% endfor %}
+    </tbody>
+</table>
+{% endblock %}

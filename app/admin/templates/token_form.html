@@ -1,0 +1,55 @@
+{% extends "base.html" %}
+
+{% block title %}Create Token - GitHub Emulator Admin{% endblock %}
+
+{% block content %}
+<h2 class="f2 mb-3">Create Personal Access Token</h2>
+
+{% if created_token %}
+<div class="Box p-4">
+    <h3 class="f3 mb-2">Token Created Successfully</h3>
+    <p><strong>Important:</strong> Copy your new personal access token now. You will not be able to see it again.</p>
+    <div class="token-display">{{ created_token }}</div>
+    <a href="/admin/tokens" class="btn btn-primary">Back to Tokens</a>
+</div>
+{% else %}
+<div class="Box p-4">
+    <form method="post" action="/admin/tokens/create" class="admin-form">
+        <div class="form-group">
+            <label for="user_id">User</label>
+            <select id="user_id" name="user_id" class="form-control" required>
+                <option value="">-- Select User --</option>
+                {% for user in users %}
+                <option value="{{ user.id }}">{{ user.login }} ({{ user.name or user.login }})</option>
+                {% endfor %}
+            </select>
+        </div>
+        <div class="form-group">
+            <label for="name">Token Name</label>
+            <input type="text" id="name" name="name" class="form-control" placeholder="e.g. CI/CD Token" required>
+        </div>
+        <fieldset>
+            <legend>Scopes</legend>
+            <label><input type="checkbox" name="scopes" value="repo"> repo - Full control of private repositories</label>
+            <label><input type="checkbox" name="scopes" value="repo:status"> repo:status - Access commit status</label>
+            <label><input type="checkbox" name="scopes" value="public_repo"> public_repo - Access public repositories</label>
+            <label><input type="checkbox" name="scopes" value="admin:org"> admin:org - Full control of organizations</label>
+            <label><input type="checkbox" name="scopes" value="write:org"> write:org - Read and write organization membership</label>
+            <label><input type="checkbox" name="scopes" value="read:org"> read:org - Read organization membership</label>
+            <label><input type="checkbox" name="scopes" value="admin:repo_hook"> admin:repo_hook - Full control of repository hooks</label>
+            <label><input type="checkbox" name="scopes" value="write:repo_hook"> write:repo_hook - Write repository hooks</label>
+            <label><input type="checkbox" name="scopes" value="read:repo_hook"> read:repo_hook - Read repository hooks</label>
+            <label><input type="checkbox" name="scopes" value="delete_repo"> delete_repo - Delete repositories</label>
+            <label><input type="checkbox" name="scopes" value="user"> user - Update all user data</label>
+            <label><input type="checkbox" name="scopes" value="read:user"> read:user - Read user profile data</label>
+            <label><input type="checkbox" name="scopes" value="admin:gpg_key"> admin:gpg_key - Full control of GPG keys</label>
+            <label><input type="checkbox" name="scopes" value="workflow"> workflow - Update GitHub Action workflows</label>
+        </fieldset>
+        <div class="form-actions">
+            <button type="submit" class="btn btn-primary">Create Token</button>
+            <a href="/admin/tokens" class="btn ml-2">Cancel</a>
+        </div>
+    </form>
+</div>
+{% endif %}
+{% endblock %}

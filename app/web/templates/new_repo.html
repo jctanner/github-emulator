@@ -1,0 +1,72 @@
+{% extends "base.html" %}
+{% block title %}Create a new repository - GitHub Emulator{% endblock %}
+
+{% block content %}
+<div class="Subhead">
+    <div class="Subhead-heading">Create a new repository</div>
+    <div class="Subhead-description">A repository contains all project files, including the revision history.</div>
+</div>
+
+{% if error %}
+<div class="flash flash-error mb-3">
+    {{ error }}
+</div>
+{% endif %}
+
+<form method="post" action="{{ url_prefix }}/new">
+    <div class="Box p-4">
+        <div class="form-group">
+            <div class="form-group-header">
+                <label for="name">Repository name <span class="color-fg-danger">*</span></label>
+            </div>
+            <div class="form-group-body">
+                <div class="d-flex flex-items-center">
+                    <span class="mr-2 f4 color-fg-muted">{{ current_user.login }} /</span>
+                    <input type="text" id="name" name="name" class="form-control" required
+                           pattern="[a-zA-Z0-9._-]+" title="Only alphanumeric characters, hyphens, underscores, and dots are allowed.">
+                </div>
+            </div>
+        </div>
+
+        <div class="form-group mt-3">
+            <div class="form-group-header">
+                <label for="description">Description <span class="color-fg-muted f6">(optional)</span></label>
+            </div>
+            <div class="form-group-body">
+                <textarea id="description" name="description" class="form-control input-block" rows="2"></textarea>
+            </div>
+        </div>
+
+        <hr class="my-3">
+
+        <div class="form-group">
+            <div class="form-group-body">
+                <div class="form-checkbox">
+                    <label>
+                        <input type="checkbox" name="private" value="true">
+                        <span class="text-bold">Private</span>
+                        <span class="note">Only you can see this repository.</span>
+                    </label>
+                </div>
+            </div>
+        </div>
+
+        <hr class="my-3">
+
+        <div class="form-group">
+            <div class="form-group-body">
+                <div class="form-checkbox">
+                    <label>
+                        <input type="checkbox" name="auto_init" value="true" checked>
+                        Initialize this repository with a README
+                    </label>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <div class="mt-3">
+        <button type="submit" class="btn btn-primary">Create repository</button>
+    </div>
+</form>
+{% endblock %}

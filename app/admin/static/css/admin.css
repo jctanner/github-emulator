@@ -1,0 +1,177 @@
+/* GitHub Emulator Admin -- Primer CSS overrides */
+
+/* ---- Dark header (same as main app) ---- */
+.Header {
+    background-color: #24292f !important;
+    padding: 12px 16px;
+}
+.Header-link.color-fg-on-emphasis {
+    color: #ffffff !important;
+}
+.Header-link.color-fg-on-emphasis:hover {
+    color: rgba(255,255,255,.7) !important;
+}
+
+/* ---- Stats grid (dashboard) ---- */
+.stats-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+    gap: 16px;
+    margin-bottom: 24px;
+}
+.stat-card {
+    border: 1px solid #d0d7de;
+    border-radius: 6px;
+    padding: 24px;
+    text-align: center;
+    background: #ffffff;
+}
+.stat-card h3 {
+    margin: 0 0 4px;
+    font-size: 32px;
+    font-weight: 600;
+    color: #1f2328;
+}
+.stat-card p {
+    margin: 0;
+    font-size: 14px;
+    color: #656d76;
+}
+
+/* ---- Token display ---- */
+.token-display {
+    background: #0d1117;
+    color: #3fb950;
+    padding: 12px 16px;
+    border-radius: 6px;
+    font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+    font-size: 14px;
+    word-break: break-all;
+    margin: 12px 0;
+}
+
+/* ---- Admin tables ---- */
+table.admin-table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 14px;
+}
+table.admin-table th {
+    text-align: left;
+    padding: 8px 16px;
+    border-bottom: 2px solid #d0d7de;
+    font-weight: 600;
+    color: #1f2328;
+    background: #f6f8fa;
+}
+table.admin-table td {
+    padding: 8px 16px;
+    border-bottom: 1px solid #d0d7de;
+    color: #1f2328;
+    vertical-align: middle;
+}
+table.admin-table tbody tr:hover {
+    background-color: #f6f8fa;
+}
+table.admin-table .actions {
+    white-space: nowrap;
+}
+
+/* ---- Admin forms ---- */
+.admin-form {
+    max-width: 560px;
+}
+.admin-form .form-group {
+    margin-bottom: 16px;
+}
+.admin-form .form-group > label {
+    display: block;
+    font-size: 14px;
+    font-weight: 600;
+    margin-bottom: 6px;
+    color: #1f2328;
+}
+.admin-form .form-group > .form-control {
+    display: block;
+    width: 100%;
+    padding: 5px 12px;
+    font-size: 14px;
+    line-height: 20px;
+    border: 1px solid #d0d7de;
+    border-radius: 6px;
+    background: #ffffff;
+    color: #1f2328;
+    box-sizing: border-box;
+}
+.admin-form .form-control:focus {
+    border-color: #0969da;
+    outline: none;
+    box-shadow: 0 0 0 3px rgba(9,105,218,.3);
+}
+.admin-form .form-group > .form-hint {
+    display: block;
+    margin-top: 4px;
+    font-size: 12px;
+    color: #656d76;
+}
+.admin-form .form-checkbox {
+    margin-bottom: 16px;
+}
+.admin-form .form-checkbox label {
+    font-weight: 400;
+    font-size: 14px;
+}
+.admin-form fieldset {
+    border: 1px solid #d0d7de;
+    border-radius: 6px;
+    padding: 16px;
+    margin-bottom: 16px;
+}
+.admin-form fieldset legend {
+    font-weight: 600;
+    font-size: 14px;
+    padding: 0 4px;
+}
+.admin-form fieldset label {
+    display: block;
+    font-weight: 400;
+    margin-bottom: 8px;
+    font-size: 14px;
+}
+.admin-form .form-actions {
+    margin-top: 20px;
+}
+
+/* ---- Status labels ---- */
+.status-completed { color: #1a7f37; font-weight: 600; }
+.status-failed { color: #cf222e; font-weight: 600; }
+.status-running { color: #bf8700; font-weight: 600; }
+.status-pending { color: #656d76; }
+
+/* ---- Detail table (key-value pairs) ---- */
+table.admin-detail td:first-child {
+    font-weight: 600;
+    white-space: nowrap;
+    color: #656d76;
+    width: 160px;
+}
+
+/* ---- Branch name pill ---- */
+.branch-name {
+    display: inline-block;
+    padding: 2px 6px;
+    font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+    font-size: 12px;
+    color: #0969da;
+    background-color: #ddf4ff;
+    border-radius: 6px;
+}
+
+/* ---- Inline delete forms ---- */
+.inline-delete {
+    display: inline;
+}
+.inline-delete button {
+    padding: 3px 12px;
+    font-size: 12px;
+}

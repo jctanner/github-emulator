@@ -1,0 +1,28 @@
+version: "3.8"
+
+services:
+  github-emulator:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    ports:
+      - "443:443"
+      - "80:80"
+      - "8000:8000"
+      - "2222:2222"
+    volumes:
+      - github_emulator_data:/data
+    environment:
+      - GITHUB_EMULATOR_DATA_DIR=/data
+      - GITHUB_EMULATOR_DATABASE_URL=sqlite+aiosqlite:////data/github_emulator.db
+      - GITHUB_EMULATOR_BASE_URL=https://ghemu.local
+      - GITHUB_EMULATOR_HOSTNAME=ghemu.local
+      - GITHUB_EMULATOR_SECRET_KEY=change-me-in-production
+      - GITHUB_EMULATOR_ADMIN_USERNAME=admin
+      - GITHUB_EMULATOR_ADMIN_PASSWORD=admin
+      - GITHUB_EMULATOR_SSH_ENABLED=true
+      - GITHUB_EMULATOR_SSH_PORT=2222
+    restart: unless-stopped
+
+volumes:
+  github_emulator_data:

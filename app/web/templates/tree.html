@@ -1,0 +1,59 @@
+{% extends "base.html" %}
+{% from "_octicons.html" import file_icon, file_directory, plus %}
+{% block title %}{{ path }} - {{ owner }}/{{ repo.name }} - GitHub Emulator{% endblock %}
+
+{% block subnav %}
+<div class="color-bg-default border-bottom">
+    <div class="container-xl px-3 px-md-4 px-lg-5 pt-3">
+        {% set active_tab = "code" %}
+        {% include "_repo_nav.html" %}
+    </div>
+</div>
+{% endblock %}
+
+{% block content %}
+{# ---- Breadcrumb ---- #}
+<div class="breadcrumb-nav mb-3 f5">
+    <a href="{{ url_prefix }}/{{ owner }}/{{ repo.name }}">{{ repo.name }}</a>
+    <span class="separator">/</span>
+    {% set parts = path.split('/') %}
+    {% for part in parts %}
+        {% if not loop.last %}
+        {% set partial = parts[:loop.index]|join('/') %}
+        <a href="{{ url_prefix }}/{{ owner }}/{{ repo.name }}/tree/{{ ref }}/{{ partial }}">{{ part }}</a>
+        <span class="separator">/</span>
+        {% else %}
+        <strong>{{ part }}</strong>
+        {% endif %}
+    {% endfor %}
+</div>
+
+{# ---- Directory listing ---- #}
+{% if entries is not none %}
+<div class="Box">
+    <div class="Box-header d-flex flex-items-center flex-justify-between">
+        <h2 class="Box-title f5">{{ path }}</h2>
+        {% if current_user %}
+        <a href="{{ url_prefix }}/{{ owner }}/{{ repo.name }}/new/{{ ref }}/{{ path }}"
+           class="btn btn-sm btn-primary">{{ plus(16) }} Add file</a>
+        {% endif %}
+    </div>
+    {% for entry in entries %}
+    <div class="Box-row py-2 d-flex flex-items-center">
+        {% if entry.type == "tree" %}
+        <span class="color-fg-muted mr-2">{{ file_directory(16) }}</span>
+        <a href="{{ url_prefix }}/{{ owner }}/{{ repo.name }}/tree/{{ ref }}/{{ path }}/{{ entry.name }}" class="Link--primary">{{ entry.name }}</a>
+        {% else %}
+        <span class="color-fg-muted mr-2">{{ file_icon(16) }}</span>
+        <a href="{{ url_prefix }}/{{ owner }}/{{ repo.name }}/blob/{{ ref }}/{{ path }}/{{ entry.name }}" class="Link--primary">{{ entry.name }}</a>
+        {% endif %}
+    </div>
+    {% endfor %}
+</div>
+{% else %}
+<div class="blankslate">
+    <h3 class="blankslate-heading">Directory not found</h3>
+    <p>This directory does not exist at this ref.</p>
+</div>
+{% endif %}
+{% endblock %}

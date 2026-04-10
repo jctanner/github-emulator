@@ -1,0 +1,82 @@
+{% extends "base.html" %}
+{% from "_octicons.html" import issue_opened, issue_closed, comment_icon %}
+{% block title %}{{ issue.title }} #{{ issue.number }} - {{ owner }}/{{ repo.name }} - GitHub Emulator{% endblock %}
+
+{% block subnav %}
+<div class="color-bg-default border-bottom">
+    <div class="container-xl px-3 px-md-4 px-lg-5 pt-3">
+        {% set active_tab = "issues" %}
+        {% include "_repo_nav.html" %}
+    </div>
+</div>
+{% endblock %}
+
+{% block content %}
+{# ---- Title ---- #}
+<div class="gh-header mb-3">
+    <h1 class="f1-light mb-2">
+        {{ issue.title }}
+        <span class="color-fg-muted f1-light">#{{ issue.number }}</span>
+    </h1>
+    <div class="d-flex flex-items-center flex-wrap" style="gap:8px;">
+        {% if issue.state == "open" %}
+        <span class="State State--open">{{ issue_opened(16) }} Open</span>
+        {% else %}
+        <span class="State State--closed">{{ issue_closed(16) }} Closed</span>
+        {% endif %}
+        <span class="color-fg-muted">
+            <strong>{{ issue.user_login or 'unknown' }}</strong> opened this issue
+            {% if issue.created_at %}
+            on {{ issue.created_at.strftime('%b %d, %Y') }}
+            {% endif %}
+            &middot; {{ comments|length }} comment{{ 's' if comments|length != 1 else '' }}
+        </span>
+    </div>
+</div>
+
+<hr class="mb-4">
+
+{# ---- Issue body as first timeline item ---- #}
+{% if issue.body %}
+<div class="TimelineItem">
+    <div class="TimelineItem-avatar">
+        <span class="avatar-placeholder avatar-placeholder--medium">{{ (issue.user_login or 'U')[0] }}</span>
+    </div>
+    <div class="TimelineItem-body">
+        <div class="Box color-shadow-small">
+            <div class="Box-header d-flex flex-items-center">
+                <strong>{{ issue.user_login or 'unknown' }}</strong>
+                {% if issue.created_at %}
+                <span class="color-fg-muted ml-1">commented on {{ issue.created_at.strftime('%b %d, %Y') }}</span>
+                {% endif %}
+            </div>
+            <div class="Box-body">
+                <div class="comment-body">{{ issue.body }}</div>
+            </div>
+        </div>
+    </div>
+</div>
+{% endif %}
+
+{# ---- Comments ---- #}
+{% for comment in comments %}
+<div class="TimelineItem">
+    <div class="TimelineItem-avatar">
+        <span class="avatar-placeholder avatar-placeholder--medium">{{ (comment.user_login or 'U')[0] }}</span>
+    </div>
+    <div class="TimelineItem-body">
+        <div class="Box color-shadow-small">
+            <div class="Box-header d-flex flex-items-center">
+                <strong>{{ comment.user_login or 'unknown' }}</strong>
+                {% if comment.created_at %}
+                <span class="color-fg-muted ml-1">commented on {{ comment.created_at.strftime('%b %d, %Y') }}</span>
+                {% endif %}
+            </div>
+            <div class="Box-body">
+                <div class="comment-body">{{ comment.body }}</div>
+            </div>
+        </div>
+    </div>
+</div>
+{% endfor %}
+{% endblock %}

@@ -1,0 +1,27 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+*.egg
+dist/
+build/
+.venv/
+
+# Data (runtime-generated)
+data/
+
+# IDE
+.vscode/
+.idea/
+
+# Vagrant
+.vagrant/
+
+# Testing
+.pytest_cache/
+
+# OS
+.DS_Store
+
+# Lock file (optional — remove this line if you want to pin deps)
+uv.lock

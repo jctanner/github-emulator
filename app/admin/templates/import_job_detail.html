@@ -1,0 +1,57 @@
+{% extends "base.html" %}
+
+{% block title %}Import Job #{{ job.id }} - GitHub Emulator Admin{% endblock %}
+
+{% block content %}
+<h2 class="f2 mb-3">Import Job #{{ job.id }}</h2>
+
+<div class="Box p-4 mb-3">
+    <table class="admin-table admin-detail">
+        <tbody>
+            <tr><td>ID</td><td>{{ job.id }}</td></tr>
+            <tr><td>Type</td><td>{{ job.job_type }}</td></tr>
+            <tr><td>Status</td><td><span class="status-{{ job.status }}">{{ job.status }}</span></td></tr>
+            <tr><td>Source URL</td><td>{{ job.source_url or "" }}</td></tr>
+            <tr><td>Repo Name</td><td>{{ job.repo_name or "" }}</td></tr>
+            <tr><td>Owner</td><td>{{ job.owner.login if job.owner else job.owner_id }}</td></tr>
+            <tr><td>Created</td><td>{{ job.created_at.strftime('%Y-%m-%d %H:%M:%S') if job.created_at else "" }}</td></tr>
+            <tr><td>Completed</td><td>{{ job.completed_at.strftime('%Y-%m-%d %H:%M:%S') if job.completed_at else "" }}</td></tr>
+            {% if job.error_message %}
+            <tr><td>Error</td><td class="color-fg-danger">{{ job.error_message }}</td></tr>
+            {% endif %}
+            {% if job.job_type == "bulk" %}
+            <tr><td>Progress</td><td>{{ job.completed_count or 0 }} / {{ job.repo_count if job.repo_count is not none else "?" }}</td></tr>
+            {% endif %}
+            {% if job.parent_job_id %}
+            <tr><td>Parent Job</td><td><a href="/admin/import/jobs/{{ job.parent_job_id }}">#{{ job.parent_job_id }}</a></td></tr>
+            {% endif %}
+        </tbody>
+    </table>
+</div>
+
+{% if job.job_type == "bulk" and child_jobs %}
+<h3 class="f3 mb-2">Child Jobs</h3>
+<table class="admin-table">
+    <thead>
+        <tr>
+            <th>ID</th>
+            <th>Repo Name</th>
+            <th>Status</th>
+            <th>Error</th>
+        </tr>
+    </thead>
+    <tbody>
+        {% for child in child_jobs %}
+        <tr>
+            <td><a href="/admin/import/jobs/{{ child.id }}">{{ child.id }}</a></td>
+            <td>{{ child.repo_name or "" }}</td>
+            <td><span class="status-{{ child.status }}">{{ child.status }}</span></td>
+            <td style="max-width: 400px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">{{ child.error_message or "" }}</td>
+        </tr>
+        {% endfor %}
+    </tbody>
+</table>
+{% endif %}
+
+<a href="/admin/import/jobs" class="btn">Back to Jobs</a>
+{% endblock %}

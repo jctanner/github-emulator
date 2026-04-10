@@ -1,0 +1,77 @@
+{% extends "base.html" %}
+{% from "_octicons.html" import repo_icon, search_icon, people %}
+{% block title %}Search - GitHub Emulator{% endblock %}
+
+{% block content %}
+<div class="Subhead">
+    <div class="Subhead-heading">Search</div>
+</div>
+
+<form method="get" action="{{ url_prefix }}/search" class="mb-4">
+    <div class="d-flex" style="gap:8px;">
+        <input type="text" name="q" value="{{ query or '' }}"
+               class="form-control flex-auto"
+               placeholder="Search repositories and users..."
+               aria-label="Search">
+        <button type="submit" class="btn btn-primary">
+            {{ search_icon(16) }}
+            Search
+        </button>
+    </div>
+</form>
+
+{% if query %}
+    {% if repos %}
+    <div class="Subhead">
+        <div class="Subhead-heading f3">Repositories</div>
+    </div>
+    <div class="Box">
+        {% for repo in repos %}
+        <div class="Box-row">
+            <div class="d-flex flex-items-center mb-1">
+                <span class="color-fg-muted mr-1">{{ repo_icon(16) }}</span>
+                <a href="{{ url_prefix }}/{{ repo.owner_login }}/{{ repo.name }}" class="text-bold Link--primary">
+                    {{ repo.owner_login }}/{{ repo.name }}
+                </a>
+                {% if repo.private %}
+                <span class="Label Label--secondary ml-2">Private</span>
+                {% endif %}
+            </div>
+            {% if repo.description %}
+            <p class="color-fg-muted f6 mb-0">{{ repo.description }}</p>
+            {% endif %}
+            <div class="f6 color-fg-muted mt-1">
+                {% if repo.language %}{{ repo.language }}{% endif %}
+            </div>
+        </div>
+        {% endfor %}
+    </div>
+    {% endif %}
+
+    {% if users %}
+    <div class="Subhead mt-4">
+        <div class="Subhead-heading f3">Users</div>
+    </div>
+    <div class="Box">
+        {% for user in users %}
+        <div class="Box-row d-flex flex-items-center">
+            <span class="avatar-placeholder avatar-placeholder--medium mr-3">{{ user.login[0] }}</span>
+            <div>
+                <a href="{{ url_prefix }}/{{ user.login }}" class="text-bold Link--primary">{{ user.login }}</a>
+                {% if user.name %}
+                <span class="color-fg-muted ml-1">{{ user.name }}</span>
+                {% endif %}
+            </div>
+        </div>
+        {% endfor %}
+    </div>
+    {% endif %}
+
+    {% if not repos and not users %}
+    <div class="blankslate">
+        <h3 class="blankslate-heading">No results</h3>
+        <p>No results found for "{{ query }}".</p>
+    </div>
+    {% endif %}
+{% endif %}
+{% endblock %}

@@ -1,0 +1,41 @@
+{% extends "base.html" %}
+
+{% block title %}Import Jobs - GitHub Emulator Admin{% endblock %}
+
+{% block content %}
+<div class="d-flex flex-items-center flex-justify-between mb-3">
+    <h2 class="f2">Import Jobs</h2>
+    <a href="/admin/import" class="btn btn-primary">New Import</a>
+</div>
+
+<table class="admin-table">
+    <thead>
+        <tr>
+            <th>ID</th>
+            <th>Type</th>
+            <th>Source URL</th>
+            <th>Repo Name</th>
+            <th>Owner</th>
+            <th>Status</th>
+            <th>Created</th>
+            <th>Completed</th>
+        </tr>
+    </thead>
+    <tbody>
+        {% for job in jobs %}
+        <tr>
+            <td><a href="/admin/import/jobs/{{ job.id }}">{{ job.id }}</a></td>
+            <td>{{ job.job_type }}</td>
+            <td style="max-width: 300px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">{{ job.source_url or "" }}</td>
+            <td>{{ job.repo_name or "" }}</td>
+            <td>{{ job.owner.login if job.owner else job.owner_id }}</td>
+            <td>
+                <span class="status-{{ job.status }}">{{ job.status }}</span>
+            </td>
+            <td>{{ job.created_at.strftime('%Y-%m-%d %H:%M') if job.created_at else "" }}</td>
+            <td>{{ job.completed_at.strftime('%Y-%m-%d %H:%M') if job.completed_at else "" }}</td>
+        </tr>
+        {% endfor %}
+    </tbody>
+</table>
+{% endblock %}

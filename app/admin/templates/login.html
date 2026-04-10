@@ -1,0 +1,24 @@
+{% extends "base.html" %}
+
+{% block title %}Login - GitHub Emulator Admin{% endblock %}
+
+{% block content %}
+<div class="d-flex flex-justify-center mt-6">
+    <div class="Box p-4" style="width: 340px;">
+        <h2 class="f2 mb-3 text-center">Admin Login</h2>
+        <form method="post" action="/admin/login" class="admin-form" style="max-width:none;">
+            <div class="form-group">
+                <label for="username">Username</label>
+                <input type="text" id="username" name="username" class="form-control" placeholder="admin" required autofocus>
+            </div>
+            <div class="form-group">
+                <label for="password">Password</label>
+                <input type="password" id="password" name="password" class="form-control" placeholder="Password" required>
+            </div>
+            <div class="form-actions">
+                <button type="submit" class="btn btn-primary btn-block">Login</button>
+            </div>
+        </form>
+    </div>
+</div>
+{% endblock %}

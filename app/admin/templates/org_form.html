@@ -1,0 +1,48 @@
+{% extends "base.html" %}
+
+{% block title %}{{ "Edit" if edit_org else "Create" }} Organization - GitHub Emulator Admin{% endblock %}
+
+{% block content %}
+<h2 class="f2 mb-3">{{ "Edit" if edit_org else "Create" }} Organization</h2>
+
+<div class="Box p-4">
+    <form method="post" class="admin-form">
+        <div class="form-group">
+            <label for="login">Login (slug) *</label>
+            <input type="text" id="login" name="login" class="form-control" value="{{ edit_org.login if edit_org else '' }}" required {{ 'readonly' if edit_org else '' }}>
+        </div>
+        <div class="form-group">
+            <label for="name">Display Name</label>
+            <input type="text" id="name" name="name" class="form-control" value="{{ edit_org.name or '' if edit_org else '' }}">
+        </div>
+        <div class="form-group">
+            <label for="description">Description</label>
+            <input type="text" id="description" name="description" class="form-control" value="{{ edit_org.description or '' if edit_org else '' }}">
+        </div>
+        <div class="form-group">
+            <label for="email">Email</label>
+            <input type="email" id="email" name="email" class="form-control" value="{{ edit_org.email or '' if edit_org else '' }}">
+        </div>
+        <div class="form-group">
+            <label for="blog">Blog URL</label>
+            <input type="url" id="blog" name="blog" class="form-control" value="{{ edit_org.blog or '' if edit_org else '' }}">
+        </div>
+        <div class="form-group">
+            <label for="location">Location</label>
+            <input type="text" id="location" name="location" class="form-control" value="{{ edit_org.location or '' if edit_org else '' }}">
+        </div>
+        <div class="form-group">
+            <label for="company">Company</label>
+            <input type="text" id="company" name="company" class="form-control" value="{{ edit_org.company or '' if edit_org else '' }}">
+        </div>
+        <div class="form-group">
+            <label for="billing_email">Billing Email</label>
+            <input type="email" id="billing_email" name="billing_email" class="form-control" value="{{ edit_org.billing_email or '' if edit_org else '' }}">
+        </div>
+        <div class="form-actions">
+            <button type="submit" class="btn btn-primary">{{ "Update" if edit_org else "Create" }} Organization</button>
+            <a href="/admin/orgs" class="btn ml-2">Cancel</a>
+        </div>
+    </form>
+</div>
+{% endblock %}

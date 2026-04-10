@@ -1,0 +1,65 @@
+{% extends "base.html" %}
+{% from "_octicons.html" import repo_icon, people %}
+{% block title %}{{ profile.login }} - GitHub Emulator{% endblock %}
+
+{% block content %}
+<div class="d-flex flex-column flex-md-row" style="gap:32px;">
+    {# ---- Left sidebar ---- #}
+    <div style="flex:0 0 296px;">
+        <div class="avatar-placeholder avatar-placeholder--large mb-3">{{ profile.login[0] }}</div>
+        <h1 class="f2 text-bold mb-0">{{ profile.name or profile.login }}</h1>
+        <p class="f3 color-fg-muted mb-2">{{ profile.login }}</p>
+        {% if profile.email %}
+        <p class="f6 color-fg-muted mb-1">{{ profile.email }}</p>
+        {% endif %}
+        {% if profile.bio is defined and profile.bio %}
+        <p class="f6 mb-3">{{ profile.bio }}</p>
+        {% endif %}
+    </div>
+
+    {# ---- Right main content ---- #}
+    <div class="flex-auto" style="min-width:0;">
+        <nav class="UnderlineNav mb-3" aria-label="Profile">
+            <div class="UnderlineNav-body">
+                <a class="UnderlineNav-item selected" href="{{ url_prefix }}/{{ profile.login }}">
+                    <span class="UnderlineNav-octicon">{{ repo_icon(16) }}</span>
+                    Repositories
+                    <span class="Counter">{{ repos|length }}</span>
+                </a>
+            </div>
+        </nav>
+
+        {% if repos %}
+        {% for repo in repos %}
+        <div class="py-4 border-bottom">
+            <div class="d-flex flex-items-center">
+                <a href="{{ url_prefix }}/{{ profile.login }}/{{ repo.name }}" class="text-bold Link--primary f4 mr-2">
+                    {{ repo.name }}
+                </a>
+                {% if repo.private %}
+                <span class="Label Label--secondary">Private</span>
+                {% else %}
+                <span class="Label Label--secondary">Public</span>
+                {% endif %}
+            </div>
+            {% if repo.description %}
+            <p class="color-fg-muted f6 mt-1 mb-2">{{ repo.description }}</p>
+            {% endif %}
+            <div class="f6 color-fg-muted d-flex flex-items-center" style="gap:16px;">
+                {% if repo.language %}
+                <span>{{ repo.language }}</span>
+                {% endif %}
+                <span>Updated {{ repo.updated_at.strftime('%b %d, %Y') if repo.updated_at else 'N/A' }}</span>
+            </div>
+        </div>
+        {% endfor %}
+        {% else %}
+        <div class="blankslate">
+            <span class="color-fg-muted">{{ repo_icon(24) }}</span>
+            <h3 class="blankslate-heading">No repositories</h3>
+            <p>{{ profile.login }} doesn't have any repositories yet.</p>
+        </div>
+        {% endif %}
+    </div>
+</div>
+{% endblock %}

@@ -1,0 +1,54 @@
+{% extends "base.html" %}
+
+{% block title %}Dashboard - GitHub Emulator Admin{% endblock %}
+
+{% block content %}
+<h2 class="f2 mb-3">Dashboard</h2>
+
+<div class="stats-grid">
+    <div class="stat-card">
+        <h3>{{ users_count }}</h3>
+        <p>Total Users</p>
+    </div>
+    <div class="stat-card">
+        <h3>{{ repos_count }}</h3>
+        <p>Total Repos</p>
+    </div>
+    <div class="stat-card">
+        <h3>{{ issues_count }}</h3>
+        <p>Open Issues</p>
+    </div>
+    <div class="stat-card">
+        <h3>{{ prs_count }}</h3>
+        <p>Open PRs</p>
+    </div>
+    <div class="stat-card">
+        <h3>{{ tokens_count }}</h3>
+        <p>Total Tokens</p>
+    </div>
+</div>
+
+<h3 class="f3 mb-2">Recent Activity</h3>
+{% if recent_events %}
+<table class="admin-table">
+    <thead>
+        <tr>
+            <th>Type</th>
+            <th>Actor</th>
+            <th>Created</th>
+        </tr>
+    </thead>
+    <tbody>
+        {% for event in recent_events %}
+        <tr>
+            <td>{{ event.type }}</td>
+            <td>{{ event.actor.login if event.actor else "N/A" }}</td>
+            <td>{{ event.created_at.strftime('%Y-%m-%d %H:%M:%S') if event.created_at else "" }}</td>
+        </tr>
+        {% endfor %}
+    </tbody>
+</table>
+{% else %}
+<p class="color-fg-muted">No recent activity.</p>
+{% endif %}
+{% endblock %}

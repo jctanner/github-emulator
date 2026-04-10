@@ -1,0 +1,50 @@
+{#- Repo header + tab navigation partial.
+    Set `active_tab` before including:
+      {% set active_tab = "code" %}
+      {% include "_repo_nav.html" %}
+    Expects: owner, repo (Repository object), url_prefix, active_tab
+    Optional: open_issues_count, open_pulls_count
+-#}
+{% from "_octicons.html" import repo_icon, code, issue_opened, git_pull_request, lock %}
+
+{# ---- Repo header breadcrumb ---- #}
+<div class="mb-3">
+    <div class="d-flex flex-items-center flex-wrap" style="gap:4px;">
+        <span class="color-fg-muted">{{ repo_icon(16) }}</span>
+        <a href="{{ url_prefix }}/{{ owner }}" class="text-bold Link--primary" style="font-size:20px;">{{ owner }}</a>
+        <span class="color-fg-muted" style="font-size:20px;">/</span>
+        <a href="{{ url_prefix }}/{{ owner }}/{{ repo.name }}" class="text-bold Link--primary" style="font-size:20px;">{{ repo.name }}</a>
+        {% if repo.private %}
+        <span class="Label Label--secondary v-align-middle ml-1">Private</span>
+        {% else %}
+        <span class="Label Label--secondary v-align-middle ml-1">Public</span>
+        {% endif %}
+    </div>
+</div>
+
+{# ---- Tab navigation ---- #}
+<nav class="UnderlineNav" aria-label="Repository">
+    <div class="UnderlineNav-body">
+        <a class="UnderlineNav-item{% if active_tab == 'code' %} selected{% endif %}"
+           href="{{ url_prefix }}/{{ owner }}/{{ repo.name }}">
+            <span class="UnderlineNav-octicon">{{ code(16) }}</span>
+            <span>Code</span>
+        </a>
+        <a class="UnderlineNav-item{% if active_tab == 'issues' %} selected{% endif %}"
+           href="{{ url_prefix }}/{{ owner }}/{{ repo.name }}/issues">
+            <span class="UnderlineNav-octicon">{{ issue_opened(16) }}</span>
+            <span>Issues</span>
+            {% if open_issues_count is defined and open_issues_count %}
+            <span class="Counter">{{ open_issues_count }}</span>
+            {% endif %}
+        </a>
+        <a class="UnderlineNav-item{% if active_tab == 'pulls' %} selected{% endif %}"
+           href="{{ url_prefix }}/{{ owner }}/{{ repo.name }}/pulls">
+            <span class="UnderlineNav-octicon">{{ git_pull_request(16) }}</span>
+            <span>Pull requests</span>
+            {% if open_pulls_count is defined and open_pulls_count %}
+            <span class="Counter">{{ open_pulls_count }}</span>
+            {% endif %}
+        </a>
+    </div>
+</nav>
