@@ -46,5 +46,15 @@ async def init_db():
     """Create all tables and set WAL mode."""
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
+        if settings.DATABASE_URL.startswith("sqlite"):
+            columns = await conn.execute(text("PRAGMA table_info(secrets)"))
+            if "value" not in {row[1] for row in columns.fetchall()}:
+                await conn.execute(text("ALTER TABLE secrets ADD COLUMN value TEXT"))
+            jobs_columns = await conn.execute(text("PRAGMA table_info(workflow_jobs)"))
+            if "permissions" not in {row[1] for row in jobs_columns.fetchall()}:
+                await conn.execute(text("ALTER TABLE workflow_jobs ADD COLUMN permissions TEXT"))
+            runs_columns = await conn.execute(text("PRAGMA table_info(workflow_runs)"))
+            if "concurrency_group" not in {row[1] for row in runs_columns.fetchall()}:
+                await conn.execute(text("ALTER TABLE workflow_runs ADD COLUMN concurrency_group TEXT"))
         await conn.execute(text("PRAGMA journal_mode=WAL"))
         await conn.execute(text(f"PRAGMA busy_timeout={settings.SQLITE_BUSY_TIMEOUT_MS}"))

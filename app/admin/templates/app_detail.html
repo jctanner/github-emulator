@@ -1,0 +1,88 @@
+{% extends "base.html" %}
+
+{% block title %}{{ app.name }} - GitHub Emulator Admin{% endblock %}
+
+{% block content %}
+<div class="d-flex flex-items-center flex-justify-between mb-3">
+    <div>
+        <h2 class="f2 mb-1">{{ app.name }}</h2>
+        <p class="color-fg-muted mb-0"><code>{{ app.slug }}</code> · emulator App</p>
+    </div>
+    <a href="/admin/apps" class="btn">Back to Apps</a>
+</div>
+
+<div class="Box p-3 mb-3">
+    <table class="admin-table admin-detail">
+        <tbody>
+            <tr><td>App ID</td><td><code>{{ app.id }}</code></td></tr>
+            <tr><td>Database ID</td><td>{{ app.database_id }}</td></tr>
+            <tr><td>Owner</td><td>{{ app.owner }}</td></tr>
+            <tr><td>Created</td><td>{{ app.created_at }}</td></tr>
+            <tr><td>Private key</td><td>{{ "Present (value hidden)" if app.has_private_key else "Not present" }}</td></tr>
+            <tr><td>Permissions</td><td>{% for key, value in app.permissions.items() %}<code class="mr-2">{{ key }}:{{ value }}</code>{% else %}None{% endfor %}</td></tr>
+        </tbody>
+    </table>
+</div>
+
+<div class="Box p-3 mb-3">
+    <h3 class="f3 mb-2">Installations</h3>
+    {% if installations %}
+    <table class="admin-table">
+        <thead><tr><th>ID</th><th>Account</th><th>Type</th><th>Repositories</th><th>Permissions</th><th>Tokens</th></tr></thead>
+        <tbody>
+        {% for installation in installations %}
+        <tr>
+            <td><a href="/admin/installations/{{ installation.id }}">{{ installation.id }}</a></td>
+            <td>{{ installation.account_login }}</td>
+            <td>{{ installation.account_type }}</td>
+            <td>{{ installation.repositories|join(', ') }}</td>
+            <td>{% for key, value in installation.permissions.items() %}<code class="mr-2">{{ key }}:{{ value }}</code>{% else %}None{% endfor %}</td>
+            <td>{{ installation.token_count }}</td>
+        </tr>
+        {% endfor %}
+        </tbody>
+    </table>
+    {% else %}<p class="color-fg-muted">No installations yet.</p>{% endif %}
+</div>
+
+<div class="Box p-3 mb-3">
+    <h3 class="f3 mb-1">Create development installation</h3>
+    <p class="color-fg-muted">Emulator shortcut: install this App for a local account and selected local repositories.</p>
+    <form method="post" action="/admin/apps/{{ app.id }}/installations/create" class="admin-form">
+        <div class="form-group">
+            <label for="account_login">Local account</label>
+            <select id="account_login" name="account_login" class="form-control" required>
+                <option value="">-- Select user or organization --</option>
+                {% for user in users %}<option value="{{ user.login }}">{{ user.login }} (User)</option>{% endfor %}
+                {% for org in orgs %}<option value="{{ org.login }}">{{ org.login }} (Organization)</option>{% endfor %}
+            </select>
+        </div>
+        <input type="hidden" name="account_type" value="User">
+        <fieldset>
+            <legend>Selected repositories</legend>
+            {% for repo in repositories %}
+            <label><input type="checkbox" name="repositories" value="{{ repo.full_name }}"> {{ repo.full_name }}</label>
+            {% else %}<p class="color-fg-muted">No local repositories exist yet.</p>{% endfor %}
+        </fieldset>
+        <button type="submit" class="btn btn-primary">Create installation</button>
+    </form>
+</div>
+
+<div class="Box p-3">
+    <h3 class="f3 mb-2">Recent installation-token metadata</h3>
+    {% set token_count = installations|sum(attribute='token_count') %}
+    {% if token_count %}
+    {% for installation in installations %}
+    {% for token in installation.tokens %}
+    <div class="border-bottom py-2">
+        <a href="/admin/installations/{{ installation.id }}">Installation #{{ installation.id }}</a>
+        · <code>{{ token.prefix }}</code>
+        · created {{ token.created_at }}
+        · {{ token.expiry_state }}
+        · repositories: {{ token.repositories|join(', ') }}
+    </div>
+    {% endfor %}
+    {% endfor %}
+    {% else %}<p class="color-fg-muted mb-0">No installation tokens have been minted.</p>{% endif %}
+</div>
+{% endblock %}

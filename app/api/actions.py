@@ -3,12 +3,13 @@
 import os
 
 from fastapi import APIRouter, HTTPException, Query
-from fastapi.responses import PlainTextResponse
+from fastapi.responses import PlainTextResponse, Response
 from sqlalchemy import select, func
 
 from app.api.deps import AuthUser, CurrentUser, DbSession, get_repo_or_404
 from app.config import settings
 from app.models.actions import Workflow, WorkflowRun, WorkflowJob, Secret, Variable
+from app.models.artifact import WorkflowArtifact
 from app.schemas.user import SimpleUser, _fmt_dt, _make_node_id
 
 router = APIRouter(tags=["actions"])
@@ -71,6 +72,7 @@ def _job_json(j: WorkflowJob, owner: str, repo: str) -> dict:
         "labels": j.labels or [],
         "run_attempt": j.run_attempt,
         "needs": j.needs or [],
+        "permissions": j.permissions or {},
         "url": f"{api}/repos/{owner}/{repo}/actions/jobs/{j.id}",
         "html_url": f"{BASE}/{owner}/{repo}/actions/jobs/{j.id}",
         "logs_url": f"{api}/repos/{owner}/{repo}/actions/jobs/{j.id}/logs",
@@ -79,6 +81,65 @@ def _job_json(j: WorkflowJob, owner: str, repo: str) -> dict:
 
 def _job_log_path(job_id: int) -> str:
     return os.path.join(settings.DATA_DIR, "logs", "jobs", f"{job_id}.log")
+
+
+def _artifact_json(artifact: WorkflowArtifact, owner: str, repo: str) -> dict:
+    api = f"{BASE}/api/v3"
+    return {
+        "id": artifact.id,
+        "node_id": _make_node_id("Artifact", artifact.id),
+        "name": artifact.name,
+        "size_in_bytes": artifact.size_in_bytes,
+        "archive_download_url": f"{api}/repos/{owner}/{repo}/actions/artifacts/{artifact.id}/{artifact.name}",
+        "expired": artifact.expired,
+        "created_at": _fmt_dt(artifact.created_at),
+        "workflow_run": {"id": artifact.run_id},
+    }
+
+
+@router.get("/repos/{owner}/{repo}/actions/runs/{run_id}/artifacts")
+async def list_artifacts(owner: str, repo: str, run_id: int, user: AuthUser, db: DbSession):
+    repository = await get_repo_or_404(owner, repo, db)
+    result = await db.execute(select(WorkflowArtifact).where(WorkflowArtifact.repo_id == repository.id, WorkflowArtifact.run_id == run_id))
+    artifacts = result.scalars().all()
+    return {"total_count": len(artifacts), "artifacts": [_artifact_json(item, owner, repo) for item in artifacts]}
+
+
+@router.post("/repos/{owner}/{repo}/actions/runs/{run_id}/artifacts", status_code=201)
+async def upload_artifact(owner: str, repo: str, run_id: int, body: dict, user: AuthUser, db: DbSession):
+    repository = await get_repo_or_404(owner, repo, db)
+    run = (await db.execute(select(WorkflowRun).where(WorkflowRun.id == run_id, WorkflowRun.repo_id == repository.id))).scalar_one_or_none()
+    if run is None:
+        raise HTTPException(status_code=404, detail="Workflow run not found")
+    name = str(body.get("name", "")).strip()
+    files = body.get("files", {})
+    if not name or not isinstance(files, dict):
+        raise HTTPException(status_code=422, detail="name and files are required")
+    import json
+    artifact = WorkflowArtifact(run_id=run_id, repo_id=repository.id, name=name, files=files, size_in_bytes=len(json.dumps(files, separators=(",", ":"))))
+    db.add(artifact)
+    await db.commit()
+    await db.refresh(artifact)
+    return _artifact_json(artifact, owner, repo)
+
+
+@router.get("/repos/{owner}/{repo}/actions/artifacts/{artifact_id}")
+async def get_artifact(owner: str, repo: str, artifact_id: int, user: AuthUser, db: DbSession):
+    repository = await get_repo_or_404(owner, repo, db)
+    artifact = (await db.execute(select(WorkflowArtifact).where(WorkflowArtifact.id == artifact_id, WorkflowArtifact.repo_id == repository.id))).scalar_one_or_none()
+    if artifact is None:
+        raise HTTPException(status_code=404, detail="Artifact not found")
+    return {**_artifact_json(artifact, owner, repo), "files": artifact.files or {}}
+
+
+@router.delete("/repos/{owner}/{repo}/actions/artifacts/{artifact_id}", status_code=204)
+async def delete_artifact(owner: str, repo: str, artifact_id: int, user: AuthUser, db: DbSession):
+    repository = await get_repo_or_404(owner, repo, db)
+    artifact = (await db.execute(select(WorkflowArtifact).where(WorkflowArtifact.id == artifact_id, WorkflowArtifact.repo_id == repository.id))).scalar_one_or_none()
+    if artifact is None:
+        raise HTTPException(status_code=404, detail="Artifact not found")
+    await db.delete(artifact)
+    await db.commit()
 
 
 def _check_read_access(repository, current_user) -> None:
@@ -125,6 +186,63 @@ async def get_workflow(
     if w is None:
         raise HTTPException(status_code=404, detail="Not Found")
     return _workflow_json(w, owner, repo)
+
+
+@router.post("/repos/{owner}/{repo}/actions/workflows/{workflow_id}/dispatches", status_code=204)
+async def dispatch_workflow(
+    owner: str, repo: str, workflow_id: str, body: dict, user: AuthUser, db: DbSession,
+):
+    """Dispatch a workflow configured with ``workflow_dispatch``."""
+    repository = await get_repo_or_404(owner, repo, db)
+    workflow_query = select(Workflow).where(Workflow.repo_id == repository.id)
+    if workflow_id.isdigit():
+        workflow_query = workflow_query.where(Workflow.id == int(workflow_id))
+    else:
+        workflow_query = workflow_query.where(Workflow.path == workflow_id)
+    workflow = (await db.execute(workflow_query)).scalar_one_or_none()
+
+    if workflow is None:
+        from app.services.workflow_service import sync_workflows_to_db
+
+        await sync_workflows_to_db(db, repository)
+        workflow = (await db.execute(workflow_query)).scalar_one_or_none()
+    if workflow is None:
+        raise HTTPException(status_code=404, detail="Workflow not found")
+
+    from app.services.workflow_service import (
+        create_workflow_run,
+        detect_workflows,
+        evaluate_trigger,
+        get_ref_sha,
+    )
+
+    workflow_yaml = next(
+        (item for item in await detect_workflows(repository.disk_path or "")
+         if item.get("_path") == workflow.path),
+        None,
+    )
+    if workflow_yaml is None or not evaluate_trigger(workflow_yaml, "workflow_dispatch", {}):
+        raise HTTPException(status_code=422, detail="Workflow is not dispatchable")
+
+    ref = str(body.get("ref") or repository.default_branch or "main")
+    ref_name = ref.removeprefix("refs/heads/")
+    head_sha = await get_ref_sha(repository.disk_path or "", ref_name)
+    if not head_sha:
+        raise HTTPException(status_code=422, detail=f"Unknown ref: {ref}")
+
+    payload = {
+        "ref": f"refs/heads/{ref_name}",
+        "after": head_sha,
+        "inputs": body.get("inputs") or {},
+        "repository": {"id": repository.id, "full_name": repository.full_name},
+        "sender": {"login": user.login, "id": user.id},
+    }
+    await create_workflow_run(
+        db, workflow, workflow_yaml, "workflow_dispatch", payload,
+        user, head_sha, ref_name,
+    )
+    await db.commit()
+    return Response(status_code=204)
 
 
 # --- Workflow runs ---
@@ -368,6 +486,8 @@ async def create_or_update_secret(
     if s is None:
         s = Secret(repo_id=repository.id, name=secret_name)
         db.add(s)
+    if "value" in body or "plaintext" in body:
+        s.value = str(body.get("value", body.get("plaintext", "")))
     await db.commit()
     return {"name": secret_name}
 

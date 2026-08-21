@@ -2,6 +2,7 @@
 
 import base64
 import hashlib
+from datetime import datetime, timezone
 from typing import Annotated, Optional
 
 from fastapi import Depends, HTTPException, Request
@@ -68,11 +69,22 @@ async def get_current_user(
     )
     pat = result.scalar_one_or_none()
     if pat is None:
-        return None
+        from app.models.apps import AppInstallationToken
+        installation_result = await db.execute(
+            select(AppInstallationToken).where(AppInstallationToken.token_hash == token_hash)
+        )
+        installation_token = installation_result.scalar_one_or_none()
+        if installation_token is None:
+            return None
+        expires_at = installation_token.expires_at
+        if expires_at.tzinfo is None:
+            expires_at = expires_at.replace(tzinfo=timezone.utc)
+        if expires_at < datetime.now(timezone.utc):
+            return None
+        request.state.installation_token = installation_token
+        return installation_token.installation.user
 
     # Update last_used_at
-    from datetime import datetime, timezone
-
     user_id = pat.user_id
     pat.last_used_at = datetime.now(timezone.utc)
     try:

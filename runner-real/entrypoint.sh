@@ -24,11 +24,23 @@ if [[ "$RUNNER_REPO_VALUE" != */* ]]; then
 fi
 
 echo "Requesting registration token for $RUNNER_REPO_VALUE from $API_BASE ..."
-REG_TOKEN="$(
-  curl -sk -X POST "$API_BASE/repos/$RUNNER_REPO_VALUE/actions/runners/registration-token" \
-    -H "Authorization: token $ADMIN_TOKEN" \
-    | python3 -c 'import json,sys; print(json.load(sys.stdin)["token"])'
-)"
+REG_TOKEN=""
+for delay in 1 2 4 8 16; do
+  response="$(
+    curl -skf -X POST "$API_BASE/repos/$RUNNER_REPO_VALUE/actions/runners/registration-token" \
+      -H "Authorization: token $ADMIN_TOKEN" || true
+  )"
+  REG_TOKEN="$(printf '%s' "$response" | python3 -c 'import json,sys; print(json.load(sys.stdin).get("token", ""))' 2>/dev/null || true)"
+  if [[ -n "$REG_TOKEN" ]]; then
+    break
+  fi
+  echo "Registration token endpoint not ready; retrying in ${delay}s ..." >&2
+  sleep "$delay"
+done
+if [[ -z "$REG_TOKEN" ]]; then
+  echo "Failed to obtain a runner registration token" >&2
+  exit 1
+fi
 
 cleanup() {
   ./config.sh remove --unattended --token "$REG_TOKEN" || true

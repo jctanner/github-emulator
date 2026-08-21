@@ -40,6 +40,8 @@
             <a class="UnderlineNav-item{% if request.url.path == '/admin/' %} selected{% endif %}" href="/admin/">Dashboard</a>
             <a class="UnderlineNav-item{% if '/admin/users' in request.url.path %} selected{% endif %}" href="/admin/users">Users</a>
             <a class="UnderlineNav-item{% if '/admin/tokens' in request.url.path %} selected{% endif %}" href="/admin/tokens">Tokens</a>
+            <a class="UnderlineNav-item{% if '/admin/apps' in request.url.path or '/admin/installations' in request.url.path %} selected{% endif %}" href="/admin/apps">Apps</a>
+            <a class="UnderlineNav-item{% if '/admin/auth' in request.url.path %} selected{% endif %}" href="/admin/auth">Auth</a>
             <a class="UnderlineNav-item{% if '/admin/repos' in request.url.path %} selected{% endif %}" href="/admin/repos">Repos</a>
             <a class="UnderlineNav-item{% if '/admin/orgs' in request.url.path %} selected{% endif %}" href="/admin/orgs">Orgs</a>
             <a class="UnderlineNav-item{% if '/admin/issues' in request.url.path %} selected{% endif %}" href="/admin/issues">Issues/PRs</a>

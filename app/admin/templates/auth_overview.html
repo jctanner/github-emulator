@@ -1,0 +1,41 @@
+{% extends "base.html" %}
+
+{% block title %}Authentication - GitHub Emulator Admin{% endblock %}
+
+{% block content %}
+<h2 class="f2 mb-1">Authentication overview</h2>
+<p class="color-fg-muted mb-3">Available authentication mechanisms in this emulator and their safe-to-inspect state.</p>
+
+<div class="Box p-3 mb-3">
+    <h3 class="f3">Personal access tokens</h3>
+    <p class="color-fg-muted">PAT values are shown only once at creation. This page shows safe prefixes and lifecycle metadata.</p>
+    <a href="/admin/tokens" class="btn btn-sm">Manage PATs</a>
+    {% if pats %}
+    <table class="admin-table mt-3">
+        <thead><tr><th>Owner</th><th>Name</th><th>Prefix</th><th>Scopes</th><th>Created</th><th>Last used</th><th>Expiry</th><th>Actions</th></tr></thead>
+        <tbody>{% for token in pats %}<tr>
+            <td>{{ token.owner }}</td><td>{{ token.name }}</td><td><code>{{ token.prefix }}</code></td>
+            <td>{{ token.scopes|join(', ') }}</td><td>{{ token.created_at }}</td><td>{{ token.last_used_at }}</td><td>{{ token.expiry_state }}</td>
+            <td><form method="post" action="/admin/tokens/{{ token.id }}/revoke" class="inline-delete"><button type="submit" class="btn btn-sm btn-danger">Revoke</button></form></td>
+        </tr>{% endfor %}</tbody>
+    </table>
+    {% endif %}
+</div>
+
+<div class="Box p-3 mb-3">
+    <h3 class="f3">GitHub App JWT</h3>
+    <p>JWT authentication as an App uses the App's private key. The API validates the JWT against the stored public key. This page shows metadata and key presence only.</p>
+    {% if apps %}<table class="admin-table"><thead><tr><th>App</th><th>App ID</th><th>Key state</th><th>Details</th></tr></thead><tbody>{% for app in apps %}<tr><td>{{ app.name }}</td><td><code>{{ app.id }}</code></td><td>{{ "Key present (value hidden)" if app.has_private_key else "No key" }}</td><td><a href="/admin/apps/{{ app.id }}">View App</a></td></tr>{% endfor %}</tbody></table>{% else %}<p class="color-fg-muted">No Apps registered.</p>{% endif %}
+</div>
+
+<div class="Box p-3 mb-3">
+    <h3 class="f3">Installation access tokens</h3>
+    <p>These are short-lived tokens for an App installation and selected repositories. A token is not valid after its expiry time.</p>
+    {% if installation_tokens %}<table class="admin-table"><thead><tr><th>App</th><th>Installation</th><th>Prefix</th><th>Created</th><th>Expiry</th><th>Repositories</th></tr></thead><tbody>{% for token in installation_tokens %}<tr><td><a href="/admin/apps/{{ token.app_id }}">{{ token.app_name }}</a></td><td><a href="/admin/installations/{{ token.installation_id }}">#{{ token.installation_id }}</a></td><td><code>{{ token.prefix }}</code></td><td>{{ token.created_at }}</td><td>{{ token.expiry_state }}</td><td>{{ token.repositories|join(', ') }}</td></tr>{% endfor %}</tbody></table>{% else %}<p class="color-fg-muted">No installation tokens minted.</p>{% endif %}
+</div>
+
+<div class="Box p-3">
+    <h3 class="f3">OAuth Apps</h3>
+    <p class="mb-0"><strong>Unsupported/deferred.</strong> This emulator does not expose an OAuth authorization or consent flow, so PATs and GitHub Apps must not be interpreted as OAuth support.</p>
+</div>
+{% endblock %}

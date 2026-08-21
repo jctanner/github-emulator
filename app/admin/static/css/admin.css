@@ -175,3 +175,16 @@ table.admin-detail td:first-child {
     padding: 3px 12px;
     font-size: 12px;
 }
+
+/* One-time secret result surfaces. The value is intentionally visible here
+   and is never passed to ordinary list/detail view models. */
+.secret-display {
+    max-height: 22rem;
+    overflow: auto;
+    white-space: pre-wrap;
+    word-break: break-word;
+    padding: 12px;
+    border: 1px solid #d0d7de;
+    border-radius: 6px;
+    background: #f6f8fa;
+}

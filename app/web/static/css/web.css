@@ -88,6 +88,62 @@ td.blob-code {
     white-space: nowrap;
 }
 
+.issue-detail-layout {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) 280px;
+    gap: 24px;
+    align-items: start;
+}
+.issue-detail-main {
+    min-width: 0;
+}
+.issue-detail-sidebar {
+    position: sticky;
+    top: 16px;
+}
+.issue-label-picker {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    max-height: 360px;
+    overflow-y: auto;
+}
+.issue-label-option {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    min-height: 28px;
+    cursor: pointer;
+}
+.issue-label-option .btn {
+    visibility: hidden;
+}
+.issue-label-option:hover .btn,
+.issue-label-option:focus-within .btn {
+    visibility: visible;
+}
+.issue-label-option input {
+    flex: 0 0 auto;
+    margin: 0;
+}
+.issue-label-color {
+    width: 48px;
+    height: 32px;
+    padding: 2px;
+}
+.issue-label-create summary {
+    cursor: pointer;
+}
+@media (max-width: 768px) {
+    .issue-detail-layout {
+        grid-template-columns: 1fr;
+    }
+    .issue-detail-sidebar {
+        position: static;
+        grid-row: 1;
+    }
+}
+
 /* ---- State badges ---- */
 .State {
     display: inline-flex;

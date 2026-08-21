@@ -27,6 +27,11 @@ class Settings(BaseSettings):
     # Hostname for Caddy TLS / gh CLI integration
     HOSTNAME: str = "ghemu.local"
 
+    # Resettable Actions OIDC issuer.  The key is generated in-process by the
+    # emulator; this is intentionally not a production identity provider.
+    OIDC_ISSUER: str = ""
+    ACTIONS_OIDC_REQUEST_TOKEN: str = "fullsend-action-request"
+
     # Server config
     HOST: str = "0.0.0.0"
     PORT: int = 8000

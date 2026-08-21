@@ -25,6 +25,10 @@ def _is_expired(value: datetime) -> bool:
     return value < datetime.now(timezone.utc)
 
 
+def _request_base(request: Request) -> str:
+    return settings.BASE_URL or f"{request.url.scheme}://{request.headers.get('host', request.url.netloc)}"
+
+
 @router.post("/_services/pipelines/{owner}/{repo}/_apis/pipelines/runs/register")
 async def pipelines_register_runner(
     owner: str, repo: str, request: Request, db: DbSession,
@@ -73,7 +77,7 @@ async def pipelines_register_runner(
     await db.commit()
     await db.refresh(runner)
 
-    base = settings.BASE_URL
+    base = _request_base(request)
     return {
         "id": runner.id,
         "name": runner.name,

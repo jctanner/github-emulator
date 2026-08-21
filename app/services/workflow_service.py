@@ -4,17 +4,54 @@ import asyncio
 import fnmatch
 import itertools
 import logging
+import re
 from datetime import datetime, timezone
 
 import yaml
 from sqlalchemy import select, func
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.models.actions import Workflow, WorkflowRun, WorkflowJob
+from app.config import settings
+from app.models.actions import Workflow, WorkflowRun, WorkflowJob, Secret, Variable
 from app.models.repository import Repository
 from app.models.user import User
 
 logger = logging.getLogger("github_emulator.workflows")
+
+_EXPRESSION_RE = re.compile(r"\$\{\{\s*([^}]+?)\s*\}\}")
+
+
+def _lookup_context(context: dict, expression: str) -> str:
+    value: object = context
+    for part in expression.strip().split("."):
+        if isinstance(value, dict):
+            value = value.get(part, "")
+        else:
+            return ""
+    if value is None:
+        return ""
+    if isinstance(value, (dict, list)):
+        import json
+        return json.dumps(value, separators=(",", ":"))
+    return str(value)
+
+
+def render_expressions(value: object, context: dict) -> object:
+    """Render the small expression subset needed by the M2 runner contract."""
+    if isinstance(value, str):
+        def replace(match):
+            expression = match.group(1).strip()
+            # Step outputs only exist after a prior step has run. Preserve the
+            # expression for the runner's runtime renderer.
+            if expression.startswith("steps."):
+                return match.group(0)
+            return _lookup_context(context, expression)
+        return _EXPRESSION_RE.sub(replace, value)
+    if isinstance(value, dict):
+        return {key: render_expressions(item, context) for key, item in value.items()}
+    if isinstance(value, list):
+        return [render_expressions(item, context) for item in value]
+    return value
 
 
 async def detect_workflows(repo_disk_path: str) -> list[dict]:
@@ -162,7 +199,7 @@ def _get_changed_files(payload: dict) -> list[str]:
 def expand_matrix(job_config: dict) -> list[dict]:
     """Expand strategy.matrix into individual job configurations."""
     strategy = job_config.get("strategy", {})
-    matrix = strategy.get("matrix", {})
+    matrix = dict(strategy.get("matrix", {}) or {})
     if not matrix:
         return [job_config]
 
@@ -230,6 +267,8 @@ def build_job_graph(workflow_yaml: dict) -> list[dict]:
             "needs": needs,
             "steps": steps,
             "env": config.get("env", {}),
+            "strategy": config.get("strategy", {}),
+            "permissions": config.get("permissions", {}),
             "if": config.get("if"),
             "timeout_minutes": config.get("timeout-minutes", 360),
         })
@@ -328,26 +367,88 @@ async def create_workflow_run(
     db.add(run)
     await db.flush()
 
+    variables = {
+        item.name: item.value
+        for item in (await db.execute(
+            select(Variable).where(Variable.repo_id == workflow.repo_id)
+        )).scalars().all()
+    }
+    secrets = {
+        item.name: item.value or ""
+        for item in (await db.execute(
+            select(Secret).where(Secret.repo_id == workflow.repo_id)
+        )).scalars().all()
+    }
+    expression_context = {
+        "inputs": payload.get("inputs", {}),
+        "vars": variables,
+        "secrets": secrets,
+        "github": {
+            "event_name": event,
+            "ref": payload.get("ref", f"refs/heads/{head_branch}"),
+            "repository": payload.get("repository", {}).get("full_name", ""),
+            "repository_owner": payload.get("repository", {}).get("full_name", "").split("/", 1)[0],
+            "run_id": run.id,
+            "run_number": run.run_number,
+            "sha": head_sha,
+            "server_url": settings.BASE_URL,
+        },
+    }
+
+    concurrency = workflow_yaml.get("concurrency")
+    cancel_in_progress = True
+    if isinstance(concurrency, dict):
+        cancel_in_progress = concurrency.get("cancel-in-progress", True) is not False
+        concurrency = concurrency.get("group")
+    if concurrency:
+        group = str(render_expressions(concurrency, expression_context))
+        run.concurrency_group = group
+        if cancel_in_progress:
+            active = (await db.execute(select(WorkflowRun).where(
+                WorkflowRun.workflow_id == workflow.id,
+                WorkflowRun.concurrency_group == group,
+                WorkflowRun.id != run.id,
+                WorkflowRun.status != "completed",
+            ))).scalars().all()
+            for previous in active:
+                previous.status = "completed"
+                previous.conclusion = "cancelled"
+                previous_jobs = (await db.execute(select(WorkflowJob).where(WorkflowJob.run_id == previous.id))).scalars().all()
+                for previous_job in previous_jobs:
+                    if previous_job.status in ("queued", "waiting", "in_progress"):
+                        previous_job.status = "completed"
+                        previous_job.conclusion = "cancelled"
+                        previous_job.completed_at = datetime.now(timezone.utc)
+
     job_list = build_job_graph(workflow_yaml)
 
     for job_def in job_list:
         expanded = expand_matrix(job_def)
         for job_config in expanded:
-            display_name = job_config.get("_display_name", job_config.get("name", job_config["key"]))
+            job_expression_context = {**expression_context, "matrix": job_config.get("_matrix", {})}
+            display_name = render_expressions(job_config.get("_display_name", job_config.get("name", job_config["key"])), job_expression_context)
             needs = job_config.get("needs", [])
             initial_status = "queued" if not needs else "waiting"
 
             steps_data = []
             for i, step in enumerate(job_config.get("steps", [])):
+                step_env = {
+                    **(job_config.get("env") or {}),
+                    **(step.get("env") or {}),
+                }
                 step_data = {
                     "number": i + 1,
                     "name": step.get("name", f"Step {i + 1}"),
                     "status": "queued",
                     "conclusion": None,
                 }
-                for key in ("run", "shell", "env", "working-directory", "uses", "with"):
+                for key in ("run", "shell", "working-directory", "uses", "with"):
                     if key in step:
-                        step_data[key] = step[key]
+                        step_data[key] = render_expressions(step[key], job_expression_context)
+                if "id" in step:
+                    step_data["id"] = step["id"]
+                if step_env:
+                    step_data["env"] = render_expressions(step_env, job_expression_context)
                 steps_data.append(step_data)
 
             job = WorkflowJob(
@@ -359,6 +460,7 @@ async def create_workflow_run(
                 labels=job_config.get("runs_on", ["ubuntu-latest"]),
                 run_attempt=1,
                 needs=needs,
+                permissions=job_config.get("permissions") or {},
             )
             db.add(job)
 
@@ -426,6 +528,18 @@ async def process_push_event(
 async def _get_head_sha(repo_disk_path: str) -> str:
     proc = await asyncio.create_subprocess_exec(
         "git", "rev-parse", "HEAD",
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+        env={"GIT_DIR": repo_disk_path},
+    )
+    stdout, _ = await proc.communicate()
+    return stdout.decode().strip() if proc.returncode == 0 else ""
+
+
+async def get_ref_sha(repo_disk_path: str, ref: str) -> str:
+    """Resolve a branch/ref in a bare repository to a commit SHA."""
+    proc = await asyncio.create_subprocess_exec(
+        "git", "rev-parse", f"{ref}^{{commit}}",
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
         env={"GIT_DIR": repo_disk_path},

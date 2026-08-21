@@ -3,12 +3,13 @@
 import os
 from datetime import datetime, timezone
 from typing import Optional
+from urllib.parse import quote
 
 from fastapi import APIRouter, Depends, Form, Query, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
 from jose import JWSError, jws
-from sqlalchemy import select, func, or_
+from sqlalchemy import delete as sa_delete, select, func, or_
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
@@ -29,7 +30,8 @@ from app.git.bare_repo import (
 )
 from app.models.comment import IssueComment
 from app.models.actions import Runner, Workflow, WorkflowJob, WorkflowRun
-from app.models.issue import Issue
+from app.models.issue import Issue, IssueLabel
+from app.models.label import Label
 from app.models.organization import Organization
 from app.models.pull_request import PullRequest
 from app.models.repository import Repository
@@ -46,6 +48,14 @@ templates = Jinja2Templates(directory=_TEMPLATES_DIR)
 router = APIRouter(prefix="/ui", tags=["web"])
 
 _URL_PREFIX = "/ui"
+
+
+def _issue_url(owner: str, repo_name: str, number: int, error: str | None = None) -> str:
+    """Build an issue-page URL, optionally carrying a label-management error."""
+    url = f"{_URL_PREFIX}/{owner}/{repo_name}/issues/{number}"
+    if error:
+        url += f"?label_error={quote(error)}"
+    return url
 
 
 # ---------------------------------------------------------------------------
@@ -593,15 +603,164 @@ async def issue_detail(
     for c in comments:
         c.user_login = c.user.login if c.user else "unknown"
 
+    labels_result = await db.execute(
+        select(Label).where(Label.repo_id == repo.id).order_by(Label.name)
+    )
+    repo_labels = list(labels_result.scalars().all())
+    issue_label_names = {label.name for label in issue.labels}
+    label_error = request.query_params.get("label_error")
+
     return templates.TemplateResponse(
         request=request,
         name="issue_detail.html",
         context=_ctx(
             request, owner=owner, repo=repo, repo_name=repo.name,
             issue=issue, comments=comments,
+            repo_labels=repo_labels, issue_label_names=issue_label_names,
+            label_error=label_error,
             current_user=current_user,
         ),
     )
+
+
+@router.post("/{owner}/{repo_name}/issues/{number:int}")
+async def update_issue_labels(
+    request: Request,
+    owner: str,
+    repo_name: str,
+    number: int,
+    db: AsyncSession = Depends(get_db),
+):
+    """Replace an issue's labels from the issue page sidebar."""
+    current_user = await _get_current_user(request, db)
+    if not current_user:
+        return RedirectResponse(url="/ui/login", status_code=302)
+
+    repo = await _get_repo(db, owner, repo_name)
+    if repo is None:
+        return HTMLResponse(content="<h1>404 - Not Found</h1>", status_code=404)
+
+    result = await db.execute(
+        select(Issue).where(Issue.repo_id == repo.id, Issue.number == number)
+    )
+    issue = result.scalar_one_or_none()
+    if issue is None:
+        return HTMLResponse(content="<h1>404 - Issue Not Found</h1>", status_code=404)
+
+    form = await request.form()
+    selected_names = {
+        str(value).strip()
+        for value in form.getlist("labels")
+        if str(value).strip()
+    }
+
+    selected_labels = []
+    if selected_names:
+        labels_result = await db.execute(
+            select(Label).where(
+                Label.repo_id == repo.id,
+                Label.name.in_(selected_names),
+            )
+        )
+        selected_labels = list(labels_result.scalars().all())
+
+    await db.execute(sa_delete(IssueLabel).where(IssueLabel.issue_id == issue.id))
+    db.add_all(
+        IssueLabel(issue_id=issue.id, label_id=label.id)
+        for label in selected_labels
+    )
+    await db.commit()
+
+    return RedirectResponse(
+        url=_issue_url(owner, repo_name, number), status_code=302
+    )
+
+
+@router.post("/{owner}/{repo_name}/issues/{number:int}/labels/create")
+async def create_issue_page_label(
+    request: Request,
+    owner: str,
+    repo_name: str,
+    number: int,
+    db: AsyncSession = Depends(get_db),
+):
+    """Create a repository label from the issue page label manager."""
+    current_user = await _get_current_user(request, db)
+    if not current_user:
+        return RedirectResponse(url="/ui/login", status_code=302)
+
+    repo = await _get_repo(db, owner, repo_name)
+    if repo is None:
+        return HTMLResponse(content="<h1>404 - Not Found</h1>", status_code=404)
+
+    form = await request.form()
+    name = str(form.get("name", "")).strip()
+    color = str(form.get("color", "ededed")).strip().lstrip("#").lower()
+    description = str(form.get("description", "")).strip() or None
+
+    if not name:
+        return RedirectResponse(
+            url=_issue_url(owner, repo_name, number, "Label name is required."),
+            status_code=302,
+        )
+    if len(color) != 6 or any(character not in "0123456789abcdef" for character in color):
+        return RedirectResponse(
+            url=_issue_url(owner, repo_name, number, "Label color must be a six-digit hex value."),
+            status_code=302,
+        )
+
+    existing = await db.execute(
+        select(Label).where(Label.repo_id == repo.id, Label.name == name)
+    )
+    if existing.scalar_one_or_none() is not None:
+        return RedirectResponse(
+            url=_issue_url(owner, repo_name, number, "A label with that name already exists."),
+            status_code=302,
+        )
+
+    db.add(Label(repo_id=repo.id, name=name, color=color, description=description))
+    await db.commit()
+    return RedirectResponse(url=_issue_url(owner, repo_name, number), status_code=302)
+
+
+@router.post("/{owner}/{repo_name}/issues/{number:int}/labels/delete")
+async def delete_issue_page_label(
+    request: Request,
+    owner: str,
+    repo_name: str,
+    number: int,
+    db: AsyncSession = Depends(get_db),
+):
+    """Delete a repository label and remove it from any issues."""
+    current_user = await _get_current_user(request, db)
+    if not current_user:
+        return RedirectResponse(url="/ui/login", status_code=302)
+
+    repo = await _get_repo(db, owner, repo_name)
+    if repo is None:
+        return HTMLResponse(content="<h1>404 - Not Found</h1>", status_code=404)
+
+    form = await request.form()
+    try:
+        label_id = int(str(form.get("label_id", "")))
+    except ValueError:
+        return RedirectResponse(
+            url=_issue_url(owner, repo_name, number, "Invalid label."), status_code=302
+        )
+
+    result = await db.execute(
+        select(Label).where(Label.id == label_id, Label.repo_id == repo.id)
+    )
+    label = result.scalar_one_or_none()
+    if label is None:
+        return RedirectResponse(
+            url=_issue_url(owner, repo_name, number, "Label not found."), status_code=302
+        )
+
+    await db.execute(sa_delete(IssueLabel).where(IssueLabel.label_id == label.id))
+    await db.delete(label)
+    await db.commit()
+    return RedirectResponse(url=_issue_url(owner, repo_name, number), status_code=302)
 
 
 # ---------------------------------------------------------------------------

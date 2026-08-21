@@ -34,6 +34,8 @@
     </div>
 </div>
 
+<div class="issue-detail-layout">
+<main class="issue-detail-main">
 <hr class="mb-4">
 
 {# ---- Issue body as first timeline item ---- #}
@@ -79,4 +81,84 @@
     </div>
 </div>
 {% endfor %}
+</main>
+
+<aside class="issue-detail-sidebar">
+    <div class="Box color-shadow-small">
+        <div class="Box-header">
+            <h2 class="f4 mb-0">Labels</h2>
+        </div>
+        <div class="Box-body">
+            {% if label_error %}
+            <div class="flash flash-error mb-3" role="alert">{{ label_error }}</div>
+            {% endif %}
+
+            {% for label in repo_labels %}
+            {% if current_user %}
+            <form id="delete-label-{{ label.id }}" method="post"
+                  action="{{ url_prefix }}/{{ owner }}/{{ repo.name }}/issues/{{ issue.number }}/labels/delete">
+                <input type="hidden" name="label_id" value="{{ label.id }}">
+            </form>
+            {% endif %}
+            {% endfor %}
+
+            <form method="post" action="{{ url_prefix }}/{{ owner }}/{{ repo.name }}/issues/{{ issue.number }}">
+                {% if repo_labels %}
+                <div class="issue-label-picker">
+                    {% for label in repo_labels %}
+                    <label class="issue-label-option">
+                        <input type="checkbox" name="labels" value="{{ label.name }}"
+                               {% if label.name in issue_label_names %}checked{% endif %}
+                               {% if not current_user %}disabled{% endif %}>
+                        <span class="IssueLabel"
+                              style="background-color:#{{ label.color or 'ededed' }};color:{% if label.color and label.color in ['000000','0e1116','1a1e22'] %}#fff{% else %}#1f2328{% endif %};">
+                            {{ label.name }}
+                        </span>
+                        {% if current_user %}
+                        <button type="submit" form="delete-label-{{ label.id }}"
+                                class="btn btn-sm btn-danger ml-auto"
+                                onclick="return confirm('Delete the {{ label.name }} label from this repository?');">
+                            Delete
+                        </button>
+                        {% endif %}
+                    </label>
+                    {% endfor %}
+                </div>
+                {% else %}
+                <p class="color-fg-muted f6 mb-0">No labels have been created for this repository.</p>
+                {% endif %}
+
+                {% if current_user %}
+                    {% if repo_labels %}
+                    <button type="submit" class="btn btn-primary btn-sm mt-3">Apply labels</button>
+                    {% endif %}
+                {% else %}
+                <p class="color-fg-muted f6 mt-3 mb-0">
+                    <a href="{{ url_prefix }}/login">Sign in</a> to edit labels.
+                </p>
+                {% endif %}
+            </form>
+
+            {% if current_user %}
+            <details class="issue-label-create mt-3" {% if not repo_labels or label_error %}open{% endif %}>
+                <summary class="text-bold">Add new label</summary>
+                <form method="post" class="mt-3"
+                      action="{{ url_prefix }}/{{ owner }}/{{ repo.name }}/issues/{{ issue.number }}/labels/create">
+                    <label class="d-block mb-2" for="new-label-name">Name</label>
+                    <input id="new-label-name" name="name" class="form-control input-sm mb-2"
+                           type="text" placeholder="e.g. bug" maxlength="100" required>
+                    <label class="d-block mb-2" for="new-label-color">Color</label>
+                    <input id="new-label-color" name="color" class="form-control input-sm mb-2 issue-label-color"
+                           type="color" value="#ededed" title="Label color">
+                    <label class="d-block mb-2" for="new-label-description">Description <span class="color-fg-muted">(optional)</span></label>
+                    <input id="new-label-description" name="description" class="form-control input-sm"
+                           type="text" maxlength="200" placeholder="What is this label for?">
+                    <button type="submit" class="btn btn-primary btn-sm mt-3">Create label</button>
+                </form>
+            </details>
+            {% endif %}
+        </div>
+    </div>
+</aside>
+</div>
 {% endblock %}

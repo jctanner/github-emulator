@@ -1,0 +1,81 @@
+{% extends "base.html" %}
+
+{% block title %}Installation #{{ installation.id }} - GitHub Emulator Admin{% endblock %}
+
+{% block content %}
+<div class="d-flex flex-items-center flex-justify-between mb-3">
+    <div>
+        <h2 class="f2 mb-1">Installation #{{ installation.id }}</h2>
+        <p class="color-fg-muted mb-0"><a href="/admin/apps/{{ installation.app_id }}">{{ installation.app_name }}</a> · {{ installation.account_login }}</p>
+    </div>
+    <a href="/admin/apps/{{ installation.app_id }}" class="btn">Back to App</a>
+</div>
+
+<div class="Box p-3 mb-3">
+    <table class="admin-table admin-detail">
+        <tbody>
+            <tr><td>Installation ID</td><td>{{ installation.id }}</td></tr>
+            <tr><td>App</td><td><a href="/admin/apps/{{ installation.app_id }}">{{ installation.app_name }}</a></td></tr>
+            <tr><td>Account</td><td>{{ installation.account_login }}</td></tr>
+            <tr><td>Account type</td><td>{{ installation.account_type }}</td></tr>
+            <tr><td>Repository selection</td><td>{{ installation.repository_selection }}</td></tr>
+            <tr><td>Selected repositories</td><td>{{ installation.repositories|join(', ') }}</td></tr>
+            <tr><td>Permissions</td><td>{% for key, value in installation.permissions.items() %}<code class="mr-2">{{ key }}:{{ value }}</code>{% else %}None{% endfor %}</td></tr>
+            <tr><td>Token count</td><td>{{ installation.token_count }}</td></tr>
+        </tbody>
+    </table>
+</div>
+
+{% if created_installation_token %}
+<div class="Box p-4 mb-3">
+    <h3 class="f3 mb-2">Installation token minted</h3>
+    <p><strong>Copy this token now.</strong> It will not be shown again. It expires after the displayed expiry time.</p>
+    <p class="color-fg-muted">Emulator-only shortcut for testing the GitHub REST installation-token flow.</p>
+    <pre id="created-installation-token" class="secret-display">{{ created_installation_token }}</pre>
+    <button type="button" class="btn btn-primary" onclick="copySecret('created-installation-token', this)">Copy installation token</button>
+</div>
+<script>
+function copySecret(id, button) {
+    navigator.clipboard.writeText(document.getElementById(id).textContent).then(() => {
+        const old = button.textContent; button.textContent = 'Copied';
+        setTimeout(() => { button.textContent = old; }, 1500);
+    });
+}
+</script>
+{% endif %}
+
+<div class="Box p-3 mb-3">
+    <h3 class="f3 mb-1">Mint test installation token</h3>
+    <p class="color-fg-muted">Choose a repository subset. The raw token is displayed only in the immediate result page.</p>
+    <form method="post" action="/admin/installations/{{ installation.id }}/tokens/create" class="admin-form">
+        <fieldset>
+            <legend>Repositories</legend>
+            {% for repo in installation.repositories %}
+            <label><input type="checkbox" name="repositories" value="{{ repo }}" checked> {{ repo }}</label>
+            {% endfor %}
+        </fieldset>
+        <button type="submit" class="btn btn-primary">Mint test token</button>
+    </form>
+</div>
+
+<div class="Box p-3">
+    <h3 class="f3 mb-2">Token metadata</h3>
+    {% if installation.tokens %}
+    <table class="admin-table">
+        <thead><tr><th>Prefix</th><th>Created</th><th>Expiry</th><th>Repositories</th><th>Permissions</th></tr></thead>
+        <tbody>
+        {% for token in installation.tokens %}
+        <tr>
+            <td><code>{{ token.prefix }}</code></td>
+            <td>{{ token.created_at }}</td>
+            <td>{{ token.expiry_state }}</td>
+            <td>{{ token.repositories|join(', ') }}</td>
+            <td>{% for key, value in token.permissions.items() %}<code class="mr-2">{{ key }}:{{ value }}</code>{% else %}None{% endfor %}</td>
+        </tr>
+        {% endfor %}
+        </tbody>
+    </table>
+    <p class="color-fg-muted mb-0">Metadata does not make an expired token valid.</p>
+    {% else %}<p class="color-fg-muted mb-0">No tokens minted for this installation.</p>{% endif %}
+</div>
+{% endblock %}

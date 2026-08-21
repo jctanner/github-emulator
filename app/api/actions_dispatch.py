@@ -193,7 +193,8 @@ async def poll_for_jobs(
     """Long-poll for available jobs matching runner labels."""
     runner = await _get_runner_from_token(request, db)
     repository = await get_repo_or_404(owner, repo, db)
-    runner_labels = set(labels.split(","))
+    repository_id = repository.id
+    runner_labels = {label.strip().lower() for label in labels.split(",") if label.strip()}
 
     deadline = asyncio.get_event_loop().time() + timeout
     while asyncio.get_event_loop().time() < deadline:
@@ -201,17 +202,20 @@ async def poll_for_jobs(
             select(WorkflowJob)
             .join(WorkflowRun, WorkflowJob.run_id == WorkflowRun.id)
             .where(
-                WorkflowRun.repo_id == repository.id,
+                WorkflowRun.repo_id == repository_id,
                 WorkflowJob.status == "queued",
             )
             .order_by(WorkflowJob.created_at)
-            .limit(10)
         )
         jobs = result.scalars().all()
 
         for job in jobs:
-            job_labels = set(job.labels or ["self-hosted"])
-            if job_labels & runner_labels:
+            job_labels = {
+                str(label).strip().lower()
+                for label in (job.labels or ["self-hosted"])
+                if str(label).strip()
+            }
+            if job_labels.issubset(runner_labels):
                 job.status = "in_progress"
                 job.runner_id = runner.id
                 job.runner_name = runner.name
@@ -237,10 +241,17 @@ async def poll_for_jobs(
                     "labels": job.labels,
                     "workflow_name": job.workflow_name,
                     "env": {},
+                    "event": run.event if run else "workflow_dispatch",
+                    "event_payload": run.trigger_payload if run else {},
+                    "head_sha": run.head_sha if run else "",
+                    "head_branch": run.head_branch if run else "main",
+                    "run_number": run.run_number if run else job.run_id,
                 }
 
         await asyncio.sleep(2)
-        await db.expire_all()
+        # AsyncSession.expire_all is synchronous; awaiting it raises a
+        # TypeError whenever the runner has no queued job during long-polling.
+        db.expire_all()
 
     return Response(status_code=204)
 

@@ -187,6 +187,8 @@ def create_app() -> FastAPI:
     from app.api.user_keys import router as user_keys_router
     from app.api.deploy_keys import router as deploy_keys_router
     from app.api.review_comments import router as review_comments_router
+    from app.api.apps import router as apps_router
+    from app.api.oidc import router as oidc_router
 
     # -- REST API routers (under /api/v3/ prefix) ----------------------------
     api_routers = [
@@ -202,12 +204,14 @@ def create_app() -> FastAPI:
         markdown_router, emojis_router, gitignore_router,
         licenses_router, user_keys_router, deploy_keys_router,
         review_comments_router,
+        apps_router,
     ]
     for router in api_routers:
         app.include_router(router, prefix="/api/v3")
 
     # Root-level API endpoints (discovery doc, meta, rate_limit)
     app.include_router(root_router)
+    app.include_router(oidc_router)
 
     # OAuth routes stay at root (web-facing, not API paths)
     app.include_router(oauth_router)

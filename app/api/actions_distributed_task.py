@@ -101,12 +101,15 @@ def _labels_from_body(body: dict) -> list[str]:
 
 
 def _request_base(request: Request) -> str:
-    return f"{request.url.scheme}://{request.headers.get('host', request.url.netloc)}"
+    # The k3s proxy may replace Host with the internal service name. The
+    # configured base URL is the externally reachable emulator URL and is
+    # therefore the stable value to hand to runner clients.
+    return settings.BASE_URL or f"{request.url.scheme}://{request.headers.get('host', request.url.netloc)}"
 
 
-def _runner_reachable_base_url() -> str:
+def _runner_reachable_base_url(base_url: str | None = None) -> str:
     """URL embedded in job messages, consumed from inside the runner container."""
-    parsed = urlsplit(settings.BASE_URL)
+    parsed = urlsplit(base_url or settings.BASE_URL)
     if parsed.hostname == "ghemu.local" and parsed.port == 8000:
         netloc = parsed.hostname
         if parsed.username or parsed.password:
@@ -633,11 +636,12 @@ def _job_request_message(
     job: WorkflowJob,
     run: WorkflowRun | None,
     repo: Repository | None = None,
+    base_url: str | None = None,
 ) -> dict:
     timeline_id = _workflow_guid("timeline", job.id)
     job_guid = _workflow_guid("job", job.id)
     plan_guid = _workflow_guid("run", job.run_id)
-    runner_base_url = _runner_reachable_base_url()
+    runner_base_url = _runner_reachable_base_url(base_url)
     access_token = _job_access_token(job)
     repo_full_name = repo.full_name if repo else "unknown/unknown"
     repo_owner = repo_full_name.split("/", 1)[0]
@@ -789,7 +793,11 @@ def _job_request_response(job: WorkflowJob, runner: Runner, result: str | None =
     return response
 
 
-async def _claim_next_job(runner: Runner, db) -> dict | Response:
+async def _claim_next_job(
+    runner: Runner,
+    db,
+    base_url: str | None = None,
+) -> dict | Response:
     job_result = await db.execute(
         select(WorkflowJob)
         .where(
@@ -797,9 +805,19 @@ async def _claim_next_job(runner: Runner, db) -> dict | Response:
             WorkflowJob.runner_id.is_(None),
         )
         .order_by(WorkflowJob.created_at)
-        .limit(1)
     )
-    job = job_result.scalar_one_or_none()
+    runner_labels = {str(label).lower() for label in (runner.labels or [])}
+    job = next(
+        (
+            candidate
+            for candidate in job_result.scalars().all()
+            if {
+                str(label).lower()
+                for label in (candidate.labels or ["self-hosted"])
+            }.issubset(runner_labels)
+        ),
+        None,
+    )
     if job is None:
         return Response(status_code=204)
 
@@ -824,7 +842,7 @@ async def _claim_next_job(runner: Runner, db) -> dict | Response:
         repo_result = await db.execute(select(Repository).where(Repository.id == run.repo_id))
         repo = repo_result.scalar_one_or_none()
 
-    return _job_request_message(job, run, repo)
+    return _job_request_message(job, run, repo, base_url)
 
 
 async def _update_timeline_for_job(job: WorkflowJob, body: dict, db) -> None:
@@ -954,7 +972,7 @@ async def dt_connect(request: Request, db: DbSession):
     runner.last_heartbeat = datetime.now(timezone.utc)
     await db.commit()
 
-    base = settings.BASE_URL
+    base = _request_base(request)
     return {
         "sessionId": session_id,
         "ownerName": "github-emulator",
@@ -986,7 +1004,7 @@ async def dt_get_messages(
 
     deadline = asyncio.get_event_loop().time() + 30
     while asyncio.get_event_loop().time() < deadline:
-        message = await _claim_next_job(runner, db)
+        message = await _claim_next_job(runner, db, _request_base(request))
         if not isinstance(message, Response):
             return message
 

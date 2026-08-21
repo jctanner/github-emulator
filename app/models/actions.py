@@ -91,6 +91,7 @@ class WorkflowRun(Base):
     run_attempt: Mapped[int] = mapped_column(Integer, default=1)
     actor_id: Mapped[int] = mapped_column(Integer, ForeignKey("users.id"), nullable=False)
     trigger_payload: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    concurrency_group: Mapped[str | None] = mapped_column(String, nullable=True, index=True)
 
     created_at: Mapped[datetime] = mapped_column(
         DateTime, server_default=func.now()
@@ -124,6 +125,7 @@ class WorkflowJob(Base):
     labels: Mapped[list | None] = mapped_column(JSON, nullable=True)
     run_attempt: Mapped[int] = mapped_column(Integer, default=1)
     needs: Mapped[list | None] = mapped_column(JSON, nullable=True)
+    permissions: Mapped[dict | None] = mapped_column(JSON, nullable=True)
 
     created_at: Mapped[datetime] = mapped_column(
         DateTime, server_default=func.now()
@@ -142,6 +144,10 @@ class Secret(Base):
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     repo_id: Mapped[int] = mapped_column(Integer, ForeignKey("repositories.id"), nullable=False)
     name: Mapped[str] = mapped_column(String, nullable=False)
+    # Development-emulator value. Production GitHub stores an encrypted value;
+    # this local implementation accepts plaintext only through its explicitly
+    # local seed path and never returns it from the API.
+    value: Mapped[str | None] = mapped_column(Text, nullable=True)
 
     created_at: Mapped[datetime] = mapped_column(
         DateTime, server_default=func.now()
