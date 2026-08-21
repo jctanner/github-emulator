@@ -716,6 +716,7 @@ async def issue_detail(
         return HTMLResponse(content="<h1>404 - Issue Not Found</h1>", status_code=404)
 
     issue.user_login = issue.user.login if issue.user else "unknown"
+    issue.body_html = render_markdown(issue.body)
 
     result = await db.execute(
         select(IssueComment).where(
@@ -725,6 +726,7 @@ async def issue_detail(
     comments = list(result.scalars().all())
     for c in comments:
         c.user_login = c.user.login if c.user else "unknown"
+        c.body_html = render_markdown(c.body)
 
     labels_result = await db.execute(
         select(Label).where(Label.repo_id == repo.id).order_by(Label.name)

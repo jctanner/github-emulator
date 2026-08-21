@@ -167,6 +167,8 @@ async def test_issue_web_flow_creates_closes_and_reopens_issue(
     page = await client.get(f"/ui/{owner}/{repo_name}/issues/1")
     assert page.status_code == 200
     assert "New issue" in page.text
+    assert "opened this issue on" in page.text
+    assert "IssueDescription" in page.text
     assert "Add a comment" in page.text
     assert "Close issue" in page.text
     assert page.text.index("New issue") < page.text.index("Add a comment")
@@ -180,6 +182,8 @@ async def test_issue_web_flow_creates_closes_and_reopens_issue(
     assert comment_response.status_code == 302
     page = await client.get(f"/ui/{owner}/{repo_name}/issues/1")
     assert "A web comment" in page.text
+    assert "IssueComment" in page.text
+    assert 'class="TimelineItem-avatar"' not in page.text
 
     close_response = await client.post(
         f"/ui/{owner}/{repo_name}/issues/1/state",

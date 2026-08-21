@@ -103,6 +103,15 @@ td.blob-code {
     justify-content: space-between;
     gap: 16px;
 }
+.IssueDescription .Box-header {
+    background-color: #ddf4ff;
+}
+.IssueDescription {
+    margin: 16px 0 24px;
+}
+.IssueComment {
+    margin: 16px 0;
+}
 .issue-comment-composer {
     margin: 32px 0 16px;
 }

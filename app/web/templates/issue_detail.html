@@ -47,43 +47,33 @@
 
 {# ---- Issue body as first timeline item ---- #}
 {% if issue.body %}
-<div class="TimelineItem">
-    <div class="TimelineItem-avatar">
-        <span class="avatar-placeholder avatar-placeholder--medium">{{ (issue.user_login or 'U')[0] }}</span>
+<div class="IssueDescription Box color-shadow-small">
+    <div class="Box-header d-flex flex-items-center">
+        <span class="avatar-placeholder avatar-placeholder--small mr-2">{{ (issue.user_login or 'U')[0] }}</span>
+        <strong>{{ issue.user_login or 'unknown' }}</strong>
+        {% if issue.created_at %}
+        <span class="color-fg-muted ml-1">opened this issue on {{ issue.created_at.strftime('%b %d, %Y') }}</span>
+        {% endif %}
     </div>
-    <div class="TimelineItem-body">
-        <div class="Box color-shadow-small">
-            <div class="Box-header d-flex flex-items-center">
-                <strong>{{ issue.user_login or 'unknown' }}</strong>
-                {% if issue.created_at %}
-                <span class="color-fg-muted ml-1">commented on {{ issue.created_at.strftime('%b %d, %Y') }}</span>
-                {% endif %}
-            </div>
-            <div class="Box-body">
-                <div class="comment-body">{{ issue.body }}</div>
-            </div>
-        </div>
+    <div class="Box-body">
+        <div class="comment-body markdown-body">{{ issue.body_html|safe }}</div>
     </div>
 </div>
 {% endif %}
 
 {# ---- Comments ---- #}
 {% for comment in comments %}
-<div class="TimelineItem">
-    <div class="TimelineItem-avatar">
-        <span class="avatar-placeholder avatar-placeholder--medium">{{ (comment.user_login or 'U')[0] }}</span>
-    </div>
-    <div class="TimelineItem-body">
-        <div class="Box color-shadow-small">
-            <div class="Box-header d-flex flex-items-center">
-                <strong>{{ comment.user_login or 'unknown' }}</strong>
-                {% if comment.created_at %}
-                <span class="color-fg-muted ml-1">commented on {{ comment.created_at.strftime('%b %d, %Y') }}</span>
-                {% endif %}
-            </div>
-            <div class="Box-body">
-                <div class="comment-body">{{ comment.body }}</div>
-            </div>
+<div class="IssueComment">
+    <div class="Box color-shadow-small">
+        <div class="Box-header d-flex flex-items-center">
+            <span class="avatar-placeholder avatar-placeholder--small mr-2">{{ (comment.user_login or 'U')[0] }}</span>
+            <strong>{{ comment.user_login or 'unknown' }}</strong>
+            {% if comment.created_at %}
+            <span class="color-fg-muted ml-1">commented on {{ comment.created_at.strftime('%b %d, %Y') }}</span>
+            {% endif %}
+        </div>
+        <div class="Box-body">
+            <div class="comment-body markdown-body">{{ comment.body_html|safe }}</div>
         </div>
     </div>
 </div>
