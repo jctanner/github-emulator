@@ -14,10 +14,17 @@
 {% block content %}
 {# ---- Title ---- #}
 <div class="gh-header mb-3">
-    <h1 class="f1-light mb-2">
-        {{ issue.title }}
-        <span class="color-fg-muted f1-light">#{{ issue.number }}</span>
-    </h1>
+    <div class="issue-title-bar">
+        <h1 class="f1-light mb-2">
+            {{ issue.title }}
+            <span class="color-fg-muted f1-light">#{{ issue.number }}</span>
+        </h1>
+        {% if current_user %}
+        <a href="{{ url_prefix }}/{{ owner }}/{{ repo.name }}/issues/new" class="btn btn-primary btn-sm">
+            New issue
+        </a>
+        {% endif %}
+    </div>
     <div class="d-flex flex-items-center flex-wrap" style="gap:8px;">
         {% if issue.state == "open" %}
         <span class="State State--open">{{ issue_opened(16) }} Open</span>
@@ -81,84 +88,125 @@
     </div>
 </div>
 {% endfor %}
+
+{% if current_user %}
+<section class="issue-comment-composer">
+    <h2 class="f4 mb-2">Add a comment</h2>
+    <form id="issue-comment-form" method="post"
+          action="{{ url_prefix }}/{{ owner }}/{{ repo.name }}/issues/{{ issue.number }}/comments">
+        <div class="issue-comment-editor">
+            <div class="issue-comment-tabs">
+                <span class="issue-comment-tab selected">Write</span>
+                <span class="issue-comment-tab">Preview</span>
+            </div>
+            <textarea name="body" rows="6" class="form-control input-block"
+                      placeholder="Use Markdown to format your comment"></textarea>
+        </div>
+    </form>
+    <div class="issue-comment-actions">
+        <span class="color-fg-muted f6">Markdown is supported</span>
+        <div class="d-flex flex-items-center" style="gap:8px;">
+            <form method="post" action="{{ url_prefix }}/{{ owner }}/{{ repo.name }}/issues/{{ issue.number }}/state">
+                <input type="hidden" name="state" value="{{ 'closed' if issue.state == 'open' else 'open' }}">
+                {% if issue.state == "open" %}
+                <button type="submit" class="btn btn-outline btn-sm">Close issue</button>
+                {% else %}
+                <button type="submit" class="btn btn-outline btn-sm">Reopen issue</button>
+                {% endif %}
+            </form>
+            <button type="submit" form="issue-comment-form" class="btn btn-primary btn-sm">Comment</button>
+        </div>
+    </div>
+</section>
+{% endif %}
 </main>
 
 <aside class="issue-detail-sidebar">
-    <div class="Box color-shadow-small">
-        <div class="Box-header">
-            <h2 class="f4 mb-0">Labels</h2>
-        </div>
-        <div class="Box-body">
-            {% if label_error %}
-            <div class="flash flash-error mb-3" role="alert">{{ label_error }}</div>
-            {% endif %}
-
-            {% for label in repo_labels %}
+    <section class="issue-sidebar-section">
+        <div class="issue-sidebar-heading">
+            <span>Labels</span>
             {% if current_user %}
-            <form id="delete-label-{{ label.id }}" method="post"
-                  action="{{ url_prefix }}/{{ owner }}/{{ repo.name }}/issues/{{ issue.number }}/labels/delete">
-                <input type="hidden" name="label_id" value="{{ label.id }}">
-            </form>
-            {% endif %}
-            {% endfor %}
-
-            <form method="post" action="{{ url_prefix }}/{{ owner }}/{{ repo.name }}/issues/{{ issue.number }}">
-                {% if repo_labels %}
-                <div class="issue-label-picker">
-                    {% for label in repo_labels %}
-                    <label class="issue-label-option">
-                        <input type="checkbox" name="labels" value="{{ label.name }}"
-                               {% if label.name in issue_label_names %}checked{% endif %}
-                               {% if not current_user %}disabled{% endif %}>
-                        <span class="IssueLabel"
-                              style="background-color:#{{ label.color or 'ededed' }};color:{% if label.color and label.color in ['000000','0e1116','1a1e22'] %}#fff{% else %}#1f2328{% endif %};">
-                            {{ label.name }}
-                        </span>
-                        {% if current_user %}
-                        <button type="submit" form="delete-label-{{ label.id }}"
-                                class="btn btn-sm btn-danger ml-auto"
-                                onclick="return confirm('Delete the {{ label.name }} label from this repository?');">
-                            Delete
-                        </button>
-                        {% endif %}
-                    </label>
-                    {% endfor %}
-                </div>
-                {% else %}
-                <p class="color-fg-muted f6 mb-0">No labels have been created for this repository.</p>
-                {% endif %}
-
-                {% if current_user %}
-                    {% if repo_labels %}
-                    <button type="submit" class="btn btn-primary btn-sm mt-3">Apply labels</button>
+            <details class="issue-label-settings" {% if label_error %}open{% endif %}>
+                <summary class="issue-sidebar-settings" aria-label="Manage labels" title="Manage labels">⚙</summary>
+                <div class="issue-label-popover">
+                    <h3 class="issue-label-popover-title">Apply labels to this issue</h3>
+                    {% if label_error %}
+                    <div class="flash flash-error mb-3" role="alert">{{ label_error }}</div>
                     {% endif %}
-                {% else %}
-                <p class="color-fg-muted f6 mt-3 mb-0">
-                    <a href="{{ url_prefix }}/login">Sign in</a> to edit labels.
-                </p>
-                {% endif %}
-            </form>
 
-            {% if current_user %}
-            <details class="issue-label-create mt-3" {% if not repo_labels or label_error %}open{% endif %}>
-                <summary class="text-bold">Add new label</summary>
-                <form method="post" class="mt-3"
-                      action="{{ url_prefix }}/{{ owner }}/{{ repo.name }}/issues/{{ issue.number }}/labels/create">
-                    <label class="d-block mb-2" for="new-label-name">Name</label>
-                    <input id="new-label-name" name="name" class="form-control input-sm mb-2"
-                           type="text" placeholder="e.g. bug" maxlength="100" required>
-                    <label class="d-block mb-2" for="new-label-color">Color</label>
-                    <input id="new-label-color" name="color" class="form-control input-sm mb-2 issue-label-color"
-                           type="color" value="#ededed" title="Label color">
-                    <label class="d-block mb-2" for="new-label-description">Description <span class="color-fg-muted">(optional)</span></label>
-                    <input id="new-label-description" name="description" class="form-control input-sm"
-                           type="text" maxlength="200" placeholder="What is this label for?">
-                    <button type="submit" class="btn btn-primary btn-sm mt-3">Create label</button>
-                </form>
+                    <form method="post" action="{{ url_prefix }}/{{ owner }}/{{ repo.name }}/issues/{{ issue.number }}">
+                        <input type="search" class="form-control input-sm mb-2" placeholder="Filter labels"
+                               aria-label="Filter labels" data-label-filter>
+
+                        <div class="issue-label-group-header">Selected</div>
+                        {% set selected_count = namespace(value=0) %}
+                        <div class="issue-label-picker">
+                            {% for label in repo_labels if label.name in issue_label_names %}
+                            {% set selected_count.value = selected_count.value + 1 %}
+                            <label class="issue-label-option" data-label-option data-label-name="{{ label.name|lower }}">
+                                <input type="checkbox" name="labels" value="{{ label.name }}" checked
+                                       onchange="this.form.submit()">
+                                <span class="issue-label-dot" style="background-color:#{{ label.color or 'ededed' }};"></span>
+                                <span>{{ label.name }}</span>
+                            </label>
+                            {% endfor %}
+                        </div>
+                        {% if selected_count.value == 0 %}
+                        <div class="issue-label-empty">No selected labels</div>
+                        {% endif %}
+
+                        <div class="issue-label-group-header">Labels</div>
+                        <div class="issue-label-picker">
+                            {% for label in repo_labels if label.name not in issue_label_names %}
+                            <label class="issue-label-option" data-label-option data-label-name="{{ label.name|lower }}">
+                                <input type="checkbox" name="labels" value="{{ label.name }}"
+                                       onchange="this.form.submit()">
+                                <span class="issue-label-dot" style="background-color:#{{ label.color or 'ededed' }};"></span>
+                                <span>{{ label.name }}</span>
+                            </label>
+                            {% else %}
+                            <div class="issue-label-empty">No labels have been created.</div>
+                            {% endfor %}
+                        </div>
+                    </form>
+
+                    <div class="issue-label-popover-footer">
+                        <a href="{{ url_prefix }}/{{ owner }}/{{ repo.name }}/labels">Edit labels</a>
+                    </div>
+                </div>
             </details>
             {% endif %}
         </div>
-    </div>
+        <div class="issue-label-current">
+            {% if issue.labels %}
+                {% for label in issue.labels %}
+                <span class="IssueLabel"
+                      style="background-color:#{{ label.color or 'ededed' }};color:{% if label.color and label.color in ['000000','0e1116','1a1e22'] %}#fff{% else %}#1f2328{% endif %};">
+                    {{ label.name }}
+                </span>
+                {% endfor %}
+            {% else %}
+                <span class="color-fg-muted f6">None yet</span>
+            {% endif %}
+        </div>
+        {% if not current_user %}
+        <p class="color-fg-muted f6 mt-2 mb-0">
+            <a href="{{ url_prefix }}/login">Sign in</a> to edit labels.
+        </p>
+        {% endif %}
+    </section>
 </aside>
 </div>
+{% if current_user %}
+<script>
+document.querySelectorAll("[data-label-filter]").forEach(function (input) {
+    input.addEventListener("input", function () {
+        const query = input.value.trim().toLowerCase();
+        input.closest(".issue-label-popover").querySelectorAll("[data-label-option]").forEach(function (option) {
+            option.hidden = query && !option.dataset.labelName.includes(query);
+        });
+    });
+});
+</script>
+{% endif %}
 {% endblock %}

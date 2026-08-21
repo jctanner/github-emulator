@@ -37,7 +37,7 @@ from app.models.pull_request import PullRequest
 from app.models.repository import Repository
 from app.models.user import User
 from app.services.auth_service import verify_password
-from app.services import issue_service, pr_service, repo_service
+from app.services import comment_service, issue_service, pr_service, repo_service
 from app.web.markdown import render_markdown
 
 _WEB_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -53,6 +53,14 @@ _URL_PREFIX = "/ui"
 def _issue_url(owner: str, repo_name: str, number: int, error: str | None = None) -> str:
     """Build an issue-page URL, optionally carrying a label-management error."""
     url = f"{_URL_PREFIX}/{owner}/{repo_name}/issues/{number}"
+    if error:
+        url += f"?label_error={quote(error)}"
+    return url
+
+
+def _labels_url(owner: str, repo_name: str, error: str | None = None) -> str:
+    """Build a repository labels URL, optionally carrying an editor error."""
+    url = f"{_URL_PREFIX}/{owner}/{repo_name}/labels"
     if error:
         url += f"?label_error={quote(error)}"
     return url
@@ -459,6 +467,121 @@ async def repo_page(
 # Issues
 # ---------------------------------------------------------------------------
 
+@router.get("/{owner}/{repo_name}/labels", response_class=HTMLResponse)
+async def repository_labels_page(
+    request: Request,
+    owner: str,
+    repo_name: str,
+    q: Optional[str] = Query(None),
+    db: AsyncSession = Depends(get_db),
+):
+    """Repository label editor page."""
+    current_user = await _get_current_user(request, db)
+    repo = await _get_repo(db, owner, repo_name)
+    if repo is None or not _can_view_repo(repo, current_user):
+        return HTMLResponse(content="<h1>404 - Not Found</h1>", status_code=404)
+
+    query = select(Label).where(Label.repo_id == repo.id)
+    search = (q or "").strip()
+    if search:
+        query = query.where(Label.name.ilike(f"%{search}%"))
+    result = await db.execute(query.order_by(Label.name))
+    labels = list(result.scalars().all())
+
+    return templates.TemplateResponse(
+        request=request,
+        name="labels.html",
+        context=_ctx(
+            request, owner=owner, repo=repo, repo_name=repo.name,
+            labels=labels, query=search, label_error=request.query_params.get("label_error"),
+            current_user=current_user,
+        ),
+    )
+
+
+@router.post("/{owner}/{repo_name}/labels/create")
+async def create_repository_label_page(
+    request: Request,
+    owner: str,
+    repo_name: str,
+    db: AsyncSession = Depends(get_db),
+):
+    """Create a repository label from the label editor page."""
+    current_user = await _get_current_user(request, db)
+    if not current_user:
+        return RedirectResponse(url="/ui/login", status_code=302)
+
+    repo = await _get_repo(db, owner, repo_name)
+    if repo is None or not _can_view_repo(repo, current_user):
+        return HTMLResponse(content="<h1>404 - Not Found</h1>", status_code=404)
+
+    form = await request.form()
+    name = str(form.get("name", "")).strip()
+    color = str(form.get("color", "ededed")).strip().lstrip("#").lower()
+    description = str(form.get("description", "")).strip() or None
+
+    if not name:
+        return RedirectResponse(
+            url=_labels_url(owner, repo_name, "Label name is required."), status_code=302
+        )
+    if len(color) != 6 or any(character not in "0123456789abcdef" for character in color):
+        return RedirectResponse(
+            url=_labels_url(owner, repo_name, "Label color must be a six-digit hex value."),
+            status_code=302,
+        )
+
+    existing = await db.execute(
+        select(Label).where(Label.repo_id == repo.id, Label.name == name)
+    )
+    if existing.scalar_one_or_none() is not None:
+        return RedirectResponse(
+            url=_labels_url(owner, repo_name, "A label with that name already exists."),
+            status_code=302,
+        )
+
+    db.add(Label(repo_id=repo.id, name=name, color=color, description=description))
+    await db.commit()
+    return RedirectResponse(url=_labels_url(owner, repo_name), status_code=302)
+
+
+@router.post("/{owner}/{repo_name}/labels/delete")
+async def delete_repository_label_page(
+    request: Request,
+    owner: str,
+    repo_name: str,
+    db: AsyncSession = Depends(get_db),
+):
+    """Delete a repository label from the label editor page."""
+    current_user = await _get_current_user(request, db)
+    if not current_user:
+        return RedirectResponse(url="/ui/login", status_code=302)
+
+    repo = await _get_repo(db, owner, repo_name)
+    if repo is None or not _can_view_repo(repo, current_user):
+        return HTMLResponse(content="<h1>404 - Not Found</h1>", status_code=404)
+
+    form = await request.form()
+    try:
+        label_id = int(str(form.get("label_id", "")))
+    except ValueError:
+        return RedirectResponse(
+            url=_labels_url(owner, repo_name, "Invalid label."), status_code=302
+        )
+
+    result = await db.execute(
+        select(Label).where(Label.id == label_id, Label.repo_id == repo.id)
+    )
+    label = result.scalar_one_or_none()
+    if label is None:
+        return RedirectResponse(
+            url=_labels_url(owner, repo_name, "Label not found."), status_code=302
+        )
+
+    await db.execute(sa_delete(IssueLabel).where(IssueLabel.label_id == label.id))
+    await db.delete(label)
+    await db.commit()
+    return RedirectResponse(url=_labels_url(owner, repo_name), status_code=302)
+
 @router.get("/{owner}/{repo_name}/issues/new", response_class=HTMLResponse)
 async def new_issue_page(
     request: Request,
@@ -623,6 +746,42 @@ async def issue_detail(
     )
 
 
+@router.post("/{owner}/{repo_name}/issues/{number:int}/comments")
+async def create_issue_comment_web(
+    request: Request,
+    owner: str,
+    repo_name: str,
+    number: int,
+    db: AsyncSession = Depends(get_db),
+):
+    """Add a comment from the issue-page composer."""
+    current_user = await _get_current_user(request, db)
+    if not current_user:
+        return RedirectResponse(url="/ui/login", status_code=302)
+
+    repo = await _get_repo(db, owner, repo_name)
+    if repo is None:
+        return HTMLResponse(content="<h1>404 - Not Found</h1>", status_code=404)
+
+    result = await db.execute(
+        select(Issue).where(Issue.repo_id == repo.id, Issue.number == number)
+    )
+    issue = result.scalar_one_or_none()
+    if issue is None:
+        return HTMLResponse(content="<h1>404 - Issue Not Found</h1>", status_code=404)
+
+    form = await request.form()
+    body = str(form.get("body", "")).strip()
+    if body:
+        await comment_service.create_issue_comment(
+            db, issue_id=issue.id, user_id=current_user.id, body=body
+        )
+
+    return RedirectResponse(
+        url=_issue_url(owner, repo_name, number), status_code=302
+    )
+
+
 @router.post("/{owner}/{repo_name}/issues/{number:int}")
 async def update_issue_labels(
     request: Request,
@@ -670,6 +829,54 @@ async def update_issue_labels(
         for label in selected_labels
     )
     await db.commit()
+
+    return RedirectResponse(
+        url=_issue_url(owner, repo_name, number), status_code=302
+    )
+
+
+@router.post("/{owner}/{repo_name}/issues/{number:int}/state")
+async def update_issue_state(
+    request: Request,
+    owner: str,
+    repo_name: str,
+    number: int,
+    db: AsyncSession = Depends(get_db),
+):
+    """Close or reopen an issue from its web page."""
+    current_user = await _get_current_user(request, db)
+    if not current_user:
+        return RedirectResponse(url="/ui/login", status_code=302)
+
+    repo = await _get_repo(db, owner, repo_name)
+    if repo is None:
+        return HTMLResponse(content="<h1>404 - Not Found</h1>", status_code=404)
+
+    result = await db.execute(
+        select(Issue).where(Issue.repo_id == repo.id, Issue.number == number)
+    )
+    issue = result.scalar_one_or_none()
+    if issue is None:
+        return HTMLResponse(content="<h1>404 - Issue Not Found</h1>", status_code=404)
+
+    form = await request.form()
+    new_state = str(form.get("state", "")).strip().lower()
+    if new_state not in {"open", "closed"}:
+        return HTMLResponse(content="<h1>400 - Invalid issue state</h1>", status_code=400)
+
+    if issue.state != new_state:
+        if new_state == "closed":
+            issue.closed_at = datetime.now(timezone.utc)
+            issue.state_reason = "completed"
+            issue.closed_by_id = current_user.id
+            repo.open_issues_count = max(0, (repo.open_issues_count or 0) - 1)
+        else:
+            issue.closed_at = None
+            issue.state_reason = None
+            issue.closed_by_id = None
+            repo.open_issues_count = (repo.open_issues_count or 0) + 1
+        issue.state = new_state
+        await db.commit()
 
     return RedirectResponse(
         url=_issue_url(owner, repo_name, number), status_code=302
