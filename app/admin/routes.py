@@ -16,7 +16,7 @@ from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from jose import JWSError, jws
-from sqlalchemy import func, select
+from sqlalchemy import delete as sa_delete, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
@@ -192,6 +192,7 @@ def _app_view(app: GitHubApp) -> dict:
     return {
         "id": app.app_id,
         "database_id": app.id,
+        "client_id": app.client_id,
         "name": app.name,
         "slug": app.slug,
         "owner": settings.ADMIN_USERNAME,
@@ -816,6 +817,72 @@ async def app_detail(
     return templates.TemplateResponse(request=request, name="app_detail.html", context=context)
 
 
+@router.post("/apps/{app_id}/delete", response_class=HTMLResponse)
+async def delete_app(
+    request: Request,
+    app_id: str,
+    db: AsyncSession = Depends(get_db),
+):
+    """Delete an emulator App and its installations/tokens."""
+    admin_user = _get_admin_user(request)
+    if not admin_user:
+        return RedirectResponse(url="/admin/login", status_code=302)
+
+    result = await db.execute(select(GitHubApp).where(GitHubApp.app_id == app_id))
+    app = result.scalar_one_or_none()
+    if app is not None:
+        installations_result = await db.execute(
+            select(AppInstallation).where(AppInstallation.app_id == app.id)
+        )
+        installations = list(installations_result.scalars().all())
+        for installation in installations:
+            await db.execute(
+                sa_delete(AppInstallationToken).where(
+                    AppInstallationToken.installation_id == installation.id
+                )
+            )
+            await db.delete(installation)
+        await db.delete(app)
+        await db.commit()
+
+    return RedirectResponse(url="/admin/apps", status_code=303)
+
+
+@router.post("/apps/{app_id}/regenerate-key", response_class=HTMLResponse)
+async def regenerate_app_key(
+    request: Request,
+    app_id: str,
+    db: AsyncSession = Depends(get_db),
+):
+    """Rotate an App key and display the replacement only once."""
+    admin_user = _get_admin_user(request)
+    if not admin_user:
+        return RedirectResponse(url="/admin/login", status_code=302)
+
+    result = await db.execute(select(GitHubApp).where(GitHubApp.app_id == app_id))
+    app = result.scalar_one_or_none()
+    if app is None:
+        return RedirectResponse(url="/admin/apps", status_code=302)
+
+    app.private_key_pem = _private_key()
+    await db.commit()
+    await db.refresh(app)
+    return templates.TemplateResponse(
+        request=request,
+        name="app_form.html",
+        context=_ctx(
+            request,
+            admin_user=admin_user,
+            permission_groups=_permission_groups(),
+            form_values={},
+            created_app=_app_view(app),
+            created_private_key=app.private_key_pem,
+            flash_message="App private key regenerated. Copy it now; it will not be shown again.",
+            flash_type="success",
+        ),
+    )
+
+
 @router.post("/apps/{app_id}/installations/create")
 async def create_installation_handler(
     request: Request,
@@ -884,6 +951,39 @@ async def create_installation_handler(
     )
     db.add(installation)
     await db.commit()
+    return RedirectResponse(url=f"/admin/apps/{app_id}", status_code=303)
+
+
+@router.post("/apps/{app_id}/installations/{installation_id}/delete", response_class=HTMLResponse)
+async def delete_installation(
+    request: Request,
+    app_id: str,
+    installation_id: int,
+    db: AsyncSession = Depends(get_db),
+):
+    """Remove an installation and all tokens minted from it."""
+    admin_user = _get_admin_user(request)
+    if not admin_user:
+        return RedirectResponse(url="/admin/login", status_code=302)
+
+    app_result = await db.execute(select(GitHubApp).where(GitHubApp.app_id == app_id))
+    app = app_result.scalar_one_or_none()
+    installation_result = await db.execute(
+        select(AppInstallation).where(
+            AppInstallation.id == installation_id,
+            AppInstallation.app_id == (app.id if app is not None else -1),
+        )
+    )
+    installation = installation_result.scalar_one_or_none()
+    if installation is not None:
+        await db.execute(
+            sa_delete(AppInstallationToken).where(
+                AppInstallationToken.installation_id == installation.id
+            )
+        )
+        await db.delete(installation)
+        await db.commit()
+
     return RedirectResponse(url=f"/admin/apps/{app_id}", status_code=303)
 
 

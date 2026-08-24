@@ -9,16 +9,26 @@
         <p class="color-fg-muted mb-0"><code>{{ app.slug }}</code> · emulator App</p>
     </div>
     <a href="/admin/apps" class="btn">Back to Apps</a>
+    <form method="post" action="/admin/apps/{{ app.id }}/delete" class="inline-delete" onsubmit="return confirm('Delete app {{ app.name }} and its installations?');">
+        <button type="submit" class="btn btn-danger">Delete App</button>
+    </form>
 </div>
 
 <div class="Box p-3 mb-3">
     <table class="admin-table admin-detail">
         <tbody>
             <tr><td>App ID</td><td><code>{{ app.id }}</code></td></tr>
+            <tr><td>Client ID</td><td><code>{{ app.client_id }}</code> <span class="color-fg-muted">(emulator identifier; OAuth unsupported)</span></td></tr>
             <tr><td>Database ID</td><td>{{ app.database_id }}</td></tr>
             <tr><td>Owner</td><td>{{ app.owner }}</td></tr>
             <tr><td>Created</td><td>{{ app.created_at }}</td></tr>
-            <tr><td>Private key</td><td>{{ "Present (value hidden)" if app.has_private_key else "Not present" }}</td></tr>
+            <tr><td>Private key</td><td>{{ "Present (value hidden)" if app.has_private_key else "Not present" }}
+                {% if app.has_private_key %}
+                <form method="post" action="/admin/apps/{{ app.id }}/regenerate-key" class="inline-delete" onsubmit="return confirm('Regenerate this App key? Existing JWTs will stop working.');">
+                    <button type="submit" class="btn btn-sm">Regenerate key</button>
+                </form>
+                {% endif %}
+            </td></tr>
             <tr><td>Permissions</td><td>{% for key, value in app.permissions.items() %}<code class="mr-2">{{ key }}:{{ value }}</code>{% else %}None{% endfor %}</td></tr>
         </tbody>
     </table>
@@ -28,7 +38,7 @@
     <h3 class="f3 mb-2">Installations</h3>
     {% if installations %}
     <table class="admin-table">
-        <thead><tr><th>ID</th><th>Account</th><th>Type</th><th>Repositories</th><th>Permissions</th><th>Tokens</th></tr></thead>
+    <thead><tr><th>ID</th><th>Account</th><th>Type</th><th>Repositories</th><th>Permissions</th><th>Tokens</th><th>Actions</th></tr></thead>
         <tbody>
         {% for installation in installations %}
         <tr>
@@ -38,6 +48,11 @@
             <td>{{ installation.repositories|join(', ') }}</td>
             <td>{% for key, value in installation.permissions.items() %}<code class="mr-2">{{ key }}:{{ value }}</code>{% else %}None{% endfor %}</td>
             <td>{{ installation.token_count }}</td>
+            <td>
+                <form method="post" action="/admin/apps/{{ app.id }}/installations/{{ installation.id }}/delete" class="inline-delete" onsubmit="return confirm('Remove this installation and revoke its tokens?');">
+                    <button type="submit" class="btn btn-sm btn-danger">Remove</button>
+                </form>
+            </td>
         </tr>
         {% endfor %}
         </tbody>

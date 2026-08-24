@@ -2,12 +2,14 @@
 
 import hashlib
 import re
+import time
 
 import pytest
+from jose import jwt
 from sqlalchemy import select
 
 from app.admin.routes import _sign_session
-from app.models.apps import AppInstallation
+from app.models.apps import AppInstallation, AppInstallationToken, GitHubApp
 from tests.conftest import API, auth_headers
 
 
@@ -133,3 +135,116 @@ async def test_admin_can_install_app_and_mint_one_time_token(
     assert token_hash not in auth_page.text
     assert raw_token[:8] in auth_page.text
     assert "Unsupported/deferred" in auth_page.text
+
+
+@pytest.mark.asyncio
+async def test_admin_app_lifecycle_controls_rotate_remove_and_delete(
+    client, admin_token, test_repo_with_init, db_session
+):
+    """The admin UI exposes the App lifecycle controls safely."""
+    _owner, _repo, repo = test_repo_with_init
+    created = await client.post(
+        f"{API}/admin/apps",
+        headers=auth_headers(admin_token),
+        json={
+            "app_id": "7003",
+            "name": "Lifecycle Test App",
+            "slug": "lifecycle-test-app",
+            "permissions": {"contents": "read"},
+        },
+    )
+    assert created.status_code == 201
+    original_key = created.json()["private_key"]
+    assert created.json()["client_id"] == "Iv1.7003"
+
+    listing = await client.get("/admin/apps", cookies=admin_cookies())
+    assert "Iv1.7003" in listing.text
+    assert "Delete" in listing.text
+
+    detail = await client.get("/admin/apps/7003", cookies=admin_cookies())
+    assert "Client ID" in detail.text
+    assert "Regenerate key" in detail.text
+    assert "Delete App" in detail.text
+    assert original_key not in detail.text
+
+    rotated = await client.post(
+        "/admin/apps/7003/regenerate-key",
+        cookies=admin_cookies(),
+    )
+    assert rotated.status_code == 200
+    assert "App private key regenerated" in rotated.text
+    new_key_match = re.search(
+        r'<pre[^>]+id="created-private-key"[^>]*>(.*?)</pre>',
+        rotated.text,
+        re.DOTALL,
+    )
+    assert new_key_match is not None
+    new_key = new_key_match.group(1).strip()
+    assert new_key.startswith("-----BEGIN PRIVATE KEY-----")
+    assert new_key != original_key
+    assert original_key not in rotated.text
+
+    claims = {"iss": "7003", "iat": int(time.time()) - 10, "exp": int(time.time()) + 60}
+    old_jwt = jwt.encode(claims, original_key, algorithm="RS256")
+    new_jwt = jwt.encode(claims, new_key, algorithm="RS256")
+    old_key_response = await client.get(
+        f"{API}/app", headers={"Authorization": f"Bearer {old_jwt}"}
+    )
+    new_key_response = await client.get(
+        f"{API}/app", headers={"Authorization": f"Bearer {new_jwt}"}
+    )
+    assert old_key_response.status_code == 401
+    assert new_key_response.status_code == 200
+
+    installation_response = await client.post(
+        "/admin/apps/7003/installations/create",
+        cookies=admin_cookies(),
+        data={
+            "account_login": "testuser",
+            "account_type": "User",
+            "repositories": [repo["full_name"]],
+        },
+    )
+    assert installation_response.status_code == 303
+    installation = (await db_session.execute(select(AppInstallation))).scalar_one()
+
+    token_response = await client.post(
+        f"/admin/installations/{installation.id}/tokens/create",
+        cookies=admin_cookies(),
+        data={"repositories": [repo["full_name"]]},
+    )
+    assert token_response.status_code == 200
+    token = (await db_session.execute(select(AppInstallationToken))).scalar_one()
+
+    removed = await client.post(
+        f"/admin/apps/7003/installations/{installation.id}/delete",
+        cookies=admin_cookies(),
+        follow_redirects=False,
+    )
+    assert removed.status_code == 303
+    assert (
+        await db_session.execute(
+            select(AppInstallation).where(AppInstallation.id == installation.id)
+        )
+    ).scalar_one_or_none() is None
+    assert (
+        await db_session.execute(
+            select(AppInstallationToken).where(AppInstallationToken.id == token.id)
+        )
+    ).scalar_one_or_none() is None
+
+    deleted = await client.post(
+        "/admin/apps/7003/delete",
+        cookies=admin_cookies(),
+        follow_redirects=False,
+    )
+    assert deleted.status_code == 303
+    assert (
+        await db_session.execute(select(GitHubApp).where(GitHubApp.app_id == "7003"))
+    ).scalar_one_or_none() is None
+    assert (
+        await client.get(
+            f"{API}/admin/apps/7003",
+            headers=auth_headers(admin_token),
+        )
+    ).status_code == 404

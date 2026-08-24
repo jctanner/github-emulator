@@ -34,6 +34,7 @@ def _app_json(app: GitHubApp) -> dict:
     return {
         "id": app.app_id,
         "database_id": app.id,
+        "client_id": app.client_id,
         "name": app.name,
         "slug": app.slug,
         "owner": {"login": settings.ADMIN_USERNAME, "type": "User"},

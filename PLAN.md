@@ -23,6 +23,7 @@ Actions visibility and runner evaluation.
 - `docs/tasks/done/seed-default-admin-pat.md`
 - `docs/tasks/done/actions-visible-api-and-web-ui.md`
 - `docs/tasks/done/admin-repos-import-api.md`
+- `docs/tasks/done/admin-app-frontend-lifecycle.md`
 
 ## Milestones
 

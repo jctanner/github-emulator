@@ -27,6 +27,17 @@ class GitHubApp(Base):
 
     installations = relationship("AppInstallation", back_populates="app", lazy="selectin")
 
+    @property
+    def client_id(self) -> str:
+        """Return a stable, non-secret client identifier for the emulator.
+
+        The emulator does not implement OAuth, so it does not persist a
+        separate OAuth client record.  Keeping this derived preserves the
+        existing database schema while giving admin/API consumers the
+        identifier shown by GitHub App tooling.
+        """
+        return f"Iv1.{self.app_id}"
+
 
 class AppInstallation(Base):
     __tablename__ = "app_installations"

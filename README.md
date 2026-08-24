@@ -11,7 +11,7 @@ scripts without touching real GitHub.
 - **Git Smart HTTP** -- clone, fetch, and push over HTTP/HTTPS against bare repositories
 - **Git SSH Transport** -- clone and push over SSH (port 2222 by default)
 - **Web UI** (`/ui/`) -- browse repositories, files, commits, issues, and pull requests in a GitHub-like interface
-- **Admin Panel** (`/admin/`) -- manage users, tokens, organisations, repositories, and import repos from real GitHub
+- **Admin Panel** (`/admin/`) -- manage users, tokens, organisations, repositories, GitHub Apps/installations, and import repos from real GitHub
 - **GitHub Import** -- clone a single repo by URL or bulk-import all repos from a GitHub user/org via the admin panel
 - **Webhooks** -- event delivery with recorded payloads
 - **`gh` CLI Compatible** -- works as a `GH_HOST` target for the GitHub CLI
