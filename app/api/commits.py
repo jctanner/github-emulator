@@ -3,7 +3,7 @@
 import asyncio
 import os
 
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, HTTPException, Query, Request
 from sqlalchemy import select
 
 from app.api.deps import CurrentUser, DbSession, get_repo_or_404
@@ -30,7 +30,9 @@ async def _git(repo_path: str, *args: str) -> str:
     return stdout.decode()
 
 
-def _parse_commit_line(line: str, owner: str, repo_name: str, base_url: str) -> dict:
+def _parse_commit_line(
+    line: str, owner: str, repo_name: str, base_url: str, verified: bool = False
+) -> dict:
     """Parse a ``git log --format`` line into a commit dict."""
     api = f"{base_url}/api/v3"
     parts = line.split("\x1f")
@@ -61,7 +63,12 @@ def _parse_commit_line(line: str, owner: str, repo_name: str, base_url: str) -> 
             "tree": {"sha": tree_sha, "url": f"{api}/repos/{owner}/{repo_name}/git/trees/{tree_sha}"},
             "url": f"{api}/repos/{owner}/{repo_name}/git/commits/{sha}",
             "comment_count": 0,
-            "verification": {"verified": False, "reason": "unsigned", "signature": None, "payload": None},
+            "verification": {
+                "verified": verified,
+                "reason": "valid" if verified else "unsigned",
+                "signature": None,
+                "payload": None,
+            },
         },
         "url": f"{api}/repos/{owner}/{repo_name}/commits/{sha}",
         "html_url": f"{base_url}/{owner}/{repo_name}/commit/{sha}",
@@ -78,6 +85,7 @@ async def list_commits(
     repo: str,
     db: DbSession,
     current_user: CurrentUser,
+    request: Request,
     sha: str | None = Query(None),
     path: str | None = Query(None),
     page: int = Query(1, ge=1),
@@ -106,14 +114,24 @@ async def list_commits(
     commits = []
     for line in out.strip().splitlines():
         if line:
-            commits.append(_parse_commit_line(line, owner, repo, BASE))
+            commits.append(
+                _parse_commit_line(
+                    line, owner, repo, BASE,
+                    bool(getattr(request.state, "is_installation_token", False)),
+                )
+            )
 
     return commits
 
 
 @router.get("/repos/{owner}/{repo}/commits/{sha}")
 async def get_commit(
-    owner: str, repo: str, sha: str, db: DbSession, current_user: CurrentUser
+    owner: str,
+    repo: str,
+    sha: str,
+    db: DbSession,
+    current_user: CurrentUser,
+    request: Request,
 ):
     """Get a single commit."""
     repository = await get_repo_or_404(owner, repo, db)
@@ -131,7 +149,13 @@ async def get_commit(
     if not line:
         raise HTTPException(status_code=404, detail="Not Found")
 
-    return _parse_commit_line(line, owner, repo, BASE)
+    return _parse_commit_line(
+        line,
+        owner,
+        repo,
+        BASE,
+        bool(getattr(request.state, "is_installation_token", False)),
+    )
 
 
 @router.get("/repos/{owner}/{repo}/compare/{basehead}")

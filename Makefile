@@ -2,6 +2,10 @@
 
 .DEFAULT_GOAL := help
 
+CONTAINER_ENGINE ?= docker
+PORT ?= 8000
+COMPOSE := $(CONTAINER_ENGINE) compose
+
 # General
 
 ## Show this help
@@ -19,29 +23,29 @@ help:
 
 ## Build the container image
 build:
-	docker compose build
+	$(COMPOSE) build
 
 ## Start the container (build first if needed)
 up: build
-	docker compose down --volumes 2>/dev/null || true
-	docker compose up -d
+	PORT=$(PORT) $(COMPOSE) down --volumes 2>/dev/null || true
+	PORT=$(PORT) $(COMPOSE) up -d
 	@echo "Waiting for server to start..."
 	@for i in 1 2 3 4 5 6 7 8 9 10; do \
-		curl -sf http://localhost:8000/api/v3 > /dev/null 2>&1 && break; \
+		curl -sf http://localhost:$(PORT)/api/v3 > /dev/null 2>&1 && break; \
 		sleep 1; \
 	done
-	@echo "Server is up at http://localhost:8000"
+	@echo "Server is up at http://localhost:$(PORT)"
 
 ## Stop and remove the container + volumes
 down:
-	docker compose down --volumes
+	$(COMPOSE) down --volumes
 
 ## Rebuild and restart from scratch
 restart: up
 
 ## Tail container logs
 logs:
-	docker compose logs -f
+	$(COMPOSE) logs -f
 
 ## Run the pytest suite (local, not in container)
 test:
@@ -96,7 +100,7 @@ actions-runner-env:
 
 ## Start the opt-in real actions/runner compose profile
 actions-real-runner:
-	docker compose --profile real-runner up --build actions-real-runner
+	$(COMPOSE) --profile real-runner up --build actions-real-runner
 
 ## Run desktop Playwright smoke test against a running compose stack
 actions-ui-smoke:
@@ -106,7 +110,7 @@ actions-ui-smoke:
 
 ## Remove all build artifacts
 clean: down
-	docker rmi github_emulator_github-emulator 2>/dev/null || true
+	$(CONTAINER_ENGINE) rmi github_emulator_github-emulator 2>/dev/null || true
 	rm -rf .venv __pycache__ .pytest_cache
 
 # Vagrant VM (Debian 12 + Docker, via libvirt/KVM)

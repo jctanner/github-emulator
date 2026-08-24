@@ -10,7 +10,11 @@ from starlette.responses import Response
 
 from app.database import get_db
 from app.models import User
-from app.services.auth_service import validate_basic_auth, validate_token
+from app.services.auth_service import (
+    validate_basic_auth,
+    validate_installation_token,
+    validate_token,
+)
 
 
 class AuthMiddleware(BaseHTTPMiddleware):
@@ -29,13 +33,14 @@ class AuthMiddleware(BaseHTTPMiddleware):
         self, request: Request, call_next: RequestResponseEndpoint
     ) -> Response:
         request.state.user = None
+        request.state.is_installation_token = False
 
         auth_header = request.headers.get("Authorization")
         if auth_header:
             from app.database import async_session
 
             async with async_session() as db:
-                user = await _extract_user_from_auth(db, auth_header)
+                user = await _extract_user_from_auth(db, auth_header, request)
                 request.state.user = user
 
         response = await call_next(request)
@@ -43,7 +48,7 @@ class AuthMiddleware(BaseHTTPMiddleware):
 
 
 async def _extract_user_from_auth(
-    db: AsyncSession, auth_header: str
+    db: AsyncSession, auth_header: str, request: Optional[Request] = None
 ) -> Optional[User]:
     """Extract and validate user from an Authorization header.
 
@@ -61,6 +66,16 @@ async def _extract_user_from_auth(
     scheme, credentials = parts[0].lower(), parts[1]
 
     if scheme in ("token", "bearer"):
+        if credentials.startswith("ghs_"):
+            installation_token = await validate_installation_token(db, credentials)
+            if installation_token is not None and request is not None:
+                request.state.installation_token = installation_token
+                request.state.is_installation_token = True
+            return (
+                installation_token.installation.user
+                if installation_token is not None
+                else None
+            )
         return await validate_token(db, credentials)
 
     if scheme == "basic":

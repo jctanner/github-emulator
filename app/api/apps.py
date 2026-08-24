@@ -21,35 +21,60 @@ from app.schemas.user import _fmt_dt
 router = APIRouter(tags=["apps"])
 
 
+def _client_id() -> str:
+    """Generate the non-secret client identifier shown by GitHub tooling."""
+    return "Iv1." + secrets.token_hex(16)
+
+
 def _private_key() -> str:
     key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
     return key.private_bytes(
         serialization.Encoding.PEM,
-        serialization.PrivateFormat.PKCS8,
+        serialization.PrivateFormat.TraditionalOpenSSL,
         serialization.NoEncryption(),
     ).decode()
 
 
 def _app_json(app: GitHubApp) -> dict:
+    base = settings.BASE_URL.rstrip("/")
+    created_at = _fmt_dt(app.created_at)
     return {
         "id": app.app_id,
         "database_id": app.id,
         "client_id": app.client_id,
+        "node_id": f"A_{app.app_id}",
         "name": app.name,
         "slug": app.slug,
         "owner": {"login": settings.ADMIN_USERNAME, "type": "User"},
+        "description": None,
+        "external_url": f"{base}/apps/{app.slug}",
+        "html_url": f"{base}/apps/{app.slug}",
+        "created_at": created_at,
+        "updated_at": created_at,
         "permissions": app.permissions or {},
-        "created_at": _fmt_dt(app.created_at),
+        "events": [],
+        "installations_count": len(app.installations or []),
     }
 
 
 def _installation_json(app: GitHubApp, installation: AppInstallation) -> dict:
+    base = settings.BASE_URL.rstrip("/")
+    created_at = _fmt_dt(installation.created_at)
+    repository_selection = "selected" if installation.repositories else "all"
     return {
         "id": installation.id,
         "app_id": app.app_id,
+        "app_slug": app.slug,
+        "target_type": installation.account_type,
         "account": {"login": installation.account_login, "type": installation.account_type},
+        "repository_selection": repository_selection,
+        "access_tokens_url": f"{base}/api/v3/app/installations/{installation.id}/access_tokens",
+        "html_url": f"{base}/organizations/{installation.account_login}/settings/installations/{installation.id}",
+        "created_at": created_at,
+        "updated_at": created_at,
         "repositories": installation.repositories,
         "permissions": installation.permissions,
+        "events": [],
     }
 
 
@@ -64,8 +89,22 @@ async def _app_from_jwt(request: Request, db: DbSession) -> GitHubApp:
         app = (await db.execute(select(GitHubApp).where(GitHubApp.app_id == app_id))).scalar_one_or_none()
         if app is None:
             raise JWTError("unknown app")
-        private_key = serialization.load_pem_private_key(app.private_key_pem.encode(), password=None)
-        jwt.decode(raw, private_key.public_key(), algorithms=["RS256"], options={"verify_aud": False})
+        if settings.APP_JWT_PERMISSIVE:
+            jwt.decode(
+                raw,
+                key="",
+                options={"verify_signature": False, "verify_aud": False},
+            )
+        else:
+            private_key = serialization.load_pem_private_key(
+                app.private_key_pem.encode(), password=None
+            )
+            jwt.decode(
+                raw,
+                private_key.public_key(),
+                algorithms=["RS256"],
+                options={"verify_aud": False},
+            )
         return app
     except (JWTError, ValueError, TypeError) as exc:
         raise HTTPException(status_code=401, detail="Invalid GitHub App JWT") from exc
@@ -82,7 +121,7 @@ async def create_app(body: dict, user: AuthUser, db: DbSession):
         raise HTTPException(status_code=422, detail="name is required")
     if (await db.execute(select(GitHubApp).where(GitHubApp.slug == slug))).scalar_one_or_none():
         raise HTTPException(status_code=409, detail="App slug already exists")
-    app = GitHubApp(app_id=app_id, name=name, slug=slug, private_key_pem=_private_key(), permissions=body.get("permissions", {}))
+    app = GitHubApp(app_id=app_id, client_id=_client_id(), name=name, slug=slug, private_key_pem=_private_key(), permissions=body.get("permissions", {}))
     db.add(app)
     await db.commit()
     await db.refresh(app)
@@ -140,7 +179,7 @@ async def get_app(request: Request, db: DbSession):
 async def list_installations(request: Request, db: DbSession):
     app = await _app_from_jwt(request, db)
     items = (await db.execute(select(AppInstallation).where(AppInstallation.app_id == app.id))).scalars().all()
-    return [{"id": item.id, "app_id": app.app_id, "account": {"login": item.account_login, "type": item.account_type}, "repositories": item.repositories, "permissions": item.permissions} for item in items]
+    return [_installation_json(app, item) for item in items]
 
 
 @router.post("/app/installations/{installation_id}/access_tokens", status_code=201)
@@ -160,7 +199,7 @@ async def create_installation_token(installation_id: int, request: Request, body
     expires = datetime.now(timezone.utc) + timedelta(hours=1)
     db.add(AppInstallationToken(installation_id=installation.id, token_hash=hashlib.sha256(raw.encode()).hexdigest(), token_prefix=raw[:8], repositories=sorted(set(requested_full)), permissions=permissions, expires_at=expires))
     await db.commit()
-    return {"token": raw, "expires_at": _fmt_dt(expires), "permissions": permissions, "repository_selection": "selected", "repositories": [{"full_name": item} for item in sorted(set(requested_full))]}
+    return {"token": raw, "expires_at": _fmt_dt(expires), "permissions": permissions, "repository_selection": "selected" if installation.repositories else "all", "repositories": [{"full_name": item} for item in sorted(set(requested_full))]}
 
 
 @router.get("/app/installations/{installation_id}/repositories")

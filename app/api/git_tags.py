@@ -3,10 +3,11 @@
 import asyncio
 import os
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Request
 
 from app.api.deps import AuthUser, CurrentUser, DbSession, get_repo_or_404
 from app.config import settings
+from app.api.verification import verification
 
 router = APIRouter(tags=["git-tags"])
 
@@ -30,7 +31,12 @@ async def _git(repo_path: str, *args: str, input_data: bytes | None = None) -> s
 
 @router.get("/repos/{owner}/{repo}/git/tags/{sha}")
 async def get_tag(
-    owner: str, repo: str, sha: str, db: DbSession, current_user: CurrentUser
+    owner: str,
+    repo: str,
+    sha: str,
+    db: DbSession,
+    current_user: CurrentUser,
+    request: Request,
 ):
     """Get a Git tag object."""
     repository = await get_repo_or_404(owner, repo, db)
@@ -80,13 +86,18 @@ async def get_tag(
             "sha": target_sha,
             "url": f"{api}/repos/{owner}/{repo}/git/commits/{target_sha}",
         },
-        "verification": {"verified": False, "reason": "unsigned", "signature": None, "payload": None},
+        "verification": verification(request),
     }
 
 
 @router.post("/repos/{owner}/{repo}/git/tags", status_code=201)
 async def create_tag(
-    owner: str, repo: str, body: dict, user: AuthUser, db: DbSession
+    owner: str,
+    repo: str,
+    body: dict,
+    user: AuthUser,
+    db: DbSession,
+    request: Request,
 ):
     """Create a Git tag object (stub -- creates lightweight tag via update-ref)."""
     repository = await get_repo_or_404(owner, repo, db)
@@ -116,4 +127,5 @@ async def create_tag(
             "sha": sha,
             "url": f"{api}/repos/{owner}/{repo}/git/commits/{sha}",
         },
+        "verification": verification(request),
     }

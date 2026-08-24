@@ -56,5 +56,22 @@ async def init_db():
             runs_columns = await conn.execute(text("PRAGMA table_info(workflow_runs)"))
             if "concurrency_group" not in {row[1] for row in runs_columns.fetchall()}:
                 await conn.execute(text("ALTER TABLE workflow_runs ADD COLUMN concurrency_group TEXT"))
+            apps_columns = await conn.execute(text("PRAGMA table_info(github_apps)"))
+            app_column_names = {row[1] for row in apps_columns.fetchall()}
+            if "client_id" not in app_column_names:
+                await conn.execute(text("ALTER TABLE github_apps ADD COLUMN client_id TEXT"))
+            await conn.execute(
+                text(
+                    "UPDATE github_apps "
+                    "SET client_id = 'Iv1.' || lower(hex(randomblob(16))) "
+                    "WHERE client_id IS NULL OR client_id = ''"
+                )
+            )
+            await conn.execute(
+                text(
+                    "CREATE UNIQUE INDEX IF NOT EXISTS ix_github_apps_client_id "
+                    "ON github_apps (client_id)"
+                )
+            )
         await conn.execute(text("PRAGMA journal_mode=WAL"))
         await conn.execute(text(f"PRAGMA busy_timeout={settings.SQLITE_BUSY_TIMEOUT_MS}"))

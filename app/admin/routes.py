@@ -30,7 +30,7 @@ from app.models.token import PersonalAccessToken
 from app.models.user import User
 from app.models.import_job import ImportJob
 from app.models.apps import AppInstallation, AppInstallationToken, GitHubApp
-from app.api.apps import _private_key
+from app.api.apps import _client_id, _private_key
 from app.services.auth_service import hash_password, verify_password
 from app.services.import_service import start_single_import, start_bulk_import
 from app.services.repo_service import delete_repo as delete_repository
@@ -753,6 +753,7 @@ async def create_app_handler(
 
     app = GitHubApp(
         app_id=app_id or str(secrets.randbelow(900000) + 100000),
+        client_id=_client_id(),
         name=name,
         slug=slug,
         private_key_pem=_private_key(),

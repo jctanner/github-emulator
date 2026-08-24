@@ -32,6 +32,10 @@ class Settings(BaseSettings):
     OIDC_ISSUER: str = ""
     ACTIONS_OIDC_REQUEST_TOKEN: str = "fullsend-action-request"
 
+    # GitHub App JWTs are accepted without signature verification by default
+    # for emulator convenience. Set this to false for strict checks.
+    APP_JWT_PERMISSIVE: bool = True
+
     # Server config
     HOST: str = "0.0.0.0"
     PORT: int = 8000

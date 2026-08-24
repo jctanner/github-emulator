@@ -11,7 +11,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database_retry import rollback_after_sqlite_lock
-from app.models import PersonalAccessToken, User
+from app.models import AppInstallationToken, PersonalAccessToken, User
 
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 
@@ -68,7 +68,8 @@ async def validate_token(db: AsyncSession, token: str) -> Optional[User]:
     )
     pat = result.scalar_one_or_none()
     if pat is None:
-        return None
+        installation_token = await validate_installation_token(db, token)
+        return installation_token.installation.user if installation_token else None
 
     # Check expiration
     if pat.expires_at and pat.expires_at < datetime.utcnow():
@@ -87,6 +88,32 @@ async def validate_token(db: AsyncSession, token: str) -> Optional[User]:
         return result.scalar_one_or_none()
 
     return pat.user
+
+
+async def validate_installation_token(
+    db: AsyncSession, token: str
+) -> Optional[AppInstallationToken]:
+    """Validate a GitHub App installation token and return its token row."""
+    if not token.startswith("ghs_"):
+        return None
+
+    token_hash_value = hash_token(token)
+    result = await db.execute(
+        select(AppInstallationToken).where(
+            AppInstallationToken.token_hash == token_hash_value
+        )
+    )
+    installation_token = result.scalar_one_or_none()
+    if installation_token is None:
+        return None
+
+    expires_at = installation_token.expires_at
+    if expires_at.tzinfo is None:
+        if expires_at < datetime.utcnow():
+            return None
+    elif expires_at < datetime.now(expires_at.tzinfo):
+        return None
+    return installation_token
 
 
 async def validate_basic_auth(

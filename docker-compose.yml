@@ -8,8 +8,8 @@ services:
     ports:
       - "443:443"
       - "80:80"
-      - "8000:8000"
-      - "2222:2222"
+      - "${PORT:-8000}:8000"
+      - "${GITHUB_EMULATOR_SSH_PORT_HOST:-2222}:2222"
     volumes:
       - github_emulator_data:/data
     environment:
@@ -22,6 +22,7 @@ services:
       - GITHUB_EMULATOR_ADMIN_PASSWORD=admin
       - GITHUB_EMULATOR_SSH_ENABLED=true
       - GITHUB_EMULATOR_SSH_PORT=2222
+      - GITHUB_EMULATOR_APP_JWT_PERMISSIVE=${GITHUB_EMULATOR_APP_JWT_PERMISSIVE:-true}
     restart: unless-stopped
 
   actions-runner:

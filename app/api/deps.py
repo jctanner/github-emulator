@@ -1,8 +1,6 @@
 """Shared FastAPI dependencies for the GitHub Emulator REST API."""
 
 import base64
-import hashlib
-from datetime import datetime, timezone
 from typing import Annotated, Optional
 
 from fastapi import Depends, HTTPException, Request
@@ -10,11 +8,9 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database import get_db
-from app.database_retry import rollback_after_sqlite_lock
 from app.models.user import User
-from app.models.token import PersonalAccessToken
 from app.models.repository import Repository
-from app.config import settings
+from app.services.auth_service import validate_basic_auth, validate_installation_token, validate_token
 
 
 # ---------------------------------------------------------------------------
@@ -38,7 +34,6 @@ async def get_current_user(
     if not auth_header:
         return None
 
-    token_value: Optional[str] = None
     parts = auth_header.split(" ", 1)
 
     if len(parts) != 2:
@@ -51,7 +46,11 @@ async def get_current_user(
     elif scheme == "basic":
         try:
             decoded = base64.b64decode(credentials).decode("utf-8")
-            _login, _, token_value = decoded.partition(":")
+            login, _, token_value = decoded.partition(":")
+            if not token_value:
+                return None
+            user = await validate_basic_auth(db, login, token_value)
+            return user
         except Exception:
             return None
     else:
@@ -60,42 +59,14 @@ async def get_current_user(
     if not token_value:
         return None
 
-    # Hash the token and look it up
-    token_hash = hashlib.sha256(token_value.encode()).hexdigest()
-    result = await db.execute(
-        select(PersonalAccessToken).where(
-            PersonalAccessToken.token_hash == token_hash
-        )
-    )
-    pat = result.scalar_one_or_none()
-    if pat is None:
-        from app.models.apps import AppInstallationToken
-        installation_result = await db.execute(
-            select(AppInstallationToken).where(AppInstallationToken.token_hash == token_hash)
-        )
-        installation_token = installation_result.scalar_one_or_none()
+    if token_value.startswith("ghs_"):
+        installation_token = await validate_installation_token(db, token_value)
         if installation_token is None:
             return None
-        expires_at = installation_token.expires_at
-        if expires_at.tzinfo is None:
-            expires_at = expires_at.replace(tzinfo=timezone.utc)
-        if expires_at < datetime.now(timezone.utc):
-            return None
         request.state.installation_token = installation_token
+        request.state.is_installation_token = True
         return installation_token.installation.user
-
-    # Update last_used_at
-    user_id = pat.user_id
-    pat.last_used_at = datetime.now(timezone.utc)
-    try:
-        await db.commit()
-    except Exception as exc:
-        if not await rollback_after_sqlite_lock(db, exc):
-            raise
-        result = await db.execute(select(User).where(User.id == user_id))
-        return result.scalar_one_or_none()
-
-    return pat.user
+    return await validate_token(db, token_value)
 
 
 async def require_auth(

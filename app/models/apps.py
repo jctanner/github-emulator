@@ -19,6 +19,7 @@ class GitHubApp(Base):
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     app_id: Mapped[str] = mapped_column(String, unique=True, nullable=False, index=True)
+    client_id: Mapped[str] = mapped_column(String, unique=True, nullable=False, index=True)
     name: Mapped[str] = mapped_column(String, nullable=False)
     slug: Mapped[str] = mapped_column(String, unique=True, nullable=False, index=True)
     private_key_pem: Mapped[str] = mapped_column(Text, nullable=False)
@@ -26,18 +27,6 @@ class GitHubApp(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
 
     installations = relationship("AppInstallation", back_populates="app", lazy="selectin")
-
-    @property
-    def client_id(self) -> str:
-        """Return a stable, non-secret client identifier for the emulator.
-
-        The emulator does not implement OAuth, so it does not persist a
-        separate OAuth client record.  Keeping this derived preserves the
-        existing database schema while giving admin/API consumers the
-        identifier shown by GitHub App tooling.
-        """
-        return f"Iv1.{self.app_id}"
-
 
 class AppInstallation(Base):
     __tablename__ = "app_installations"

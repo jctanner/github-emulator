@@ -86,8 +86,13 @@ All settings are driven by environment variables with the `GITHUB_EMULATOR_` pre
 | `GITHUB_EMULATOR_ADMIN_PASSWORD` | `admin` | Admin user password |
 | `GITHUB_EMULATOR_DEFAULT_ADMIN_TOKEN` | `ghp_admin_default_token` | Default admin PAT seeded at startup |
 | `GITHUB_EMULATOR_HOSTNAME` | `ghemu.local` | Hostname for Caddy TLS certificate |
+| `GITHUB_EMULATOR_APP_JWT_PERMISSIVE` | `true` | Skip App JWT signature verification; set `false` for strict verification |
 | `GITHUB_EMULATOR_SSH_ENABLED` | `true` | Enable/disable the SSH transport |
 | `GITHUB_EMULATOR_SSH_PORT` | `2222` | SSH server listen port |
+
+The Compose stack maps the HTTP API port from `${PORT:-8000}`. For example,
+`make CONTAINER_ENGINE=podman PORT=9000 up` exposes the service on port 9000
+while the container continues listening on port 8000.
 
 ## Database Migrations (Alembic)
 
@@ -138,6 +143,27 @@ curl -s -X POST http://localhost:8000/user/repos \
   -d '{"name":"my-repo","description":"Test repo"}' \
   | python3 -m json.tool
 ```
+
+### Use GitHub App compatibility endpoints
+
+The resettable admin API exposes authenticated JSON setup endpoints matching
+the local GitHub App integration surface:
+
+```bash
+curl -s -X POST http://localhost:8000/admin/api/apps \
+  -H "Authorization: token $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"name":"my-app","owner":"admin"}' | python3 -m json.tool
+
+# App JWT-authenticated metadata and installations use the GitHub-style API.
+curl -s http://localhost:8000/api/v3/app \
+  -H "Authorization: Bearer $APP_JWT" | python3 -m json.tool
+curl -s http://localhost:8000/api/v3/app/installations \
+  -H "Authorization: Bearer $APP_JWT" | python3 -m json.tool
+```
+
+Client IDs are persisted per App. Existing SQLite databases are backfilled on
+startup; private-key retrieval and rotation require the admin token.
 
 ### Clone and push
 
