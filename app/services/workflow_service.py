@@ -1,10 +1,13 @@
 """Workflow detection, trigger evaluation, and run lifecycle management."""
 
 import asyncio
+import copy
 import fnmatch
 import itertools
 import logging
 import re
+import uuid
+from dataclasses import dataclass
 from datetime import datetime, timezone
 
 import yaml
@@ -13,12 +16,34 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
 from app.models.actions import Workflow, WorkflowRun, WorkflowJob, Secret, Variable
+from app.models.issue import Issue
+from app.models.pull_request import PullRequest
 from app.models.repository import Repository
 from app.models.user import User
 
 logger = logging.getLogger("github_emulator.workflows")
 
 _EXPRESSION_RE = re.compile(r"\$\{\{\s*([^}]+?)\s*\}\}")
+
+
+@dataclass(frozen=True)
+class EventEnvelope:
+    """Normalized event data used by the Actions dispatcher.
+
+    The envelope is an internal transport object.  Only ``payload`` is stored
+    in ``WorkflowRun.trigger_payload`` and exposed to the runner, matching the
+    shape of ``github.event`` rather than leaking dispatch metadata into it.
+    """
+
+    delivery_id: str
+    event_name: str
+    action: str
+    repository: Repository
+    ref: str
+    sha: str
+    actor: User
+    payload: dict
+    occurred_at: datetime
 
 
 def _lookup_context(context: dict, expression: str) -> str:
@@ -54,10 +79,10 @@ def render_expressions(value: object, context: dict) -> object:
     return value
 
 
-async def detect_workflows(repo_disk_path: str) -> list[dict]:
-    """Read .github/workflows/*.yml from a bare repo's HEAD and return parsed YAML dicts."""
+async def detect_workflows(repo_disk_path: str, ref: str = "HEAD") -> list[dict]:
+    """Read workflow files from *ref* in a bare repository."""
     proc = await asyncio.create_subprocess_exec(
-        "git", "ls-tree", "--name-only", "HEAD", ".github/workflows/",
+        "git", "ls-tree", "--name-only", ref, ".github/workflows/",
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
         env={"GIT_DIR": repo_disk_path},
@@ -73,7 +98,7 @@ async def detect_workflows(repo_disk_path: str) -> list[dict]:
             continue
 
         cat_proc = await asyncio.create_subprocess_exec(
-            "git", "show", f"HEAD:{path}",
+            "git", "show", f"{ref}:{path}",
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
             env={"GIT_DIR": repo_disk_path},
@@ -106,17 +131,21 @@ def evaluate_trigger(workflow_yaml: dict, event: str, payload: dict) -> bool:
         return event in on_config
 
     if isinstance(on_config, dict):
-        if event not in on_config:
+        event_config = on_config.get(event)
+        if event_config is None and event not in on_config:
             return False
 
-        event_config = on_config[event]
-        if event_config is None:
+        # PyYAML may parse an empty mapping as {}, and GitHub treats both an
+        # empty mapping and a null value as the event's default configuration.
+        if event_config is None or event_config == {}:
             return True
 
         if event == "push":
             return _match_push(event_config, payload)
-        if event == "pull_request":
+        if event in ("pull_request", "pull_request_target"):
             return _match_pull_request(event_config, payload)
+        if event in ("issues", "issue_comment", "pull_request_review"):
+            return _match_types(event_config, payload)
         if event == "workflow_dispatch":
             return True
 
@@ -126,6 +155,8 @@ def evaluate_trigger(workflow_yaml: dict, event: str, payload: dict) -> bool:
 
 
 def _match_push(config: dict, payload: dict) -> bool:
+    if not isinstance(config, dict):
+        return True
     ref = payload.get("ref", "")
     branch = ref.removeprefix("refs/heads/")
     tag = ref.removeprefix("refs/tags/")
@@ -169,6 +200,8 @@ def _match_push(config: dict, payload: dict) -> bool:
 
 
 def _match_pull_request(config: dict, payload: dict) -> bool:
+    if not isinstance(config, dict):
+        return True
     if "types" in config:
         action = payload.get("action", "opened")
         if action not in config["types"]:
@@ -185,6 +218,18 @@ def _match_pull_request(config: dict, payload: dict) -> bool:
             return False
 
     return True
+
+
+def _match_types(config: object, payload: dict) -> bool:
+    """Apply the common ``types`` allowlist used by activity triggers."""
+    if not isinstance(config, dict):
+        return True
+    types = config.get("types")
+    if types is None:
+        return True
+    if isinstance(types, str):
+        types = [types]
+    return payload.get("action", "") in types
 
 
 def _get_changed_files(payload: dict) -> list[str]:
@@ -266,6 +311,7 @@ def build_job_graph(workflow_yaml: dict) -> list[dict]:
             "runs_on": labels,
             "needs": needs,
             "steps": steps,
+            "uses": config.get("uses"),
             "env": config.get("env", {}),
             "strategy": config.get("strategy", {}),
             "permissions": config.get("permissions", {}),
@@ -274,6 +320,58 @@ def build_job_graph(workflow_yaml: dict) -> list[dict]:
         })
 
     return _topo_sort(jobs)
+
+
+async def materialize_reusable_workflows(
+    workflow_yaml: dict, repo_disk_path: str, ref: str = "HEAD"
+) -> dict:
+    """Inline local job-level reusable workflows for the lightweight runner.
+
+    GitHub's called workflow is still represented as ordinary visible jobs in
+    the run.  Remote reusable workflows are retained as a visible, skipped
+    placeholder so unsupported external resolution is explicit and harmless.
+    """
+    jobs = workflow_yaml.get("jobs", {})
+    if not isinstance(jobs, dict) or not any(
+        isinstance(config, dict) and config.get("uses") for config in jobs.values()
+    ):
+        return workflow_yaml
+
+    result = copy.deepcopy(workflow_yaml)
+    expanded = {}
+    for key, config in jobs.items():
+        if not isinstance(config, dict) or not config.get("uses"):
+            expanded[key] = config
+            continue
+
+        uses = str(config["uses"])
+        if uses.startswith("./") and "@" in uses:
+            workflow_path, called_ref = uses[2:].split("@", 1)
+            called_ref = called_ref or ref
+            called_files = await detect_workflows(repo_disk_path, called_ref)
+            called = next(
+                (candidate for candidate in called_files
+                 if candidate.get("_path") == workflow_path),
+                None,
+            )
+            if called and isinstance(called.get("jobs"), dict):
+                for called_key, called_config in called["jobs"].items():
+                    child = copy.deepcopy(called_config)
+                    child["name"] = child.get("name", f"{key} / {called_key}")
+                    if config.get("needs"):
+                        child["needs"] = config["needs"]
+                    expanded[f"{key} / {called_key}"] = child
+                continue
+
+        # The emulator cannot fetch an arbitrary remote workflow.  Keep it in
+        # the graph so the run remains inspectable and clearly unsupported.
+        placeholder = copy.deepcopy(config)
+        placeholder["steps"] = []
+        placeholder["name"] = placeholder.get("name", f"{key} (reusable workflow)")
+        expanded[key] = placeholder
+
+    result["jobs"] = expanded
+    return result
 
 
 def _topo_sort(jobs: list[dict]) -> list[dict]:
@@ -299,10 +397,10 @@ def _topo_sort(jobs: list[dict]) -> list[dict]:
 
 
 async def sync_workflows_to_db(
-    db: AsyncSession, repository: Repository
+    db: AsyncSession, repository: Repository, ref: str = "HEAD"
 ) -> list[Workflow]:
     """Upsert Workflow rows from on-disk workflow files."""
-    detected = await detect_workflows(repository.disk_path)
+    detected = await detect_workflows(repository.disk_path, ref)
 
     result = await db.execute(
         select(Workflow).where(Workflow.repo_id == repository.id)
@@ -327,8 +425,9 @@ async def sync_workflows_to_db(
 
         workflows.append((w, wf_yaml))
 
+    default_ref = repository.default_branch or "main"
     for path, w in existing.items():
-        if path not in seen_paths:
+        if ref in {"HEAD", default_ref} and path not in seen_paths:
             w.state = "disabled_manually"
 
     await db.flush()
@@ -468,60 +567,305 @@ async def create_workflow_run(
     return run
 
 
-async def process_push_event(
-    db: AsyncSession, repository: Repository, user: User
+def _user_payload(user: User | None) -> dict | None:
+    if user is None:
+        return None
+    return {
+        "login": user.login,
+        "id": user.id,
+        "node_id": f"U_{user.id}",
+        "type": "User",
+        "site_admin": bool(user.site_admin),
+    }
+
+
+def _repository_payload(repository: Repository) -> dict:
+    owner = _user_payload(repository.owner)
+    return {
+        "id": repository.id,
+        "node_id": f"R_{repository.id}",
+        "name": repository.name,
+        "full_name": repository.full_name,
+        "private": bool(repository.private),
+        "default_branch": repository.default_branch,
+        "description": repository.description,
+        "owner": owner,
+        "html_url": f"{settings.BASE_URL}/{repository.full_name}",
+        "url": f"{settings.BASE_URL}/api/v3/repos/{repository.full_name}",
+    }
+
+
+def _label_payload(label) -> dict:
+    return {
+        "id": label.id,
+        "node_id": f"L_{label.id}",
+        "name": label.name,
+        "color": label.color,
+        "description": label.description,
+    }
+
+
+def _issue_payload(issue, repository: Repository) -> dict:
+    return {
+        "id": issue.id,
+        "node_id": f"I_{issue.id}",
+        "number": issue.number,
+        "title": issue.title,
+        "body": issue.body,
+        "state": issue.state,
+        "state_reason": issue.state_reason,
+        "user": _user_payload(issue.user),
+        "labels": [_label_payload(label) for label in (issue.labels or [])],
+        "locked": bool(issue.locked),
+        "created_at": issue.created_at.isoformat() if issue.created_at else None,
+        "updated_at": issue.updated_at.isoformat() if issue.updated_at else None,
+        "closed_at": issue.closed_at.isoformat() if issue.closed_at else None,
+        "html_url": f"{settings.BASE_URL}/{repository.full_name}/issues/{issue.number}",
+        "repository": _repository_payload(repository),
+    }
+
+
+def _pull_request_payload(pr, issue, repository: Repository) -> dict:
+    base = {
+        "ref": pr.base_ref,
+        "sha": pr.base_sha,
+        "label": f"{repository.full_name.split('/', 1)[0]}:{pr.base_ref}",
+    }
+    head = {
+        "ref": pr.head_ref,
+        "sha": pr.head_sha,
+        "label": f"{repository.full_name.split('/', 1)[0]}:{pr.head_ref}",
+    }
+    return {
+        "id": pr.id,
+        "node_id": f"PR_{pr.id}",
+        "number": issue.number,
+        "title": issue.title,
+        "body": issue.body,
+        "state": issue.state,
+        "user": _user_payload(issue.user),
+        "draft": bool(pr.draft),
+        "merged": bool(pr.merged),
+        "merge_commit_sha": pr.merge_commit_sha,
+        "base": base,
+        "head": head,
+        "labels": [_label_payload(label) for label in (issue.labels or [])],
+        "created_at": issue.created_at.isoformat() if issue.created_at else None,
+        "updated_at": issue.updated_at.isoformat() if issue.updated_at else None,
+        "closed_at": issue.closed_at.isoformat() if issue.closed_at else None,
+        "html_url": f"{settings.BASE_URL}/{repository.full_name}/pull/{issue.number}",
+        "repo": _repository_payload(repository),
+    }
+
+
+def build_activity_payload(
+    repository: Repository,
+    actor: User,
+    action: str,
+    *,
+    issue=None,
+    pull_request=None,
+    comment=None,
+    review=None,
+    label=None,
+    ref: str | None = None,
+    sha: str | None = None,
+) -> dict:
+    """Build the GitHub-like payload shared by REST-triggered activities."""
+    payload = {
+        "action": action,
+        "repository": _repository_payload(repository),
+        "sender": _user_payload(actor),
+    }
+    if issue is not None:
+        payload["issue"] = _issue_payload(issue, repository)
+    if pull_request is not None and issue is not None:
+        payload["pull_request"] = _pull_request_payload(pull_request, issue, repository)
+    if comment is not None:
+        payload["comment"] = {
+            "id": comment.id,
+            "node_id": f"IC_{comment.id}",
+            "body": comment.body,
+            "user": _user_payload(comment.user),
+            "created_at": comment.created_at.isoformat() if comment.created_at else None,
+            "updated_at": comment.updated_at.isoformat() if comment.updated_at else None,
+            "html_url": f"{settings.BASE_URL}/{repository.full_name}/issues/{issue.number}#issuecomment-{comment.id}",
+        }
+    if review is not None:
+        payload["review"] = {
+            "id": review.id,
+            "node_id": f"REV_{review.id}",
+            "body": review.body,
+            "state": review.state,
+            "user": _user_payload(review.user),
+            "commit_id": review.commit_id,
+            "submitted_at": review.submitted_at.isoformat() if review.submitted_at else None,
+        }
+    if label is not None:
+        payload["label"] = _label_payload(label)
+    if ref:
+        payload["ref"] = ref
+    if sha:
+        payload["after"] = sha
+    return payload
+
+
+async def dispatch_event(
+    db: AsyncSession,
+    repository: Repository,
+    actor: User,
+    event: str,
+    action: str,
+    payload: dict,
+    *,
+    ref: str | None = None,
+    sha: str | None = None,
 ) -> list[WorkflowRun]:
-    """Detect workflows triggered by a push and create runs for them."""
-    if not repository.disk_path:
+    """Dispatch one successful repository activity to matching workflows."""
+    if not repository.disk_path or not actor:
         return []
 
-    workflows = await sync_workflows_to_db(db, repository)
+    ref = ref or repository.default_branch or "main"
+    ref_name = ref.removeprefix("refs/heads/")
+    ref_spec = ref if ref.startswith(("refs/", "HEAD")) else ref_name
+    sha = sha or payload.get("after") or await get_ref_sha(repository.disk_path, ref_spec)
+    payload.setdefault("ref", f"refs/heads/{ref_name}")
+    payload.setdefault("after", sha)
 
-    head_sha = await _get_head_sha(repository.disk_path)
-    head_branch = repository.default_branch or "main"
+    # Reconcile the Actions workflow inventory before matching this event. This
+    # keeps deleted workflows from remaining active after a push removes them,
+    # while sync_workflows_to_db only reconciles the default branch.
+    await sync_workflows_to_db(db, repository, ref_spec)
+
+    envelope = EventEnvelope(
+        delivery_id=str(uuid.uuid4()),
+        event_name=event,
+        action=action,
+        repository=repository,
+        ref=payload["ref"],
+        sha=sha,
+        actor=actor,
+        payload=payload,
+        occurred_at=datetime.now(timezone.utc),
+    )
+
+    workflows_yaml = await detect_workflows(repository.disk_path, ref_spec)
+    result = await db.execute(select(Workflow).where(Workflow.repo_id == repository.id))
+    known = {workflow.path: workflow for workflow in result.scalars().all()}
+    runs = []
+    for workflow_yaml in workflows_yaml:
+        path = workflow_yaml.get("_path", "")
+        workflow = known.get(path)
+        if workflow is None:
+            workflow = Workflow(
+                repo_id=repository.id,
+                name=workflow_yaml.get("name", path),
+                path=path,
+                state="active",
+            )
+            db.add(workflow)
+            await db.flush()
+            known[path] = workflow
+        else:
+            workflow.name = workflow_yaml.get("name", path)
+            workflow.state = "active"
+
+        if not evaluate_trigger(workflow_yaml, envelope.event_name, envelope.payload):
+            continue
+        workflow_yaml = await materialize_reusable_workflows(
+            workflow_yaml, repository.disk_path, ref_spec,
+        )
+        run = await create_workflow_run(
+            db,
+            workflow,
+            workflow_yaml,
+            envelope.event_name,
+            envelope.payload,
+            envelope.actor,
+            envelope.sha,
+            ref_name,
+        )
+        runs.append(run)
+
+    if runs:
+        await db.commit()
+        logger.info(
+            "Dispatched %s/%s to %d workflow(s) for %s",
+            event,
+            action,
+            len(runs),
+            repository.full_name,
+        )
+    return runs
+
+
+async def process_push_event(
+    db: AsyncSession,
+    repository: Repository,
+    user: User,
+    *,
+    before_sha: str | None = None,
+    ref_name: str | None = None,
+) -> list[WorkflowRun]:
+    """Dispatch a push and any matching pull-request synchronizations."""
+    if not repository.disk_path:
+        return []
+    user = user or repository.owner
+    if user is None:
+        return []
+
+    head_branch = ref_name or repository.default_branch or "main"
+    head_sha = await get_ref_sha(repository.disk_path, head_branch)
+    head_sha = head_sha or await _get_head_sha(repository.disk_path)
+    before_sha = before_sha or "0" * 40
+    commits = []
+    if head_sha:
+        changed_files = await _get_changed_files_between(
+            repository.disk_path, before_sha, head_sha,
+        )
+        if changed_files:
+            commits.append({
+                "id": head_sha,
+                "added": [path for path, status in changed_files if status == "A"],
+                "modified": [path for path, status in changed_files if status == "M"],
+                "removed": [path for path, status in changed_files if status == "D"],
+            })
 
     payload = {
         "ref": f"refs/heads/{head_branch}",
         "after": head_sha,
+        "before": before_sha,
+        "created": False,
+        "deleted": False,
+        "forced": False,
+        "commits": commits,
         "repository": {"id": repository.id, "full_name": repository.full_name},
         "pusher": {"name": user.login, "email": user.email or ""},
         "sender": {"login": user.login, "id": user.id},
     }
+    runs = await dispatch_event(
+        db, repository, user, "push", "", payload,
+        ref=head_branch, sha=head_sha,
+    )
 
-    runs = []
-    for workflow_obj, workflow_yaml in workflows:
-        if evaluate_trigger(workflow_yaml, "push", payload):
-            run = await create_workflow_run(
-                db, workflow_obj, workflow_yaml, "push", payload,
-                user, head_sha, head_branch,
-            )
-            runs.append(run)
-            logger.info(
-                "Created workflow run #%d for %s on %s",
-                run.run_number, workflow_obj.name, repository.full_name,
-            )
-
-    if runs:
-        await db.commit()
-
-        try:
-            from app.services.webhook_service import trigger_webhooks
-            for run in runs:
-                await trigger_webhooks(db, repository.id, "workflow_run", {
-                    "action": "requested",
-                    "workflow_run": {
-                        "id": run.id,
-                        "name": run.workflow.name if run.workflow else "",
-                        "head_sha": run.head_sha,
-                        "head_branch": run.head_branch,
-                        "status": run.status,
-                        "event": run.event,
-                    },
-                    "repository": {"id": repository.id, "full_name": repository.full_name},
-                })
-        except Exception:
-            pass
-
+    # A push to a pull request's head branch is the source of the
+    # pull_request_target ``synchronize`` activity.  The base branch is the
+    # checkout/ref used for the resulting run.
+    result = await db.execute(
+        select(PullRequest)
+        .join(Issue, PullRequest.issue_id == Issue.id)
+        .where(PullRequest.repo_id == repository.id, PullRequest.head_ref == head_branch)
+    )
+    for pr in result.scalars().all():
+        issue = pr.issue
+        pr_payload = build_activity_payload(
+            repository, user, "synchronize", issue=issue,
+            pull_request=pr, ref=f"refs/heads/{pr.base_ref}", sha=pr.base_sha,
+        )
+        runs.extend(await dispatch_event(
+            db, repository, user, "pull_request_target", "synchronize",
+            pr_payload, ref=pr.base_ref, sha=pr.base_sha,
+        ))
     return runs
 
 
@@ -534,6 +878,34 @@ async def _get_head_sha(repo_disk_path: str) -> str:
     )
     stdout, _ = await proc.communicate()
     return stdout.decode().strip() if proc.returncode == 0 else ""
+
+
+async def _get_changed_files_between(
+    repo_disk_path: str, before_sha: str, after_sha: str
+) -> list[tuple[str, str]]:
+    """Return ``(path, status)`` pairs for a push range."""
+    if before_sha == "0" * 40:
+        before_sha = ""
+    args = ["git", "diff-tree", "--no-commit-id", "--name-status", "-r"]
+    if before_sha:
+        args.append(f"{before_sha}..{after_sha}")
+    else:
+        args.extend(["--root", after_sha])
+    proc = await asyncio.create_subprocess_exec(
+        *args,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+        env={"GIT_DIR": repo_disk_path},
+    )
+    stdout, _ = await proc.communicate()
+    if proc.returncode != 0:
+        return []
+    changed = []
+    for line in stdout.decode().splitlines():
+        status, _, path = line.partition("\t")
+        if path and status:
+            changed.append((path, status[0]))
+    return changed
 
 
 async def get_ref_sha(repo_disk_path: str, ref: str) -> str:

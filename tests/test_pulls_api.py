@@ -2,6 +2,7 @@
 
 import asyncio
 import os
+import re
 
 import pytest
 from sqlalchemy import select
@@ -411,7 +412,7 @@ async def test_pr_web_files_tab_renders_diff(client, db_session, test_user, test
     conversation = await client.get(f"/ui/testuser/{repo_name}/pulls/1")
     assert conversation.status_code == 200
     assert "Conversation" in conversation.text
-    assert "Commits" in conversation.text
+    assert re.search(r"Commits\s*<span class=\"Counter\">1</span>", conversation.text)
     assert "Files changed" in conversation.text
 
     files = await client.get(f"/ui/testuser/{repo_name}/pulls/1?tab=files")
@@ -479,6 +480,9 @@ async def test_pr_web_renders_markdown_body_and_comments(
     assert "<h3>Comment</h3>" in page.text
     assert "<strong>bold</strong>" in page.text
     assert "<code>code</code>" in page.text
+    assert "IssueDescription" in page.text
+    assert "IssueComment" in page.text
+    assert 'class="TimelineItem-avatar"' not in page.text
     assert "<script>alert" not in page.text
     assert "&lt;script&gt;alert" in page.text
 

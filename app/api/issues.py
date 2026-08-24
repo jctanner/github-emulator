@@ -261,6 +261,11 @@ async def create_issue(
 
     await db.commit()
     await db.refresh(issue)
+    from app.services.workflow_service import build_activity_payload, dispatch_event
+    await dispatch_event(
+        db, repository, user, "issues", "opened",
+        build_activity_payload(repository, user, "opened", issue=issue),
+    )
     return _issue_json(issue, BASE)
 
 
@@ -304,12 +309,16 @@ async def update_issue(
     if issue is None:
         raise HTTPException(status_code=404, detail="Not Found")
 
+    old_state = issue.state
+    old_title = issue.title
+    old_body = issue.body
+    old_labels = {label.name: label for label in (issue.labels or [])}
+
     if "title" in body:
         issue.title = body["title"]
     if "body" in body:
         issue.body = body["body"]
     if "state" in body:
-        old_state = issue.state
         new_state = body["state"]
         issue.state = new_state
         if new_state == "closed" and old_state != "closed":
@@ -374,4 +383,41 @@ async def update_issue(
 
     await db.commit()
     await db.refresh(issue)
+    from app.services.workflow_service import build_activity_payload, dispatch_event
+    action = "edited"
+    if issue.state != old_state:
+        action = "closed" if issue.state == "closed" else "reopened"
+    changed = (
+        issue.title != old_title
+        or issue.body != old_body
+        or issue.state != old_state
+        or any(key in body for key in ("milestone", "assignees", "labels", "state_reason"))
+    )
+    if changed:
+        await dispatch_event(
+            db, repository, user, "issues", action,
+            build_activity_payload(repository, user, action, issue=issue),
+        )
+    if "labels" in body:
+        from app.services.workflow_service import build_activity_payload, dispatch_event
+        new_labels = {label.name: label for label in (issue.labels or [])}
+        event = "pull_request_target" if issue.pull_request is not None else "issues"
+        for name, label in new_labels.items():
+            if name not in old_labels:
+                await dispatch_event(
+                    db, repository, user, event, "labeled",
+                    build_activity_payload(
+                        repository, user, "labeled", issue=issue,
+                        pull_request=issue.pull_request, label=label,
+                    ),
+                )
+        for name, label in old_labels.items():
+            if name not in new_labels:
+                await dispatch_event(
+                    db, repository, user, event, "unlabeled",
+                    build_activity_payload(
+                        repository, user, "unlabeled", issue=issue,
+                        pull_request=issue.pull_request, label=label,
+                    ),
+                )
     return _issue_json(issue, BASE)

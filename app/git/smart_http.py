@@ -285,6 +285,24 @@ async def _post_receive_pack_tasks(repo_id: int, user_id: int | None) -> None:
         repository.pushed_at = datetime.now(timezone.utc)
         await db.commit()
 
+        previous_branches = {
+            branch.name: branch.sha
+            for branch in (await db.execute(
+                select(Branch).where(Branch.repo_id == repository.id)
+            )).scalars().all()
+        }
+        changed_branch = repository.default_branch or "main"
+        changed_before = previous_branches.get(changed_branch)
+        try:
+            disk_branches = await get_disk_branches(repository.disk_path)
+            for branch in disk_branches:
+                if previous_branches.get(branch["name"]) != branch["sha"]:
+                    changed_branch = branch["name"]
+                    changed_before = previous_branches.get(branch["name"])
+                    break
+        except Exception:
+            pass
+
         try:
             await _sync_branches_to_db(db, repository)
         except Exception:
@@ -300,7 +318,13 @@ async def _post_receive_pack_tasks(repo_id: int, user_id: int | None) -> None:
         try:
             from app.services.workflow_service import process_push_event
 
-            await process_push_event(db, repository, user)
+            await process_push_event(
+                db,
+                repository,
+                user,
+                before_sha=changed_before,
+                ref_name=changed_branch,
+            )
         except Exception:
             pass
 

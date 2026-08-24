@@ -15,6 +15,27 @@ router = APIRouter(tags=["labels"])
 BASE = settings.BASE_URL
 
 
+async def _dispatch_label_event(db, repository, user, issue, action, label):
+    from app.services.workflow_service import build_activity_payload, dispatch_event
+
+    event = "pull_request_target" if issue.pull_request is not None else "issues"
+    await dispatch_event(
+        db,
+        repository,
+        user,
+        event,
+        action,
+        build_activity_payload(
+            repository,
+            user,
+            action,
+            issue=issue,
+            pull_request=issue.pull_request,
+            label=label,
+        ),
+    )
+
+
 # ---------------------------------------------------------------------------
 # Repo-level label CRUD
 # ---------------------------------------------------------------------------
@@ -176,6 +197,8 @@ async def add_issue_labels(
     if issue is None:
         raise HTTPException(status_code=404, detail="Not Found")
 
+    existing_names = {label.name for label in (issue.labels or [])}
+    added_labels = []
     label_names = body.get("labels", [])
     for lname in label_names:
         lbl_result = await db.execute(
@@ -194,9 +217,13 @@ async def add_issue_labels(
             )
             if existing.scalar_one_or_none() is None:
                 db.add(IssueLabel(issue_id=issue.id, label_id=label.id))
+                if label.name not in existing_names:
+                    added_labels.append(label)
 
     await db.commit()
     await db.refresh(issue)
+    for label in added_labels:
+        await _dispatch_label_event(db, repository, user, issue, "labeled", label)
     return [LabelResponse.from_db(l, BASE, owner, repo) for l in issue.labels]
 
 
@@ -220,6 +247,7 @@ async def set_issue_labels(
     if issue is None:
         raise HTTPException(status_code=404, detail="Not Found")
 
+    old_labels = {label.name: label for label in (issue.labels or [])}
     # Remove existing
     await db.execute(
         sa_delete(IssueLabel).where(IssueLabel.issue_id == issue.id)
@@ -238,6 +266,13 @@ async def set_issue_labels(
 
     await db.commit()
     await db.refresh(issue)
+    new_labels = {label.name: label for label in (issue.labels or [])}
+    for name, label in new_labels.items():
+        if name not in old_labels:
+            await _dispatch_label_event(db, repository, user, issue, "labeled", label)
+    for name, label in old_labels.items():
+        if name not in new_labels:
+            await _dispatch_label_event(db, repository, user, issue, "unlabeled", label)
     return [LabelResponse.from_db(l, BASE, owner, repo) for l in issue.labels]
 
 
@@ -277,4 +312,5 @@ async def remove_issue_label(
     )
     await db.commit()
     await db.refresh(issue)
+    await _dispatch_label_event(db, repository, user, issue, "unlabeled", label)
     return [LabelResponse.from_db(l, BASE, owner, repo) for l in issue.labels]

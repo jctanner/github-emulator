@@ -597,6 +597,25 @@ async def create_pull(
     )
     pr = result.scalar_one()
     await _attach_resolved_refs(pr, repository)
+    from app.services.workflow_service import build_activity_payload, dispatch_event
+    await dispatch_event(
+        db,
+        repository,
+        user,
+        "pull_request_target",
+        "opened",
+        build_activity_payload(
+            repository,
+            user,
+            "opened",
+            issue=pr.issue,
+            pull_request=pr,
+            ref=f"refs/heads/{pr.base_ref}",
+            sha=pr.base_sha,
+        ),
+        ref=pr.base_ref,
+        sha=pr.base_sha,
+    )
     return _pr_json(pr, BASE)
 
 
@@ -642,12 +661,16 @@ async def update_pull(
         raise HTTPException(status_code=404, detail="Not Found")
 
     issue = pr.issue
+    old_state = issue.state
+    old_title = issue.title
+    old_body = issue.body
+    old_base = pr.base_ref
+    old_draft = pr.draft
     if "title" in body:
         issue.title = body["title"]
     if "body" in body:
         issue.body = body["body"]
     if "state" in body:
-        old_state = issue.state
         issue.state = body["state"]
         if body["state"] == "closed" and old_state != "closed":
             issue.closed_at = datetime.now(timezone.utc)
@@ -668,6 +691,40 @@ async def update_pull(
     )
     pr = result.scalar_one()
     await _attach_resolved_refs(pr, repository)
+    from app.services.workflow_service import build_activity_payload, dispatch_event
+    action = "edited"
+    if issue.state != old_state:
+        action = "closed" if issue.state == "closed" else "reopened"
+    elif old_draft and not pr.draft:
+        action = "ready_for_review"
+    elif not old_draft and pr.draft:
+        action = "converted_to_draft"
+    changed = (
+        issue.state != old_state
+        or issue.title != old_title
+        or issue.body != old_body
+        or pr.base_ref != old_base
+        or pr.draft != old_draft
+    )
+    if changed:
+        await dispatch_event(
+            db,
+            repository,
+            user,
+            "pull_request_target",
+            action,
+            build_activity_payload(
+                repository,
+                user,
+                action,
+                issue=issue,
+                pull_request=pr,
+                ref=f"refs/heads/{pr.base_ref}",
+                sha=pr.base_sha,
+            ),
+            ref=pr.base_ref,
+            sha=pr.base_sha,
+        )
     return _pr_json(pr, BASE)
 
 
@@ -743,6 +800,32 @@ async def merge_pull(
         )
 
     await db.commit()
+
+    # The merge mutates both rows and SQLite may expire server-managed
+    # timestamps; refresh before constructing the event payload so dispatch
+    # never performs an implicit async lazy load.
+    await db.refresh(issue)
+    await db.refresh(pr)
+
+    from app.services.workflow_service import build_activity_payload, dispatch_event
+    await dispatch_event(
+        db,
+        repository,
+        user,
+        "pull_request_target",
+        "closed",
+        build_activity_payload(
+            repository,
+            user,
+            "closed",
+            issue=issue,
+            pull_request=pr,
+            ref=f"refs/heads/{pr.base_ref}",
+            sha=pr.merge_commit_sha or pr.base_sha,
+        ),
+        ref=pr.base_ref,
+        sha=pr.merge_commit_sha or pr.base_sha,
+    )
 
     return {
         "sha": pr.merge_commit_sha,

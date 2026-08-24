@@ -3,7 +3,10 @@
 import re
 
 import pytest
+from sqlalchemy import select
 
+from app.models.actions import WorkflowRun
+from app.services import workflow_service
 from app.web.routes import _sign_session
 from tests.conftest import auth_headers
 
@@ -146,11 +149,30 @@ async def test_issue_page_can_create_and_delete_repository_labels(
 
 @pytest.mark.asyncio
 async def test_issue_web_flow_creates_closes_and_reopens_issue(
-    client, test_user, test_token, test_repo_with_init
+    client, db_session, test_user, test_token, test_repo_with_init, monkeypatch
 ):
     """The web UI exposes issue creation and close/reopen actions."""
     owner, repo_name, _ = test_repo_with_init
     client.cookies.set("ui_session", _sign_session(owner))
+
+    async def fake_detect(_path, _ref="HEAD"):
+        return [{
+            "_path": ".github/workflows/activity.yml",
+            "name": "Activity",
+            "on": {"issues": {"types": ["opened"]}},
+            "jobs": {
+                "record": {
+                    "runs-on": ["self-hosted"],
+                    "steps": [{"run": "echo activity"}],
+                },
+            },
+        }]
+
+    async def fake_ref_sha(_path, _ref):
+        return "a" * 40
+
+    monkeypatch.setattr(workflow_service, "detect_workflows", fake_detect)
+    monkeypatch.setattr(workflow_service, "get_ref_sha", fake_ref_sha)
 
     new_page = await client.get(f"/ui/{owner}/{repo_name}/issues/new")
     assert new_page.status_code == 200
@@ -163,6 +185,14 @@ async def test_issue_web_flow_creates_closes_and_reopens_issue(
     )
     assert create_response.status_code == 302
     assert create_response.headers["location"] == f"/ui/{owner}/{repo_name}/issues/1"
+
+    runs = (await db_session.execute(
+        select(WorkflowRun).order_by(WorkflowRun.id)
+    )).scalars().all()
+    assert len(runs) == 1
+    assert runs[0].event == "issues"
+    assert runs[0].trigger_payload["action"] == "opened"
+    assert runs[0].trigger_payload["issue"]["number"] == 1
 
     page = await client.get(f"/ui/{owner}/{repo_name}/issues/1")
     assert page.status_code == 200

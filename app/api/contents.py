@@ -3,6 +3,7 @@
 import asyncio
 import base64
 import os
+import tempfile
 
 from fastapi import APIRouter, HTTPException
 from fastapi.responses import JSONResponse
@@ -17,7 +18,12 @@ router = APIRouter(tags=["contents"])
 BASE = settings.BASE_URL
 
 
-async def _git(repo_path: str, *args: str, input_data: bytes | None = None) -> str:
+async def _git(
+    repo_path: str,
+    *args: str,
+    input_data: bytes | None = None,
+    env_overrides: dict[str, str] | None = None,
+) -> str:
     env = {
         **os.environ,
         "GIT_DIR": repo_path,
@@ -26,6 +32,8 @@ async def _git(repo_path: str, *args: str, input_data: bytes | None = None) -> s
         "GIT_COMMITTER_NAME": "GitHub Emulator",
         "GIT_COMMITTER_EMAIL": "emulator@github-emulator.local",
     }
+    if env_overrides:
+        env.update(env_overrides)
     proc = await asyncio.create_subprocess_exec(
         "git", *args,
         stdin=asyncio.subprocess.PIPE if input_data else None,
@@ -183,18 +191,59 @@ async def create_or_update_file(
         parent_sha = None
         tree_sha = None
 
-    # Build new tree by reading the current one and adding/updating the entry
+    # Build a new tree by applying the path through a temporary index.  Passing
+    # a nested path directly to ``git mktree`` fails because mktree accepts only
+    # entries for the tree currently being written; update-index/write-tree
+    # creates any missing intermediate trees for us.
     if tree_sha:
-        tree_info = await _git(repo_path, "ls-tree", tree_sha)
-        lines = [l for l in tree_info.strip().splitlines() if l]
-        # Remove existing entry for this path
-        lines = [l for l in lines if not l.endswith(f"\t{path}")]
-        lines.append(f"100644 blob {blob_sha}\t{path}")
-        tree_input = "\n".join(lines) + "\n"
+        index_fd, index_path = tempfile.mkstemp(prefix="github-emulator-index-")
+        os.close(index_fd)
+        try:
+            os.unlink(index_path)
+            index_env = {"GIT_INDEX_FILE": index_path}
+            await _git(repo_path, "read-tree", tree_sha, env_overrides=index_env)
+            await _git(
+                repo_path,
+                "update-index",
+                "--add",
+                "--cacheinfo",
+                "100644",
+                blob_sha,
+                path,
+                env_overrides=index_env,
+            )
+            new_tree_sha = (
+                await _git(repo_path, "write-tree", env_overrides=index_env)
+            ).strip()
+        finally:
+            try:
+                os.unlink(index_path)
+            except FileNotFoundError:
+                pass
     else:
-        tree_input = f"100644 blob {blob_sha}\t{path}\n"
-
-    new_tree_sha = (await _git(repo_path, "mktree", input_data=tree_input.encode())).strip()
+        index_fd, index_path = tempfile.mkstemp(prefix="github-emulator-index-")
+        os.close(index_fd)
+        try:
+            os.unlink(index_path)
+            index_env = {"GIT_INDEX_FILE": index_path}
+            await _git(
+                repo_path,
+                "update-index",
+                "--add",
+                "--cacheinfo",
+                "100644",
+                blob_sha,
+                path,
+                env_overrides=index_env,
+            )
+            new_tree_sha = (
+                await _git(repo_path, "write-tree", env_overrides=index_env)
+            ).strip()
+        finally:
+            try:
+                os.unlink(index_path)
+            except FileNotFoundError:
+                pass
 
     # Create commit
     env_args = [

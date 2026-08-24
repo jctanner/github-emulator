@@ -260,6 +260,13 @@ class RunnerClient:
             "GITHUB_EVENT_NAME": str(job.get("event", "workflow_dispatch")),
             "GITHUB_REF": str(job.get("event_payload", {}).get("ref", "")),
             "GITHUB_SHA": str(job.get("head_sha", "")),
+            "GITHUB_ACTOR": str(
+                job.get("event_payload", {}).get("sender", {}).get("login", "")
+            ),
+            "GITHUB_REPOSITORY_OWNER": REPO.split("/", 1)[0],
+            "GITHUB_REF_NAME": str(
+                job.get("event_payload", {}).get("ref", "")
+            ).removeprefix("refs/heads/").removeprefix("refs/tags/"),
             "RUNNER_NAME": RUNNER_NAME,
             "RUNNER_OS": platform.system(),
             "ACTIONS_ID_TOKEN_REQUEST_URL": f"http://127.0.0.1:{OIDC_PORT}/oidc",

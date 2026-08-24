@@ -97,6 +97,27 @@ async def create_review(
     db.add(review)
     await db.commit()
     await db.refresh(review)
+    if state != "PENDING":
+        from app.services.workflow_service import build_activity_payload, dispatch_event
+        await dispatch_event(
+            db,
+            pr.repository,
+            user,
+            "pull_request_review",
+            "submitted",
+            build_activity_payload(
+                pr.repository,
+                user,
+                "submitted",
+                issue=pr.issue,
+                pull_request=pr,
+                review=review,
+                ref=f"refs/heads/{pr.base_ref}",
+                sha=pr.base_sha,
+            ),
+            ref=pr.base_ref,
+            sha=pr.base_sha,
+        )
     return _review_json(review, owner, repo, pull_number, BASE)
 
 
@@ -142,6 +163,26 @@ async def submit_review(
 
     await db.commit()
     await db.refresh(review)
+    from app.services.workflow_service import build_activity_payload, dispatch_event
+    await dispatch_event(
+        db,
+        pr.repository,
+        user,
+        "pull_request_review",
+        "submitted",
+        build_activity_payload(
+            pr.repository,
+            user,
+            "submitted",
+            issue=pr.issue,
+            pull_request=pr,
+            review=review,
+            ref=f"refs/heads/{pr.base_ref}",
+            sha=pr.base_sha,
+        ),
+        ref=pr.base_ref,
+        sha=pr.base_sha,
+    )
     return _review_json(review, owner, repo, pull_number, BASE)
 
 

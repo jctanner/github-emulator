@@ -98,6 +98,7 @@ async def test_actions_list_workflows_and_runs(client, actions_repo):
     data = resp.json()
     assert data["total_count"] == 1
     assert data["workflows"][0]["name"] == "CI"
+    assert data["workflows"][0]["state"] == "disabled_manually"
 
     resp = await client.get(f"{API}/repos/testuser/actions-api-repo/actions/runs")
     assert resp.status_code == 200

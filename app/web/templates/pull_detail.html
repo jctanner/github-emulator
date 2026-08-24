@@ -46,9 +46,9 @@
             Conversation
         </a>
         <a class="UnderlineNav-item{% if active_pr_tab == 'commits' %} selected{% endif %}"
-           href="{{ url_prefix }}/{{ owner }}/{{ repo.name }}/pulls/{{ pr.number }}?tab=commits">
+            href="{{ url_prefix }}/{{ owner }}/{{ repo.name }}/pulls/{{ pr.number }}?tab=commits">
             Commits
-            {% if commits %}<span class="Counter">{{ commits|length }}</span>{% endif %}
+            {% if commit_count %}<span class="Counter">{{ commit_count }}</span>{% endif %}
         </a>
         <a class="UnderlineNav-item{% if active_pr_tab == 'files' %} selected{% endif %}"
            href="{{ url_prefix }}/{{ owner }}/{{ repo.name }}/pulls/{{ pr.number }}?tab=files">
@@ -152,8 +152,9 @@
 
     {# ---- PR description ---- #}
     {% if pr.body %}
-    <div class="Box color-shadow-small mb-4">
+    <div class="IssueDescription Box color-shadow-small mb-4">
         <div class="Box-header d-flex flex-items-center">
+            <span class="avatar-placeholder avatar-placeholder--small mr-2">{{ (pr.user_login or 'U')[0] }}</span>
             <strong>{{ pr.user_login or 'unknown' }}</strong>
             {% if pr.created_at %}
             <span class="color-fg-muted ml-1">opened this pull request on {{ pr.created_at.strftime('%b %d, %Y') }}</span>
@@ -167,21 +168,17 @@
 
     {# ---- Comments ---- #}
     {% for comment in comments %}
-    <div class="TimelineItem">
-        <div class="TimelineItem-avatar">
-            <span class="avatar-placeholder avatar-placeholder--medium">{{ (comment.user_login or 'U')[0] }}</span>
-        </div>
-        <div class="TimelineItem-body">
-            <div class="Box color-shadow-small">
-                <div class="Box-header d-flex flex-items-center">
-                    <strong>{{ comment.user_login or 'unknown' }}</strong>
-                    {% if comment.created_at %}
-                    <span class="color-fg-muted ml-1">commented on {{ comment.created_at.strftime('%b %d, %Y') }}</span>
-                    {% endif %}
-                </div>
-                <div class="Box-body">
-                    <div class="comment-body markdown-body">{{ comment.body_html|safe }}</div>
-                </div>
+    <div class="IssueComment">
+        <div class="Box color-shadow-small">
+            <div class="Box-header d-flex flex-items-center">
+                <span class="avatar-placeholder avatar-placeholder--small mr-2">{{ (comment.user_login or 'U')[0] }}</span>
+                <strong>{{ comment.user_login or 'unknown' }}</strong>
+                {% if comment.created_at %}
+                <span class="color-fg-muted ml-1">commented on {{ comment.created_at.strftime('%b %d, %Y') }}</span>
+                {% endif %}
+            </div>
+            <div class="Box-body">
+                <div class="comment-body markdown-body">{{ comment.body_html|safe }}</div>
             </div>
         </div>
     </div>

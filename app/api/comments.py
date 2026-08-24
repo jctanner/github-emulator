@@ -129,6 +129,19 @@ async def create_comment(
     await db.commit()
     await db.refresh(comment)
 
+    from app.services.workflow_service import build_activity_payload, dispatch_event
+    await dispatch_event(
+        db, repository, user, "issue_comment", "created",
+        build_activity_payload(
+            repository,
+            user,
+            "created",
+            issue=issue,
+            pull_request=issue.pull_request,
+            comment=comment,
+        ),
+    )
+
     return _comment_json(comment, owner, repo, issue_number, BASE)
 
 

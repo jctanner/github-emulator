@@ -161,6 +161,10 @@ async def list_workflows(
     """List workflows."""
     repository = await get_repo_or_404(owner, repo, db)
     _check_read_access(repository, current_user)
+    from app.services.workflow_service import sync_workflows_to_db
+
+    await sync_workflows_to_db(db, repository, "HEAD")
+    await db.commit()
     query = (
         select(Workflow)
         .where(Workflow.repo_id == repository.id)
@@ -179,6 +183,10 @@ async def get_workflow(
     """Get a workflow."""
     repository = await get_repo_or_404(owner, repo, db)
     _check_read_access(repository, current_user)
+    from app.services.workflow_service import sync_workflows_to_db
+
+    await sync_workflows_to_db(db, repository, "HEAD")
+    await db.commit()
     result = await db.execute(
         select(Workflow).where(Workflow.id == workflow_id, Workflow.repo_id == repository.id)
     )
@@ -194,6 +202,10 @@ async def dispatch_workflow(
 ):
     """Dispatch a workflow configured with ``workflow_dispatch``."""
     repository = await get_repo_or_404(owner, repo, db)
+    from app.services.workflow_service import sync_workflows_to_db
+
+    await sync_workflows_to_db(db, repository, "HEAD")
+    await db.commit()
     workflow_query = select(Workflow).where(Workflow.repo_id == repository.id)
     if workflow_id.isdigit():
         workflow_query = workflow_query.where(Workflow.id == int(workflow_id))
@@ -201,11 +213,6 @@ async def dispatch_workflow(
         workflow_query = workflow_query.where(Workflow.path == workflow_id)
     workflow = (await db.execute(workflow_query)).scalar_one_or_none()
 
-    if workflow is None:
-        from app.services.workflow_service import sync_workflows_to_db
-
-        await sync_workflows_to_db(db, repository)
-        workflow = (await db.execute(workflow_query)).scalar_one_or_none()
     if workflow is None:
         raise HTTPException(status_code=404, detail="Workflow not found")
 

@@ -65,6 +65,29 @@ async def test_create_file(client, test_user, test_token, test_repo_with_init):
 
 
 @pytest.mark.asyncio
+async def test_create_nested_file(client, test_user, test_token, test_repo_with_init):
+    """PUT creates intermediate Git trees for nested paths."""
+    owner, repo_name, _ = test_repo_with_init
+    content_b64 = base64.b64encode(b"name: Event trigger smoke\n").decode()
+    resp = await client.put(
+        f"{API}/repos/{owner}/{repo_name}/contents/.github/workflows/event.yml",
+        json={
+            "message": "Create nested workflow",
+            "content": content_b64,
+        },
+        headers=auth_headers(test_token),
+    )
+    assert resp.status_code == 201
+    assert resp.json()["content"]["path"] == ".github/workflows/event.yml"
+
+    fetched = await client.get(
+        f"{API}/repos/{owner}/{repo_name}/contents/.github/workflows/event.yml"
+    )
+    assert fetched.status_code == 200
+    assert base64.b64decode(fetched.json()["content"]).decode() == "name: Event trigger smoke\n"
+
+
+@pytest.mark.asyncio
 async def test_update_file(client, test_user, test_token, test_repo_with_init):
     """PUT /repos/{owner}/{repo}/contents/{path} updates an existing file."""
     owner, repo_name, _ = test_repo_with_init

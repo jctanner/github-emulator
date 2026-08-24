@@ -38,6 +38,7 @@ from app.models.repository import Repository
 from app.models.user import User
 from app.services.auth_service import verify_password
 from app.services import comment_service, issue_service, pr_service, repo_service
+from app.services.workflow_service import build_activity_payload, dispatch_event
 from app.web.markdown import render_markdown
 
 _WEB_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -632,6 +633,14 @@ async def new_issue_submit(
         db, repo=repo, user=current_user,
         title=title, body=body or None,
     )
+    await dispatch_event(
+        db,
+        repo,
+        current_user,
+        "issues",
+        "opened",
+        build_activity_payload(repo, current_user, "opened", issue=issue),
+    )
     return RedirectResponse(
         url=f"/ui/{owner}/{repo_name}/issues/{issue.number}", status_code=302
     )
@@ -1125,6 +1134,10 @@ async def actions_list(
     if not _can_view_repo(repo, current_user):
         return HTMLResponse(content="<h1>404 - Not Found</h1>", status_code=404)
 
+    from app.services.workflow_service import sync_workflows_to_db
+
+    await sync_workflows_to_db(db, repo, "HEAD")
+    await db.commit()
     workflows = list((await db.execute(
         select(Workflow)
         .where(Workflow.repo_id == repo.id)
@@ -1311,6 +1324,7 @@ async def pull_detail(
     )
     diff_files = []
     commits = []
+    commit_count = 0
     if repo.disk_path and os.path.isdir(repo.disk_path):
         pr.resolved_head_ref, resolved_head_sha = await normalize_branch_ref(
             repo.disk_path, pr.head_ref, owner
@@ -1324,6 +1338,9 @@ async def pull_detail(
         pr.base_label = f"{owner}:{pr.resolved_base_ref}"
         diff_files = await get_compare_diff(
             repo.disk_path, pr.resolved_base_ref, pr.resolved_head_ref
+        )
+        commit_count = await get_commit_count(
+            repo.disk_path, f"{pr.resolved_base_ref}..{pr.resolved_head_ref}"
         )
         if active_pr_tab == "commits":
             commits = await get_log(
@@ -1348,6 +1365,7 @@ async def pull_detail(
             request, owner=owner, repo=repo, repo_name=repo.name,
             pr=pr, comments=comments, active_pr_tab=active_pr_tab,
             diff_files=diff_files, commits=commits,
+            commit_count=commit_count,
             can_merge=_can_merge_repo(repo, current_user),
             merge_error=merge_error,
             current_user=current_user,
