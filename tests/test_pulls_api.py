@@ -82,6 +82,35 @@ async def _repo_ref_sha(db_session, full_name: str, ref: str) -> str:
     return stdout.decode().strip()
 
 
+@pytest.mark.asyncio
+async def test_repo_navigation_shows_issue_and_pull_request_counts(
+    client, test_token, repo_with_branch
+):
+    """Repository navigation shows both counters on either list page."""
+    await client.post(
+        f"{API}/repos/testuser/pr-repo/issues",
+        json={"title": "Navigation count issue"},
+        headers=auth_headers(test_token),
+    )
+    response = await client.post(
+        f"{API}/repos/testuser/pr-repo/pulls",
+        json={"title": "Navigation count PR", "head": "feature", "base": "main"},
+        headers=auth_headers(test_token),
+    )
+    assert response.status_code == 201
+
+    for path in ("pulls", "issues"):
+        page = await client.get(f"/ui/testuser/pr-repo/{path}")
+        assert page.status_code == 200
+        assert re.search(
+            r'<span>Issues</span>\s*<span class="Counter">1</span>', page.text
+        )
+        assert re.search(
+            r'<span>Pull requests</span>\s*<span class="Counter">1</span>',
+            page.text,
+        )
+
+
 @pytest.fixture
 async def repo_with_branch(client, test_user, test_token):
     """Create a repo for PR tests."""

@@ -195,6 +195,49 @@ async def test_graphql_repository_with_issues(client, test_user, test_token):
 
 
 @pytest.mark.asyncio
+async def test_graphql_pull_requests_accepts_gh_list_arguments(client, test_user, test_token):
+    """The pullRequests connection accepts the arguments used by ``gh pr list``."""
+    await client.post(
+        f"{API}/user/repos",
+        json={"name": "gql-pulls"},
+        headers=auth_headers(test_token),
+    )
+    resp = await client.post(
+        "/graphql",
+        json={
+            "query": """
+                query($owner: String!, $name: String!, $head: String!, $base: String!) {
+                    repository(owner: $owner, name: $name) {
+                        pullRequests(
+                            first: 30
+                            headRefName: $head
+                            baseRefName: $base
+                            states: [OPEN]
+                            orderBy: {field: CREATED_AT, direction: DESC}
+                        ) {
+                            totalCount
+                            nodes { number headRepositoryOwner { login } }
+                            pageInfo { hasNextPage endCursor }
+                        }
+                    }
+                }
+            """,
+            "variables": {
+                "owner": "testuser",
+                "name": "gql-pulls",
+                "head": "agent/1-example",
+                "base": "main",
+            },
+        },
+        headers=auth_headers(test_token),
+    )
+    assert resp.status_code == 200
+    data = resp.json()
+    assert "errors" not in data
+    assert data["data"]["repository"]["pullRequests"]["nodes"] == []
+
+
+@pytest.mark.asyncio
 async def test_graphql_variables(client, test_user, test_token):
     """GraphQL queries support variables."""
     resp = await client.post(

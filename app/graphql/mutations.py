@@ -86,6 +86,7 @@ class CreatePullRequestInput:
     head_ref_name: str = ""
     base_ref_name: str = ""
     draft: bool = False
+    maintainer_can_modify: bool = True
     client_mutation_id: Optional[str] = None
 
 

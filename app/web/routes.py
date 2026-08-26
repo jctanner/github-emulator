@@ -689,6 +689,12 @@ async def issues_list(
             ~Issue.id.in_(pr_issue_ids),
         )
     )).scalar() or 0
+    open_pulls_count = (await db.execute(
+        select(func.count(Issue.id)).where(
+            Issue.repo_id == repo.id, Issue.state == "open",
+            Issue.id.in_(pr_issue_ids),
+        )
+    )).scalar() or 0
 
     return templates.TemplateResponse(
         request=request,
@@ -698,6 +704,7 @@ async def issues_list(
             issues=issues, state=state,
             open_count=open_count, closed_count=closed_count,
             open_issues_count=open_count,
+            open_pulls_count=open_pulls_count,
             current_user=current_user,
         ),
     )
@@ -1102,6 +1109,14 @@ async def pulls_list(
         elif state not in ("open", "closed"):
             pulls.append(pr)
 
+    pr_issue_ids = select(PullRequest.issue_id)
+    open_issues_count = (await db.execute(
+        select(func.count(Issue.id)).where(
+            Issue.repo_id == repo.id, Issue.state == "open",
+            ~Issue.id.in_(pr_issue_ids),
+        )
+    )).scalar() or 0
+
     return templates.TemplateResponse(
         request=request,
         name="pulls.html",
@@ -1109,6 +1124,7 @@ async def pulls_list(
             request, owner=owner, repo=repo, repo_name=repo.name,
             pulls=pulls, state=state,
             open_count=open_count, closed_count=closed_count,
+            open_issues_count=open_issues_count,
             open_pulls_count=open_count,
             current_user=current_user,
         ),

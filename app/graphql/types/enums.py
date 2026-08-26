@@ -38,6 +38,14 @@ class IssueState(Enum):
 
 
 @strawberry.enum
+class PullRequestState(Enum):
+    """The states accepted by the GitHub PullRequest connection."""
+    OPEN = "OPEN"
+    CLOSED = "CLOSED"
+    MERGED = "MERGED"
+
+
+@strawberry.enum
 class IssueStateReason(Enum):
     """The reason an issue was closed or reopened."""
     COMPLETED = "COMPLETED"
@@ -132,6 +140,20 @@ class IssueOrderField(Enum):
 class IssueOrder:
     """Ordering options for issue connections."""
     field: IssueOrderField
+    direction: OrderDirection
+
+
+@strawberry.enum
+class PullRequestOrderField(Enum):
+    """Properties by which pull-request connections can be ordered."""
+    CREATED_AT = "CREATED_AT"
+    UPDATED_AT = "UPDATED_AT"
+
+
+@strawberry.input
+class PullRequestOrder:
+    """Ordering options for pull-request connections."""
+    field: PullRequestOrderField
     direction: OrderDirection
 
 

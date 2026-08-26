@@ -9,7 +9,14 @@ from sqlalchemy import select, func as sa_func
 
 from app.graphql.connections import Connection, build_connection
 from app.graphql.types.user import GitHubUser, user_from_model, _node_id
-from app.graphql.types.enums import IssueState, IssueOrder, IssueFilters, LabelOrder
+from app.graphql.types.enums import (
+    IssueState,
+    IssueOrder,
+    IssueFilters,
+    LabelOrder,
+    PullRequestState,
+    PullRequestOrder,
+)
 from app.graphql.types.stubs import (
     LicenseInfo,
     RepositoryTopic,
@@ -536,8 +543,10 @@ class Repository:
         after: Optional[str] = None,
         last: Optional[int] = None,
         before: Optional[str] = None,
-        states: Optional[list[str]] = None,
+        states: Optional[list[PullRequestState]] = None,
         head_ref_name: Optional[str] = None,
+        base_ref_name: Optional[str] = None,
+        order_by: Optional[PullRequestOrder] = None,
     ) -> Connection[Annotated["PullRequest", strawberry.lazy("app.graphql.types.pull_request")]]:
         from app.models.pull_request import PullRequest
         from app.models.issue import Issue
@@ -553,8 +562,11 @@ class Repository:
         if head_ref_name:
             query = query.where(PullRequest.head_ref == head_ref_name)
 
+        if base_ref_name:
+            query = query.where(PullRequest.base_ref == base_ref_name)
+
         if states:
-            upper_states = [s.upper() for s in states]
+            upper_states = [s.value.upper() if hasattr(s, "value") else s.upper() for s in states]
             # Map states: MERGED is a special state derived from merged flag
             state_filters = []
             if "OPEN" in upper_states:
@@ -571,7 +583,18 @@ class Repository:
                 from sqlalchemy import or_
                 query = query.where(or_(*state_filters))
 
-        query = query.order_by(Issue.number.asc())
+        if order_by is not None:
+            from app.graphql.types.enums import PullRequestOrderField, OrderDirection
+            col_map = {
+                PullRequestOrderField.CREATED_AT: Issue.created_at,
+                PullRequestOrderField.UPDATED_AT: Issue.updated_at,
+            }
+            col = col_map.get(order_by.field, Issue.created_at)
+            query = query.order_by(
+                col.asc() if order_by.direction == OrderDirection.ASC else col.desc()
+            )
+        else:
+            query = query.order_by(Issue.number.asc())
         result = await db.execute(query)
         all_prs = result.scalars().all()
 
