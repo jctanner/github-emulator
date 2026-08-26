@@ -20,6 +20,9 @@ Actions visibility and runner evaluation.
 
 ## Completed Tasks
 
+- `docs/tasks/done/actions-issue-label-compatibility.md`
+- `docs/tasks/done/actions-stale-runner-recovery.md`
+- `docs/tasks/done/actions-live-job-logs.md`
 - `docs/tasks/done/seed-default-admin-pat.md`
 - `docs/tasks/done/actions-visible-api-and-web-ui.md`
 - `docs/tasks/done/admin-repos-import-api.md`

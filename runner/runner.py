@@ -19,6 +19,7 @@ import os
 import platform
 import re
 import shutil
+import selectors
 import subprocess
 import sys
 import threading
@@ -81,6 +82,136 @@ def _start_oidc_broker():
 
 
 _EXPRESSION_RE = re.compile(r"\$\{\{\s*([^}]+?)\s*\}\}")
+
+
+class _StepIfParser:
+    """Evaluate the small Actions expression subset needed by the runner."""
+
+    _TOKEN_RE = re.compile(
+        r"(?P<space>\s+)|(?P<op>\|\||&&|==|!=|[!(),])|"
+        r"(?P<string>'(?:\\.|[^'])*'|\"(?:\\.|[^\"])*\")|"
+        r"(?P<number>\d+(?:\.\d+)?)|(?P<name>[A-Za-z_][A-Za-z0-9_.-]*)"
+    )
+
+    def __init__(self, expression: str, step_outputs: dict[str, dict[str, str]]):
+        self.step_outputs = step_outputs
+        self.tokens = self._tokenize(expression)
+        self.position = 0
+
+    @classmethod
+    def _tokenize(cls, expression: str) -> list[tuple[str, str]]:
+        tokens = []
+        position = 0
+        while position < len(expression):
+            match = cls._TOKEN_RE.match(expression, position)
+            if not match:
+                raise ValueError(f"unsupported character at {position}")
+            position = match.end()
+            if match.lastgroup != "space":
+                tokens.append((match.lastgroup, match.group(0)))
+        tokens.append(("eof", ""))
+        return tokens
+
+    def _peek(self, value: str | None = None):
+        token = self.tokens[self.position]
+        return token[1] == value if value is not None else token
+
+    def _take(self, value: str | None = None):
+        token = self.tokens[self.position]
+        if value is not None and token[1] != value:
+            raise ValueError(f"expected {value!r}")
+        self.position += 1
+        return token
+
+    def parse(self) -> bool:
+        result = self._parse_or()
+        if self._peek()[0] != "eof":
+            raise ValueError("unexpected trailing expression")
+        return bool(result)
+
+    def _parse_or(self):
+        result = self._parse_and()
+        while self._peek("||"):
+            self._take("||")
+            result = result or self._parse_and()
+        return result
+
+    def _parse_and(self):
+        result = self._parse_not()
+        while self._peek("&&"):
+            self._take("&&")
+            result = result and self._parse_not()
+        return result
+
+    def _parse_not(self):
+        if self._peek("!"):
+            self._take("!")
+            return not bool(self._parse_not())
+        return self._parse_comparison()
+
+    def _parse_comparison(self):
+        left = self._parse_primary()
+        if self._peek("==") or self._peek("!="):
+            operator = self._take()[1]
+            right = self._parse_primary()
+            equal = left == right
+            return equal if operator == "==" else not equal
+        return left
+
+    def _parse_primary(self):
+        if self._peek("("):
+            self._take("(")
+            value = self._parse_or()
+            self._take(")")
+            return value
+
+        kind, token = self._take()
+        if kind == "string":
+            return token[1:-1].replace("\\'", "'").replace('\\"', '"')
+        if kind == "number":
+            return float(token) if "." in token else int(token)
+        if kind != "name":
+            raise ValueError("expected value")
+        if self._peek("("):
+            self._take("(")
+            arguments = []
+            if not self._peek(")"):
+                arguments.append(self._parse_or())
+                while self._peek(","):
+                    self._take(",")
+                    arguments.append(self._parse_or())
+            self._take(")")
+            if token == "always" and not arguments:
+                return True
+            raise ValueError(f"unsupported function {token}")
+        if token == "true":
+            return True
+        if token == "false":
+            return False
+        if token == "null":
+            return None
+        parts = token.split(".")
+        if len(parts) == 4 and parts[0] == "steps" and parts[2] == "outputs":
+            return self.step_outputs.get(parts[1], {}).get(parts[3], "")
+        return ""
+
+
+def _evaluate_step_if(condition: object, step_outputs: dict[str, dict[str, str]]) -> bool:
+    """Return whether a runner step should execute."""
+    if condition is None:
+        return True
+    if isinstance(condition, bool):
+        return condition
+    if not isinstance(condition, str):
+        return bool(condition)
+    expression = condition.strip()
+    if expression.startswith("${{") and expression.endswith("}}"):
+        expression = expression[3:-2].strip()
+    try:
+        return _StepIfParser(expression, step_outputs).parse()
+    except ValueError as exc:
+        log.warning("Unable to evaluate step condition %r: %s", condition, exc)
+        return False
 
 
 def _render_local_action(value, inputs, step_outputs):
@@ -185,26 +316,42 @@ class RunnerClient:
         runtime_env = {}
         step_outputs: dict[str, dict[str, str]] = {}
         all_passed = True
-        log_lines = [f"Job {job_id}: {job.get('name', '')}\n"]
+
+        def append_log(chunk: str) -> None:
+            if chunk:
+                self._upload_logs(job_id, chunk)
+
+        append_log(f"Job {job_id}: {job.get('name', '')}\n")
 
         for step in steps:
             step_num = step.get("number", 0)
             step_name = step.get("name", f"Step {step_num}")
             log.info("  Step %d: %s", step_num, step_name)
-            log_lines.append(f"\n##[group]Step {step_num}: {step_name}\n")
+            append_log(f"\n##[group]Step {step_num}: {step_name}\n")
+
+            if not _evaluate_step_if(step.get("if"), step_outputs):
+                step["status"] = "completed"
+                step["conclusion"] = "skipped"
+                append_log("Skipped because its condition evaluated to false\n")
+                append_log("##[endgroup]\n")
+                self._report_progress(job_id, steps)
+                continue
 
             step["status"] = "in_progress"
             self._report_progress(job_id, steps)
 
-            step = _render_local_action(step, {}, step_outputs)
-            result, step_log, step_updates = self._run_step(step, job, runtime_env)
+            rendered_step = _render_local_action(step, {}, step_outputs)
+            result, _step_log, step_updates = self._run_step(
+                rendered_step, job, runtime_env, log_callback=append_log,
+            )
             runtime_env.update(step_updates)
-            if step.get("id"):
-                step_outputs[str(step["id"])] = dict(step.get("outputs") or {})
-            log_lines.append(step_log)
+            if rendered_step.get("id"):
+                outputs = dict(rendered_step.get("outputs") or {})
+                step_outputs[str(rendered_step["id"])] = outputs
+                step["outputs"] = outputs
             step["status"] = "completed"
             step["conclusion"] = result
-            log_lines.append(f"##[endgroup]\n")
+            append_log("##[endgroup]\n")
 
             if result != "success":
                 all_passed = False
@@ -221,7 +368,6 @@ class RunnerClient:
             self._report_progress(job_id, steps)
 
         conclusion = "success" if all_passed else "failure"
-        self._upload_logs(job_id, "".join(log_lines))
         self._complete_job(job_id, conclusion, steps)
         log.info("=== Job #%d finished: %s ===", job_id, conclusion)
 
@@ -233,16 +379,23 @@ class RunnerClient:
 
     def _run_step(
         self, step: dict, job: dict, runtime_env: dict[str, str],
+        log_callback=None,
     ) -> tuple[str, str, dict[str, str]]:
         """Execute a single local shell step."""
         step_name = step.get("name", "")
         command = step.get("run")
         if not command:
             if step.get("uses", "").startswith("actions/checkout@"):
-                return self._checkout_step(step, job)
+                result, output, updates = self._checkout_step(step, job)
+                if log_callback:
+                    log_callback(output)
+                return result, output, updates
             if step.get("uses", "").startswith("./"):
-                return self._composite_step(step, job, runtime_env)
-            return "success", f"Skipping non-shell step: {step_name}\n", {}
+                return self._composite_step(step, job, runtime_env, log_callback)
+            output = f"Skipping non-shell step: {step_name}\n"
+            if log_callback:
+                log_callback(output)
+            return "success", output, {}
 
         env = os.environ.copy()
         # Provide the small set of standard GitHub Actions variables needed by
@@ -309,40 +462,85 @@ class RunnerClient:
         os.makedirs(cwd, exist_ok=True)
 
         log.info("    Executing shell command for step: %s", step_name)
+        captured: list[str] = []
+
+        def emit(output: str) -> None:
+            if not output:
+                return
+            for line in output.splitlines(keepends=True):
+                if line.startswith("::add-mask::"):
+                    value = line.removeprefix("::add-mask::").rstrip("\r\n")
+                    if value:
+                        self._masks.add(value)
+            for value in sorted(self._masks, key=len, reverse=True):
+                output = output.replace(value, "***")
+            captured.append(output)
+            if log_callback:
+                log_callback(output)
+
+        proc = None
+        selector = selectors.DefaultSelector()
+        timed_out = False
         try:
             shell_name = str(step.get("shell") or "bash")
             executable = "/bin/bash" if shell_name.split()[0] == "bash" else None
-            proc = subprocess.run(
+            proc = subprocess.Popen(
                 command,
                 shell=True,
                 executable=executable,
                 cwd=cwd,
                 env=env,
-                text=True,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.STDOUT,
-                timeout=int(job.get("timeout_seconds") or 3600),
             )
-        except subprocess.TimeoutExpired as exc:
-            output = exc.stdout or ""
-            return "failure", f"{output}\nCommand timed out\n", {}
-        except Exception as exc:
-            return "failure", f"Command failed to start: {exc}\n", {}
+            assert proc.stdout is not None
+            selector.register(proc.stdout, selectors.EVENT_READ)
+            deadline = time.monotonic() + int(job.get("timeout_seconds") or 3600)
+            pending = b""
+            while True:
+                if time.monotonic() >= deadline and proc.poll() is None:
+                    timed_out = True
+                    proc.kill()
 
-        output = proc.stdout or ""
-        for line in output.splitlines():
-            if line.startswith("::add-mask::"):
-                value = line.removeprefix("::add-mask::")
-                if value:
-                    self._masks.add(value)
-        for value in sorted(self._masks, key=len, reverse=True):
-            output = output.replace(value, "***")
+                events = selector.select(timeout=0.25)
+                if events:
+                    chunk = os.read(proc.stdout.fileno(), 65536)
+                    if chunk:
+                        pending += chunk
+                        while b"\n" in pending:
+                            line, pending = pending.split(b"\n", 1)
+                            emit((line + b"\n").decode(errors="replace"))
+                    else:
+                        selector.unregister(proc.stdout)
+                        break
+                elif proc.poll() is not None:
+                    break
+
+            if pending:
+                emit(pending.decode(errors="replace"))
+            return_code = proc.wait(timeout=5)
+        except subprocess.TimeoutExpired as exc:
+            output = exc.stdout or b""
+            if isinstance(output, bytes):
+                output = output.decode(errors="replace")
+            emit(output)
+            timed_out = True
+            return_code = 1
+        except Exception as exc:
+            output = f"Command failed to start: {exc}\n"
+            emit(output)
+            return "failure", "".join(captured), {}
+        finally:
+            selector.close()
+
+        if timed_out:
+            emit("Command timed out\n")
         updates = self._read_command_file(env_file)
         step["outputs"] = self._read_command_file(output_file)
-        return ("success" if proc.returncode == 0 else "failure"), output, updates
+        return ("success" if return_code == 0 and not timed_out else "failure"), "".join(captured), updates
 
     def _composite_step(
-        self, step: dict, job: dict, runtime_env: dict[str, str],
+        self, step: dict, job: dict, runtime_env: dict[str, str], log_callback=None,
     ) -> tuple[str, str, dict[str, str]]:
         """Run a checked-out local composite action used by Fullsend."""
         action_ref = str(step.get("uses", ""))
@@ -359,12 +557,23 @@ class RunnerClient:
         inputs = {str(key): str(value) for key, value in (step.get("with") or {}).items()}
         step_outputs: dict[str, dict[str, str]] = {}
         log_lines = [f"Running local composite action {action_ref}\n"]
+        if log_callback:
+            log_callback(log_lines[0])
         for index, action_step in enumerate(action_steps, start=1):
+            if not _evaluate_step_if(action_step.get("if"), step_outputs):
+                log_lines.append(
+                    f"Skipping composite step {action_step.get('name', f'Step {index}')} "
+                    "because its condition evaluated to false\n"
+                )
+                continue
             rendered = _render_local_action(action_step, inputs, step_outputs)
             rendered.setdefault("number", index)
-            result, output, updates = self._run_step(rendered, job, runtime_env)
+            result, output, updates = self._run_step(
+                rendered, job, runtime_env, log_callback=log_callback,
+            )
             runtime_env.update(updates)
-            log_lines.append(output)
+            if not log_callback:
+                log_lines.append(output)
             if rendered.get("id"):
                 step_outputs[str(rendered["id"])] = dict(rendered.get("outputs") or {})
             if result != "success":

@@ -4,7 +4,7 @@ import asyncio
 import hashlib
 import os
 import secrets
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from urllib.parse import parse_qs
 
 from fastapi import APIRouter, HTTPException, Query, Request
@@ -115,6 +115,37 @@ async def _create_runner_from_registration(
     return runner, runner_token
 
 
+async def _requeue_stale_jobs(db) -> int:
+    """Return jobs from runners that have stopped heartbeating to the queue."""
+    cutoff = datetime.now(timezone.utc) - timedelta(
+        seconds=settings.RUNNER_STALE_THRESHOLD_SECONDS
+    )
+    result = await db.execute(
+        select(WorkflowJob, Runner)
+        .join(Runner, WorkflowJob.runner_id == Runner.id)
+        .where(
+            WorkflowJob.status == "in_progress",
+            Runner.last_heartbeat.is_not(None),
+            Runner.last_heartbeat < cutoff,
+        )
+    )
+    stale_jobs = result.all()
+    for job, runner in stale_jobs:
+        job.status = "queued"
+        job.runner_id = None
+        job.runner_name = None
+        job.started_at = None
+        job.steps = [
+            {**step, "status": "queued", "conclusion": None}
+            for step in (job.steps or [])
+        ]
+        runner.status = "offline"
+        runner.busy = False
+    if stale_jobs:
+        await db.commit()
+    return len(stale_jobs)
+
+
 def _registration_response(runner: Runner, runner_token: str, base: str | None = None) -> dict:
     base = base or settings.BASE_URL
     return {
@@ -195,6 +226,8 @@ async def poll_for_jobs(
     repository = await get_repo_or_404(owner, repo, db)
     repository_id = repository.id
     runner_labels = {label.strip().lower() for label in labels.split(",") if label.strip()}
+
+    await _requeue_stale_jobs(db)
 
     deadline = asyncio.get_event_loop().time() + timeout
     while asyncio.get_event_loop().time() < deadline:

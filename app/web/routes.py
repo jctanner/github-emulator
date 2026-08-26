@@ -6,7 +6,7 @@ from typing import Optional
 from urllib.parse import quote
 
 from fastapi import APIRouter, Depends, Form, Query, Request
-from fastapi.responses import HTMLResponse, RedirectResponse
+from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
 from jose import JWSError, jws
 from sqlalchemy import delete as sa_delete, select, func, or_
@@ -1247,6 +1247,42 @@ async def action_job_detail(
             run=run, job=job, logs=logs, current_user=current_user,
         ),
     )
+
+
+@router.get("/{owner}/{repo_name}/actions/jobs/{job_id:int}/live")
+async def action_job_live(
+    request: Request,
+    owner: str,
+    repo_name: str,
+    job_id: int,
+    db: AsyncSession = Depends(get_db),
+):
+    """Return the current job state and incrementally uploaded logs."""
+    current_user = await _get_current_user(request, db)
+    repo = await _get_repo(db, owner, repo_name)
+    if repo is None or not _can_view_repo(repo, current_user):
+        return JSONResponse({"detail": "Not Found"}, status_code=404)
+
+    result = await db.execute(
+        select(WorkflowJob)
+        .join(WorkflowRun, WorkflowJob.run_id == WorkflowRun.id)
+        .where(
+            WorkflowJob.id == job_id,
+            WorkflowRun.repo_id == repo.id,
+        )
+    )
+    job = result.scalar_one_or_none()
+    if job is None:
+        return JSONResponse({"detail": "Not Found"}, status_code=404)
+
+    return {
+        "status": job.status,
+        "conclusion": job.conclusion,
+        "started_at": job.started_at.isoformat() if job.started_at else None,
+        "completed_at": job.completed_at.isoformat() if job.completed_at else None,
+        "steps": job.steps or [],
+        "logs": _read_job_log(job.id) or "",
+    }
 
 
 @router.get("/{owner}/{repo_name}/actions/runners", response_class=HTMLResponse)

@@ -84,7 +84,14 @@ async def create_review(
     commit_id = body.get("commit_id", pr.head_sha)
 
     now = datetime.now(timezone.utc)
-    state = event.upper() if event else "PENDING"
+    state = {
+        "APPROVE": "APPROVED",
+        "REQUEST_CHANGES": "CHANGES_REQUESTED",
+        "COMMENT": "COMMENTED",
+        "PENDING": "PENDING",
+    }.get(event.upper() if event else "PENDING")
+    if state is None:
+        raise HTTPException(status_code=422, detail="Invalid event")
 
     review = Review(
         pull_request_id=pr.id,

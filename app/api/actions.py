@@ -4,7 +4,7 @@ import os
 
 from fastapi import APIRouter, HTTPException, Query
 from fastapi.responses import PlainTextResponse, Response
-from sqlalchemy import select, func
+from sqlalchemy import select, func, or_
 
 from app.api.deps import AuthUser, CurrentUser, DbSession, get_repo_or_404
 from app.config import settings
@@ -161,7 +161,7 @@ async def list_workflows(
     """List workflows."""
     repository = await get_repo_or_404(owner, repo, db)
     _check_read_access(repository, current_user)
-    from app.services.workflow_service import sync_workflows_to_db
+    from app.services.workflow_service import materialize_reusable_workflows, sync_workflows_to_db
 
     await sync_workflows_to_db(db, repository, "HEAD")
     await db.commit()
@@ -210,7 +210,15 @@ async def dispatch_workflow(
     if workflow_id.isdigit():
         workflow_query = workflow_query.where(Workflow.id == int(workflow_id))
     else:
-        workflow_query = workflow_query.where(Workflow.path == workflow_id)
+        # ``gh workflow run`` accepts either the stored workflow path or the
+        # short filename (for example ``triage.yml``).  GitHub resolves the
+        # latter beneath .github/workflows; preserve that behavior here.
+        short_path = workflow_id
+        if "/" not in short_path:
+            short_path = f".github/workflows/{short_path}"
+        workflow_query = workflow_query.where(
+            or_(Workflow.path == workflow_id, Workflow.path == short_path)
+        )
     workflow = (await db.execute(workflow_query)).scalar_one_or_none()
 
     if workflow is None:
@@ -221,6 +229,7 @@ async def dispatch_workflow(
         detect_workflows,
         evaluate_trigger,
         get_ref_sha,
+        materialize_reusable_workflows,
     )
 
     workflow_yaml = next(
@@ -244,6 +253,14 @@ async def dispatch_workflow(
         "repository": {"id": repository.id, "full_name": repository.full_name},
         "sender": {"login": user.login, "id": user.id},
     }
+    workflow_yaml = await materialize_reusable_workflows(
+        workflow_yaml,
+        repository.disk_path or "",
+        ref_name,
+        db,
+        inputs=payload.get("inputs", {}),
+        secrets=payload.get("secrets", {}),
+    )
     await create_workflow_run(
         db, workflow, workflow_yaml, "workflow_dispatch", payload,
         user, head_sha, ref_name,

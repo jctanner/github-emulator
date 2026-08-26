@@ -1,5 +1,8 @@
 """Label endpoints -- repo labels and issue labels."""
 
+import json
+from urllib.parse import parse_qs
+
 from fastapi import APIRouter, HTTPException, Query, Request
 from fastapi.responses import JSONResponse
 from sqlalchemy import select, delete as sa_delete
@@ -13,6 +16,40 @@ from app.schemas.label import LabelCreate, LabelResponse, LabelUpdate
 router = APIRouter(tags=["labels"])
 
 BASE = settings.BASE_URL
+
+
+async def _read_label_names(request: Request) -> list[str]:
+    """Read labels from GitHub JSON and gh-api form-style request bodies."""
+    raw = await request.body()
+    if not raw:
+        return []
+
+    content_type = request.headers.get("content-type", "").lower()
+    if "application/json" in content_type:
+        try:
+            payload = json.loads(raw)
+        except (TypeError, ValueError):
+            return []
+        names = payload.get("labels", []) if isinstance(payload, dict) else []
+        return [names] if isinstance(names, str) else list(names or [])
+
+    fields = parse_qs(raw.decode("utf-8"), keep_blank_values=True)
+    return fields.get("labels[]", []) + fields.get("labels", [])
+
+
+async def _get_or_create_label(db, repository_id: int, name: str) -> Label:
+    """Resolve a repository label, creating it like GitHub's issue API does."""
+    result = await db.execute(
+        select(Label).where(Label.repo_id == repository_id, Label.name == name)
+    )
+    label = result.scalar_one_or_none()
+    if label is not None:
+        return label
+
+    label = Label(repo_id=repository_id, name=name, color="ededed")
+    db.add(label)
+    await db.flush()
+    return label
 
 
 async def _dispatch_label_event(db, repository, user, issue, action, label):
@@ -182,7 +219,7 @@ async def add_issue_labels(
     owner: str,
     repo: str,
     issue_number: int,
-    body: dict,
+    request: Request,
     user: AuthUser,
     db: DbSession,
 ):
@@ -199,26 +236,25 @@ async def add_issue_labels(
 
     existing_names = {label.name for label in (issue.labels or [])}
     added_labels = []
-    label_names = body.get("labels", [])
-    for lname in label_names:
-        lbl_result = await db.execute(
-            select(Label).where(
-                Label.repo_id == repository.id, Label.name == lname
+    label_names = await _read_label_names(request)
+    labels_by_name: dict[str, Label] = {}
+    for lname in dict.fromkeys(label_names):
+        if not isinstance(lname, str) or not lname:
+            continue
+        label = labels_by_name.setdefault(
+            lname, await _get_or_create_label(db, repository.id, lname)
+        )
+        # Check if already assigned
+        existing = await db.execute(
+            select(IssueLabel).where(
+                IssueLabel.issue_id == issue.id,
+                IssueLabel.label_id == label.id,
             )
         )
-        label = lbl_result.scalar_one_or_none()
-        if label:
-            # Check if already assigned
-            existing = await db.execute(
-                select(IssueLabel).where(
-                    IssueLabel.issue_id == issue.id,
-                    IssueLabel.label_id == label.id,
-                )
-            )
-            if existing.scalar_one_or_none() is None:
-                db.add(IssueLabel(issue_id=issue.id, label_id=label.id))
-                if label.name not in existing_names:
-                    added_labels.append(label)
+        if existing.scalar_one_or_none() is None:
+            db.add(IssueLabel(issue_id=issue.id, label_id=label.id))
+            if label.name not in existing_names:
+                added_labels.append(label)
 
     await db.commit()
     await db.refresh(issue)
@@ -232,7 +268,7 @@ async def set_issue_labels(
     owner: str,
     repo: str,
     issue_number: int,
-    body: dict,
+    request: Request,
     user: AuthUser,
     db: DbSession,
 ):
@@ -253,16 +289,15 @@ async def set_issue_labels(
         sa_delete(IssueLabel).where(IssueLabel.issue_id == issue.id)
     )
 
-    label_names = body.get("labels", [])
-    for lname in label_names:
-        lbl_result = await db.execute(
-            select(Label).where(
-                Label.repo_id == repository.id, Label.name == lname
-            )
+    label_names = await _read_label_names(request)
+    labels_by_name: dict[str, Label] = {}
+    for lname in dict.fromkeys(label_names):
+        if not isinstance(lname, str) or not lname:
+            continue
+        label = labels_by_name.setdefault(
+            lname, await _get_or_create_label(db, repository.id, lname)
         )
-        label = lbl_result.scalar_one_or_none()
-        if label:
-            db.add(IssueLabel(issue_id=issue.id, label_id=label.id))
+        db.add(IssueLabel(issue_id=issue.id, label_id=label.id))
 
     await db.commit()
     await db.refresh(issue)

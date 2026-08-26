@@ -15,8 +15,8 @@
     <a class="Link--secondary f6" href="{{ url_prefix }}/{{ owner }}/{{ repo.name }}/actions/runs/{{ run.id }}">Run #{{ run.run_number }}</a>
     <h1 class="f2 mt-1 mb-2">{{ job.name }}</h1>
     <div class="d-flex flex-items-center flex-wrap" style="gap:8px;">
-        <span class="Label Label--secondary">{{ job.status }}</span>
-        {% if job.conclusion %}<span class="Label Label--secondary">{{ job.conclusion }}</span>{% endif %}
+        <span id="job-status" class="Label Label--secondary">{{ job.status }}</span>
+        <span id="job-conclusion" class="Label Label--secondary"{% if not job.conclusion %} hidden{% endif %}>{{ job.conclusion or '' }}</span>
     </div>
 </div>
 
@@ -33,11 +33,11 @@
             </div>
             <div class="col-12 col-md-4 float-left">
                 <div class="f6 color-fg-muted">Started</div>
-                <span>{{ job.started_at.strftime('%b %d, %Y %H:%M') if job.started_at else 'not started' }}</span>
+                <span id="job-started">{{ job.started_at.strftime('%b %d, %Y %H:%M') if job.started_at else 'not started' }}</span>
             </div>
             <div class="col-12 col-md-4 float-left">
                 <div class="f6 color-fg-muted">Completed</div>
-                <span>{{ job.completed_at.strftime('%b %d, %Y %H:%M') if job.completed_at else 'not completed' }}</span>
+                <span id="job-completed">{{ job.completed_at.strftime('%b %d, %Y %H:%M') if job.completed_at else 'not completed' }}</span>
             </div>
         </div>
         {% if job.labels %}
@@ -56,18 +56,20 @@
         <h2 class="Box-title f5">Steps</h2>
     </div>
     {% if job.steps %}
+    <div id="job-steps">
     {% for step in job.steps %}
-    <div class="Box-row d-flex flex-items-center">
+    <div class="Box-row d-flex flex-items-center" data-step-number="{{ step.number }}">
         <div class="flex-auto">
             <span class="text-bold">{{ step.name or ('Step ' ~ step.number) }}</span>
             <span class="color-fg-muted f6">#{{ step.number }}</span>
         </div>
         <div class="text-right">
-            <span class="Label Label--secondary">{{ step.status or 'queued' }}</span>
-            {% if step.conclusion %}<span class="Label Label--secondary">{{ step.conclusion }}</span>{% endif %}
+            <span class="Label Label--secondary step-status">{{ step.status or 'queued' }}</span>
+            <span class="Label Label--secondary step-conclusion"{% if not step.conclusion %} hidden{% endif %}>{{ step.conclusion or '' }}</span>
         </div>
     </div>
     {% endfor %}
+    </div>
     {% else %}
     <div class="Box-body color-fg-muted">This job does not have any recorded steps.</div>
     {% endif %}
@@ -77,12 +79,62 @@
     <div class="Box-header">
         <h2 class="Box-title f5">Logs</h2>
     </div>
-    {% if logs %}
     <div class="Box-body">
-        <pre style="white-space:pre-wrap;word-break:break-word;background:transparent;border:0;padding:0;margin:0;font-size:13px;">{{ logs }}</pre>
+        <div id="job-logs-empty" class="color-fg-muted"{% if logs %} hidden{% endif %}>No logs have been uploaded for this job.</div>
+        <pre id="job-logs" style="white-space:pre-wrap;word-break:break-word;background:transparent;border:0;padding:0;margin:0;font-size:13px;max-height:70vh;overflow:auto;">{{ logs or '' }}</pre>
     </div>
-    {% else %}
-    <div class="Box-body color-fg-muted">No logs have been uploaded for this job.</div>
-    {% endif %}
 </div>
 {% endblock %}
+
+{% if job.status != 'completed' %}
+{% block scripts %}
+{{ super() }}
+<script>
+(() => {
+    const endpoint = {{ (url_prefix ~ '/' ~ owner ~ '/' ~ repo.name ~ '/actions/jobs/' ~ job.id ~ '/live') | tojson }};
+    const status = document.getElementById('job-status');
+    const conclusion = document.getElementById('job-conclusion');
+    const started = document.getElementById('job-started');
+    const completed = document.getElementById('job-completed');
+    const logs = document.getElementById('job-logs');
+    const empty = document.getElementById('job-logs-empty');
+
+    const formatDate = (value, fallback) => value ? new Date(value).toLocaleString() : fallback;
+    const refresh = async () => {
+        try {
+            const response = await fetch(endpoint, {cache: 'no-store', headers: {'Accept': 'application/json'}});
+            if (!response.ok) return;
+            const data = await response.json();
+            status.textContent = data.status || 'unknown';
+            conclusion.textContent = data.conclusion || '';
+            conclusion.hidden = !data.conclusion;
+            started.textContent = formatDate(data.started_at, 'not started');
+            completed.textContent = formatDate(data.completed_at, 'not completed');
+
+            for (const step of data.steps || []) {
+                const row = document.querySelector(`[data-step-number="${step.number}"]`);
+                if (!row) continue;
+                row.querySelector('.step-status').textContent = step.status || 'queued';
+                const stepConclusion = row.querySelector('.step-conclusion');
+                stepConclusion.textContent = step.conclusion || '';
+                stepConclusion.hidden = !step.conclusion;
+            }
+
+            const nextLogs = data.logs || '';
+            if (logs.textContent !== nextLogs) {
+                logs.textContent = nextLogs;
+                empty.hidden = Boolean(nextLogs);
+                logs.scrollTop = logs.scrollHeight;
+            }
+            if (data.status === 'completed') window.clearInterval(timer);
+        } catch (_error) {
+            // A transient refresh failure should not interrupt the stream.
+        }
+    };
+
+    const timer = window.setInterval(refresh, 1000);
+    refresh();
+})();
+</script>
+{% endblock %}
+{% endif %}

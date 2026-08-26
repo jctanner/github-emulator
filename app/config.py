@@ -32,6 +32,10 @@ class Settings(BaseSettings):
     OIDC_ISSUER: str = ""
     ACTIONS_OIDC_REQUEST_TOKEN: str = "fullsend-action-request"
 
+    # Jobs assigned to a runner that stops heartbeating are returned to the
+    # queue after this interval so a replacement runner can claim them.
+    RUNNER_STALE_THRESHOLD_SECONDS: int = 120
+
     # GitHub App JWTs are accepted without signature verification by default
     # for emulator convenience. Set this to false for strict checks.
     APP_JWT_PERMISSIVE: bool = True

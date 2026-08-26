@@ -47,18 +47,175 @@ class EventEnvelope:
 
 
 def _lookup_context(context: dict, expression: str) -> str:
-    value: object = context
-    for part in expression.strip().split("."):
-        if isinstance(value, dict):
-            value = value.get(part, "")
-        else:
-            return ""
+    value = _lookup_context_value(context, expression)
     if value is None:
         return ""
     if isinstance(value, (dict, list)):
         import json
         return json.dumps(value, separators=(",", ":"))
     return str(value)
+
+
+def _lookup_context_value(context: dict, expression: str) -> object:
+    value: object = context
+    for part in expression.strip().split("."):
+        if isinstance(value, dict):
+            value = value.get(part, "")
+        else:
+            return ""
+    return value
+
+
+class _ExpressionError(ValueError):
+    pass
+
+
+def _expression_truthy(value: object) -> bool:
+    return bool(value)
+
+
+class _IfExpressionParser:
+    """Small, safe evaluator for the job-level Actions expression subset."""
+
+    _TOKEN_RE = re.compile(
+        r"(?P<space>\s+)|(?P<op>\|\||&&|==|!=|[!(),])|"
+        r"(?P<string>'(?:\\.|[^'])*'|\"(?:\\.|[^\"])*\")|"
+        r"(?P<number>\d+(?:\.\d+)?)|(?P<name>[A-Za-z_][A-Za-z0-9_.-]*)"
+    )
+
+    def __init__(self, expression: str, context: dict):
+        self.context = context
+        self.tokens = self._tokenize(expression)
+        self.position = 0
+
+    @classmethod
+    def _tokenize(cls, expression: str) -> list[tuple[str, str]]:
+        tokens = []
+        position = 0
+        while position < len(expression):
+            match = cls._TOKEN_RE.match(expression, position)
+            if not match:
+                raise _ExpressionError(f"unsupported character at {position}")
+            position = match.end()
+            kind = match.lastgroup
+            if kind != "space":
+                tokens.append((kind, match.group(0)))
+        tokens.append(("eof", ""))
+        return tokens
+
+    def _peek(self, value: str | None = None) -> tuple[str, str] | bool:
+        token = self.tokens[self.position]
+        return token[1] == value if value is not None else token
+
+    def _take(self, value: str | None = None) -> tuple[str, str]:
+        token = self.tokens[self.position]
+        if value is not None and token[1] != value:
+            raise _ExpressionError(f"expected {value!r}")
+        self.position += 1
+        return token
+
+    def parse(self) -> bool:
+        result = self._parse_or()
+        if self._peek()[0] != "eof":
+            raise _ExpressionError("unexpected trailing expression")
+        return _expression_truthy(result)
+
+    def _parse_or(self) -> object:
+        result = self._parse_and()
+        while self._peek("||"):
+            self._take("||")
+            right = self._parse_and()
+            result = result or right
+        return result
+
+    def _parse_and(self) -> object:
+        result = self._parse_not()
+        while self._peek("&&"):
+            self._take("&&")
+            right = self._parse_not()
+            result = result and right
+        return result
+
+    def _parse_not(self) -> object:
+        if self._peek("!"):
+            self._take("!")
+            return not _expression_truthy(self._parse_not())
+        return self._parse_comparison()
+
+    def _parse_comparison(self) -> object:
+        left = self._parse_primary()
+        if self._peek("==") or self._peek("!="):
+            operator = self._take()[1]
+            right = self._parse_primary()
+            equal = left == right
+            return equal if operator == "==" else not equal
+        return left
+
+    def _parse_primary(self) -> object:
+        if self._peek("("):
+            self._take("(")
+            value = self._parse_or()
+            self._take(")")
+            return value
+
+        kind, token = self._take()
+        if kind == "string":
+            return token[1:-1].replace("\\'", "'").replace('\\"', '"')
+        if kind == "number":
+            return float(token) if "." in token else int(token)
+        if kind != "name":
+            raise _ExpressionError("expected value")
+
+        if self._peek("("):
+            self._take("(")
+            arguments = []
+            if not self._peek(")"):
+                arguments.append(self._parse_or())
+                while self._peek(","):
+                    self._take(",")
+                    arguments.append(self._parse_or())
+            self._take(")")
+            return self._call(token, arguments)
+
+        if token == "true":
+            return True
+        if token == "false":
+            return False
+        if token == "null":
+            return None
+        return _lookup_context_value(self.context, token)
+
+    @staticmethod
+    def _call(name: str, arguments: list[object]) -> object:
+        if name == "startsWith" and len(arguments) == 2:
+            return str(arguments[0] or "").startswith(str(arguments[1] or ""))
+        if name == "endsWith" and len(arguments) == 2:
+            return str(arguments[0] or "").endswith(str(arguments[1] or ""))
+        if name == "contains" and len(arguments) == 2:
+            haystack, needle = arguments
+            return needle in haystack if isinstance(haystack, (list, dict, str)) else False
+        if name == "always" and not arguments:
+            return True
+        raise _ExpressionError(f"unsupported function {name}")
+
+
+def evaluate_job_if(condition: object, context: dict) -> bool:
+    """Evaluate a job-level ``if`` condition using Actions-like semantics."""
+    if condition is None:
+        return True
+    if isinstance(condition, bool):
+        return condition
+    if not isinstance(condition, str):
+        return _expression_truthy(condition)
+
+    expression = condition.strip()
+    if expression.startswith("${{") and expression.endswith("}}"):
+        expression = expression[3:-2].strip()
+    try:
+        return _IfExpressionParser(expression, context).parse()
+    except _ExpressionError as exc:
+        logger.warning("Unable to evaluate job condition %r: %s", condition, exc)
+        return False
 
 
 def render_expressions(value: object, context: dict) -> object:
@@ -70,7 +227,14 @@ def render_expressions(value: object, context: dict) -> object:
             # expression for the runner's runtime renderer.
             if expression.startswith("steps."):
                 return match.group(0)
-            return _lookup_context(context, expression)
+            # Keep one workflow usable for both an automatic event and an
+            # explicit workflow_dispatch. This is the common GitHub Actions
+            # fallback form used by the Fullsend fixtures.
+            for alternative in expression.split("||"):
+                resolved = _lookup_context(context, alternative)
+                if resolved:
+                    return resolved
+            return ""
         return _EXPRESSION_RE.sub(replace, value)
     if isinstance(value, dict):
         return {key: render_expressions(item, context) for key, item in value.items()}
@@ -322,56 +486,208 @@ def build_job_graph(workflow_yaml: dict) -> list[dict]:
     return _topo_sort(jobs)
 
 
-async def materialize_reusable_workflows(
-    workflow_yaml: dict, repo_disk_path: str, ref: str = "HEAD"
-) -> dict:
-    """Inline local job-level reusable workflows for the lightweight runner.
+_MAX_REUSABLE_WORKFLOW_DEPTH = 8
 
-    GitHub's called workflow is still represented as ordinary visible jobs in
-    the run.  Remote reusable workflows are retained as a visible, skipped
-    placeholder so unsupported external resolution is explicit and harmless.
+
+def _render_reusable_call_context(value: object, inputs: dict, secrets: dict) -> object:
+    """Resolve only the contexts supplied to a reusable workflow call.
+
+    ``github.*`` and ``steps.*`` belong to the eventual caller/runner context
+    and must remain available for the normal expression pass.  Inputs and
+    secrets, however, are lexical values of the called workflow and must be
+    substituted before its jobs are flattened into the caller run.
     """
+    if isinstance(value, str):
+        def replace(match):
+            expression = match.group(1).strip()
+            if expression.startswith("inputs."):
+                return _lookup_context({"inputs": inputs}, expression)
+            if expression.startswith("secrets."):
+                return _lookup_context({"secrets": secrets}, expression)
+            return match.group(0)
+
+        return _EXPRESSION_RE.sub(replace, value)
+    if isinstance(value, dict):
+        return {
+            key: _render_reusable_call_context(item, inputs, secrets)
+            for key, item in value.items()
+        }
+    if isinstance(value, list):
+        return [_render_reusable_call_context(item, inputs, secrets) for item in value]
+    return value
+
+
+async def _resolve_reusable_workflow(
+    uses: str,
+    repo_disk_path: str,
+    ref: str,
+    db: AsyncSession | None,
+) -> tuple[dict | None, str, str, str]:
+    """Resolve a local or imported reusable workflow reference."""
+    if "@" in uses:
+        reference, called_ref = uses.rsplit("@", 1)
+    else:
+        # GitHub's local reusable-workflow form is
+        # ``./.github/workflows/workflow.yml`` and intentionally has no ref.
+        # It is resolved from the same repository and the caller's ref.
+        if not uses.startswith("./"):
+            return None, repo_disk_path, ref, uses
+        reference, called_ref = uses, ref
+    called_ref = called_ref or ref
+    called_repo_path = repo_disk_path
+    workflow_path = reference
+
+    if reference.startswith("./"):
+        workflow_path = reference[2:]
+    elif db is not None:
+        # OWNER/REPO/.github/workflows/file.yml@REF. Split only the first two
+        # components because Fullsend's repository is named ``.fullsend``.
+        parts = reference.split("/", 2)
+        if len(parts) != 3:
+            return None, repo_disk_path, called_ref, uses
+        called_owner, called_repo, workflow_path = parts
+        repo_result = await db.execute(
+            select(Repository).where(
+                Repository.full_name == f"{called_owner}/{called_repo}"
+            )
+        )
+        called_repository = repo_result.scalar_one_or_none()
+        if called_repository is None or not called_repository.disk_path:
+            return None, repo_disk_path, called_ref, uses
+        called_repo_path = called_repository.disk_path
+
+    called_files = await detect_workflows(called_repo_path, called_ref)
+    called = next(
+        (candidate for candidate in called_files
+         if candidate.get("_path") == workflow_path),
+        None,
+    )
+    return called, called_repo_path, called_ref, uses
+
+
+async def _materialize_reusable_jobs(
+    workflow_yaml: dict,
+    repo_disk_path: str,
+    ref: str,
+    db: AsyncSession | None,
+    *,
+    inputs: dict,
+    secrets: dict,
+    depth: int,
+    ancestry: tuple[str, ...],
+) -> dict:
     jobs = workflow_yaml.get("jobs", {})
-    if not isinstance(jobs, dict) or not any(
-        isinstance(config, dict) and config.get("uses") for config in jobs.values()
-    ):
-        return workflow_yaml
+    if not isinstance(jobs, dict):
+        return copy.deepcopy(workflow_yaml)
 
     result = copy.deepcopy(workflow_yaml)
-    expanded = {}
+    expanded: dict[str, dict] = {}
     for key, config in jobs.items():
         if not isinstance(config, dict) or not config.get("uses"):
-            expanded[key] = config
+            expanded[key] = _render_reusable_call_context(config, inputs, secrets)
             continue
 
         uses = str(config["uses"])
-        if uses.startswith("./") and "@" in uses:
-            workflow_path, called_ref = uses[2:].split("@", 1)
-            called_ref = called_ref or ref
-            called_files = await detect_workflows(repo_disk_path, called_ref)
-            called = next(
-                (candidate for candidate in called_files
-                 if candidate.get("_path") == workflow_path),
-                None,
-            )
-            if called and isinstance(called.get("jobs"), dict):
-                for called_key, called_config in called["jobs"].items():
-                    child = copy.deepcopy(called_config)
-                    child["name"] = child.get("name", f"{key} / {called_key}")
-                    if config.get("needs"):
-                        child["needs"] = config["needs"]
-                    expanded[f"{key} / {called_key}"] = child
-                continue
+        if depth >= _MAX_REUSABLE_WORKFLOW_DEPTH or uses in ancestry:
+            placeholder = copy.deepcopy(config)
+            placeholder["steps"] = []
+            placeholder["name"] = placeholder.get("name", f"{key} (reusable workflow)")
+            expanded[key] = placeholder
+            continue
 
-        # The emulator cannot fetch an arbitrary remote workflow.  Keep it in
-        # the graph so the run remains inspectable and clearly unsupported.
-        placeholder = copy.deepcopy(config)
-        placeholder["steps"] = []
-        placeholder["name"] = placeholder.get("name", f"{key} (reusable workflow)")
-        expanded[key] = placeholder
+        called, called_repo_path, called_ref, _ = await _resolve_reusable_workflow(
+            uses, repo_disk_path, ref, db
+        )
+        if called is None or not isinstance(called.get("jobs"), dict):
+            # Keep unresolved calls inspectable and non-successful rather than
+            # silently dropping them from the run graph.
+            placeholder = copy.deepcopy(config)
+            placeholder["steps"] = []
+            placeholder["name"] = placeholder.get("name", f"{key} (reusable workflow)")
+            expanded[key] = placeholder
+            continue
+
+        call_inputs = _render_reusable_call_context(config.get("with", {}), inputs, secrets)
+        call_secrets = _render_reusable_call_context(config.get("secrets", {}), inputs, secrets)
+        if not isinstance(call_inputs, dict):
+            call_inputs = {}
+        if not isinstance(call_secrets, dict):
+            call_secrets = {}
+
+        materialized = await _materialize_reusable_jobs(
+            called,
+            called_repo_path,
+            called_ref,
+            db,
+            inputs=call_inputs,
+            secrets=call_secrets,
+            depth=depth + 1,
+            ancestry=(*ancestry, uses),
+        )
+        called_jobs = materialized.get("jobs", {})
+        called_keys = set(called_jobs)
+        prefix = f"{key} / "
+        for called_key, called_config in called_jobs.items():
+            child = copy.deepcopy(called_config)
+            child["name"] = child.get("name", f"{key} / {called_key}")
+            caller_condition = config.get("if")
+            child_condition = child.get("if")
+            if caller_condition is not None:
+                child["if"] = (
+                    caller_condition
+                    if child_condition is None
+                    else f"({caller_condition}) && ({child_condition})"
+                )
+            child["env"] = {
+                **(materialized.get("env") or {}),
+                **(child.get("env") or {}),
+            }
+            child_needs = child.get("needs", [])
+            if isinstance(child_needs, str):
+                child_needs = [child_needs]
+            child["needs"] = [
+                f"{prefix}{dependency}" if dependency in called_keys else dependency
+                for dependency in child_needs
+            ]
+            if config.get("needs"):
+                outer_needs = config["needs"]
+                if isinstance(outer_needs, str):
+                    outer_needs = [outer_needs]
+                child["needs"] = [*outer_needs, *child["needs"]]
+            expanded[f"{prefix}{called_key}"] = child
 
     result["jobs"] = expanded
     return result
+
+
+async def materialize_reusable_workflows(
+    workflow_yaml: dict,
+    repo_disk_path: str,
+    ref: str = "HEAD",
+    db: AsyncSession | None = None,
+    *,
+    inputs: dict | None = None,
+    secrets: dict | None = None,
+) -> dict:
+    """Recursively inline local and imported job-level reusable workflows.
+
+    GitHub executes a job-level ``uses:`` workflow with the caller's event and
+    repository context, while exposing the call's ``with`` and ``secrets`` as
+    the called workflow's ``inputs`` and ``secrets`` contexts.  The lightweight
+    emulator represents the nested jobs in one inspectable run, but resolves
+    those lexical contexts and remaps dependencies so nested calls behave like
+    their GitHub counterparts.
+    """
+    return await _materialize_reusable_jobs(
+        workflow_yaml,
+        repo_disk_path,
+        ref,
+        db,
+        inputs=inputs or {},
+        secrets=secrets or {},
+        depth=0,
+        ancestry=(),
+    )
 
 
 def _topo_sort(jobs: list[dict]) -> list[dict]:
@@ -484,6 +800,11 @@ async def create_workflow_run(
         "secrets": secrets,
         "github": {
             "event_name": event,
+            # Actions expressions expose the complete webhook-shaped payload
+            # as github.event.  Keep this separate from the runner transport
+            # metadata so jobs can use expressions such as
+            # github.event.issue.number and github.event.pull_request.number.
+            "event": payload,
             "ref": payload.get("ref", f"refs/heads/{head_branch}"),
             "repository": payload.get("repository", {}).get("full_name", ""),
             "repository_owner": payload.get("repository", {}).get("full_name", "").split("/", 1)[0],
@@ -520,6 +841,7 @@ async def create_workflow_run(
                         previous_job.completed_at = datetime.now(timezone.utc)
 
     job_list = build_job_graph(workflow_yaml)
+    skipped_job_created = False
 
     for job_def in job_list:
         expanded = expand_matrix(job_def)
@@ -528,6 +850,7 @@ async def create_workflow_run(
             display_name = render_expressions(job_config.get("_display_name", job_config.get("name", job_config["key"])), job_expression_context)
             needs = job_config.get("needs", [])
             initial_status = "queued" if not needs else "waiting"
+            should_run = evaluate_job_if(job_config.get("if"), job_expression_context)
 
             steps_data = []
             for i, step in enumerate(job_config.get("steps", [])):
@@ -541,6 +864,10 @@ async def create_workflow_run(
                     "status": "queued",
                     "conclusion": None,
                 }
+                if "if" in step:
+                    # Keep step conditions intact: expressions may depend on
+                    # outputs produced later by an earlier runner step.
+                    step_data["if"] = step["if"]
                 for key in ("run", "shell", "working-directory", "uses", "with"):
                     if key in step:
                         step_data[key] = render_expressions(step[key], job_expression_context)
@@ -550,11 +877,25 @@ async def create_workflow_run(
                     step_data["env"] = render_expressions(step_env, job_expression_context)
                 steps_data.append(step_data)
 
+            conclusion = None
+            completed_at = None
+            if not should_run:
+                initial_status = "completed"
+                conclusion = "skipped"
+                completed_at = datetime.now(timezone.utc)
+                skipped_job_created = True
+                steps_data = [
+                    {**step, "status": "completed", "conclusion": "skipped"}
+                    for step in steps_data
+                ]
+
             job = WorkflowJob(
                 run_id=run.id,
                 name=display_name,
                 workflow_name=workflow.name,
                 status=initial_status,
+                conclusion=conclusion,
+                completed_at=completed_at,
                 steps=steps_data,
                 labels=job_config.get("runs_on", ["ubuntu-latest"]),
                 run_attempt=1,
@@ -564,6 +905,11 @@ async def create_workflow_run(
             db.add(job)
 
     await db.flush()
+    # A run containing only skipped jobs should finish immediately. Also
+    # propagate skipped dependencies before the first runner poll.
+    if skipped_job_created:
+        await dispatch_ready_jobs(db, run.id)
+        await check_run_completion(db, run.id)
     return run
 
 
@@ -773,7 +1119,12 @@ async def dispatch_event(
         if not evaluate_trigger(workflow_yaml, envelope.event_name, envelope.payload):
             continue
         workflow_yaml = await materialize_reusable_workflows(
-            workflow_yaml, repository.disk_path, ref_spec,
+            workflow_yaml,
+            repository.disk_path,
+            ref_spec,
+            db,
+            inputs=payload.get("inputs", {}),
+            secrets=payload.get("secrets", {}),
         )
         run = await create_workflow_run(
             db,
@@ -806,6 +1157,10 @@ async def process_push_event(
     *,
     before_sha: str | None = None,
     ref_name: str | None = None,
+    after_sha: str | None = None,
+    created: bool = False,
+    deleted: bool = False,
+    forced: bool = False,
 ) -> list[WorkflowRun]:
     """Dispatch a push and any matching pull-request synchronizations."""
     if not repository.disk_path:
@@ -815,8 +1170,11 @@ async def process_push_event(
         return []
 
     head_branch = ref_name or repository.default_branch or "main"
-    head_sha = await get_ref_sha(repository.disk_path, head_branch)
-    head_sha = head_sha or await _get_head_sha(repository.disk_path)
+    head_sha = after_sha
+    if head_sha is None and not deleted:
+        head_sha = await get_ref_sha(repository.disk_path, head_branch)
+        head_sha = head_sha or await _get_head_sha(repository.disk_path)
+    head_sha = head_sha or "0" * 40
     before_sha = before_sha or "0" * 40
     commits = []
     if head_sha:
@@ -835,9 +1193,9 @@ async def process_push_event(
         "ref": f"refs/heads/{head_branch}",
         "after": head_sha,
         "before": before_sha,
-        "created": False,
-        "deleted": False,
-        "forced": False,
+        "created": created,
+        "deleted": deleted,
+        "forced": forced,
         "commits": commits,
         "repository": {"id": repository.id, "full_name": repository.full_name},
         "pusher": {"name": user.login, "email": user.email or ""},
@@ -847,6 +1205,11 @@ async def process_push_event(
         db, repository, user, "push", "", payload,
         ref=head_branch, sha=head_sha,
     )
+
+    # A deleted head ref cannot synchronize an open PR; the push event is the
+    # only event generated for that ref update.
+    if deleted:
+        return runs
 
     # A push to a pull request's head branch is the source of the
     # pull_request_target ``synchronize`` activity.  The base branch is the
@@ -928,18 +1291,29 @@ async def dispatch_ready_jobs(db: AsyncSession, run_id: int) -> list[WorkflowJob
     all_jobs = result.scalars().all()
 
     completed_keys = set()
+    unsuccessful_keys = set()
     job_by_name = {}
     for job in all_jobs:
         job_by_name[job.name] = job
         if job.status == "completed" and job.conclusion == "success":
             completed_keys.add(job.name)
+        elif job.status == "completed" and job.conclusion in ("failure", "cancelled", "skipped"):
+            unsuccessful_keys.add(job.name)
 
     promoted = []
     for job in all_jobs:
         if job.status != "waiting":
             continue
         needs = job.needs or []
-        if all(n in completed_keys for n in needs):
+        if any(n in unsuccessful_keys for n in needs):
+            job.status = "completed"
+            job.conclusion = "skipped"
+            job.completed_at = datetime.now(timezone.utc)
+            job.steps = [
+                {**step, "status": "completed", "conclusion": "skipped"}
+                for step in (job.steps or [])
+            ]
+        elif all(n in completed_keys for n in needs):
             job.status = "queued"
             promoted.append(job)
 

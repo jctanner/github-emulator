@@ -116,6 +116,17 @@ async def test_actions_job_detail_page(client, web_actions_repo):
 
 
 @pytest.mark.asyncio
+async def test_actions_job_live_endpoint_returns_state_and_logs(client, web_actions_repo):
+    _repo, _workflow, _run, job, _runner = web_actions_repo
+    resp = await client.get(f"/ui/testuser/web-actions-repo/actions/jobs/{job.id}/live")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["status"] == "in_progress"
+    assert data["logs"] == ""
+    assert data["steps"][1]["status"] == "in_progress"
+
+
+@pytest.mark.asyncio
 async def test_actions_runners_page(client, web_actions_repo):
     resp = await client.get("/ui/testuser/web-actions-repo/actions/runners")
     assert resp.status_code == 200

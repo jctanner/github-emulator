@@ -1,10 +1,13 @@
 """Tests for the custom Actions runner execution contract."""
 
 import json
+from datetime import datetime, timedelta, timezone
 
 import pytest
 from sqlalchemy import select
 
+from app.config import settings
+from app.models.actions import Runner
 from app.models.actions import Workflow, WorkflowJob, WorkflowRun
 from app.models.repository import Repository
 from app.services.workflow_service import create_workflow_run
@@ -41,6 +44,7 @@ async def executable_workflow(client, db_session, test_user, test_token):
                 "steps": [
                     {
                         "name": "Write output",
+                        "if": "true",
                         "run": "printf 'hello from runner\\n'",
                         "shell": "bash",
                         "env": {"STEP_FLAG": "1"},
@@ -165,6 +169,7 @@ async def test_custom_runner_poll_complete_and_log_flow(
     assert poll_resp.status_code == 200
     job_payload = poll_resp.json()
     assert job_payload["steps"][0]["run"] == "printf 'hello from runner\\n'"
+    assert job_payload["steps"][0]["if"] == "true"
 
     log_resp = await client.post(
         f"{API}/repos/testuser/actions-exec-repo/actions/runner/jobs/{job_payload['job_id']}/logs",
@@ -198,6 +203,90 @@ async def test_custom_runner_poll_complete_and_log_flow(
     )
     assert logs_resp.status_code == 200
     assert "hello from runner" in logs_resp.text
+
+
+@pytest.mark.asyncio
+async def test_job_if_false_is_skipped_and_not_queued(
+    executable_workflow, db_session, test_user,
+):
+    _repo, workflow, _run = executable_workflow
+    run = await create_workflow_run(
+        db_session,
+        workflow,
+        {
+            "name": "Conditional CI",
+            "jobs": {
+                "ignored": {
+                    "if": "github.event.action != 'labeled' || startsWith(github.event.label.name, 'ready-')",
+                    "runs-on": ["self-hosted", "linux"],
+                    "steps": [{"name": "Should not run", "run": "exit 1"}],
+                },
+            },
+        },
+        event="issues",
+        payload={
+            "action": "labeled",
+            "label": {"name": "duplicate"},
+            "ref": "refs/heads/main",
+        },
+        actor=test_user,
+        head_sha="conditional123",
+        head_branch="main",
+    )
+    await db_session.commit()
+
+    job = (await db_session.execute(
+        select(WorkflowJob).where(WorkflowJob.run_id == run.id)
+    )).scalar_one()
+    assert job.status == "completed"
+    assert job.conclusion == "skipped"
+    assert job.steps[0]["conclusion"] == "skipped"
+    assert run.status == "completed"
+    assert run.conclusion == "success"
+
+
+@pytest.mark.asyncio
+async def test_custom_runner_reclaims_job_from_stale_runner(
+    client, db_session, executable_workflow, test_token,
+):
+    _repo, _workflow, _run = executable_workflow
+    first_token = await _register_custom_runner(
+        client, "testuser/actions-exec-repo", test_token
+    )
+    first_headers = {"Authorization": f"Bearer {first_token}"}
+    first_poll = await client.get(
+        f"{API}/repos/testuser/actions-exec-repo/actions/runner/jobs",
+        params={"labels": "self-hosted,linux", "timeout": 1},
+        headers=first_headers,
+    )
+    assert first_poll.status_code == 200
+    job_id = first_poll.json()["job_id"]
+
+    first_runner = (await db_session.execute(
+        select(Runner).where(Runner.token_hash.is_not(None)).order_by(Runner.id)
+    )).scalars().first()
+    first_runner.last_heartbeat = datetime.now(timezone.utc) - timedelta(
+        seconds=settings.RUNNER_STALE_THRESHOLD_SECONDS + 1
+    )
+    await db_session.commit()
+
+    second_token = await _register_custom_runner(
+        client, "testuser/actions-exec-repo", test_token
+    )
+    second_poll = await client.get(
+        f"{API}/repos/testuser/actions-exec-repo/actions/runner/jobs",
+        params={"labels": "self-hosted,linux", "timeout": 1},
+        headers={"Authorization": f"Bearer {second_token}"},
+    )
+    assert second_poll.status_code == 200
+    assert second_poll.json()["job_id"] == job_id
+
+    job = (await db_session.execute(
+        select(WorkflowJob).where(WorkflowJob.id == job_id)
+    )).scalar_one()
+    assert job.status == "in_progress"
+    assert job.runner_id != first_runner.id
+    assert job.steps[0]["status"] == "queued"
 
 
 @pytest.mark.asyncio

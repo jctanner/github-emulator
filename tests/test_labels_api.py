@@ -226,6 +226,33 @@ async def test_add_labels_to_issue(client, test_user, test_token, label_repo_wit
 
 
 @pytest.mark.asyncio
+async def test_add_labels_accepts_gh_form_and_creates_missing_labels(
+    client, test_user, test_token, label_repo_with_issue,
+):
+    """The GitHub CLI form payload creates and attaches unknown labels."""
+    resp = await client.post(
+        f"{API}/repos/testuser/label-repo/issues/1/labels",
+        content=b"labels%5B%5D=documentation&labels%5B%5D=ready-to-code",
+        headers={
+            **auth_headers(test_token),
+            "Content-Type": "application/x-www-form-urlencoded",
+        },
+    )
+    assert resp.status_code == 200
+    assert {label["name"] for label in resp.json()} == {
+        "documentation", "ready-to-code",
+    }
+
+    repo_labels = await client.get(
+        f"{API}/repos/testuser/label-repo/labels",
+        headers=auth_headers(test_token),
+    )
+    assert {label["name"] for label in repo_labels.json()} >= {
+        "documentation", "ready-to-code",
+    }
+
+
+@pytest.mark.asyncio
 async def test_list_issue_labels(client, test_user, test_token, label_repo_with_issue):
     """GET /repos/{owner}/{repo}/issues/{number}/labels lists labels on the issue."""
     # Create and add a label

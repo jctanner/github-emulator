@@ -293,12 +293,21 @@ async def _post_receive_pack_tasks(repo_id: int, user_id: int | None) -> None:
         }
         changed_branch = repository.default_branch or "main"
         changed_before = previous_branches.get(changed_branch)
+        changed_after = None
+        changed_created = False
+        changed_deleted = False
         try:
             disk_branches = await get_disk_branches(repository.disk_path)
-            for branch in disk_branches:
-                if previous_branches.get(branch["name"]) != branch["sha"]:
-                    changed_branch = branch["name"]
-                    changed_before = previous_branches.get(branch["name"])
+            current_branches = {branch["name"]: branch["sha"] for branch in disk_branches}
+            for branch in sorted(set(previous_branches) | set(current_branches)):
+                before = previous_branches.get(branch)
+                after = current_branches.get(branch)
+                if before != after:
+                    changed_branch = branch
+                    changed_before = before
+                    changed_after = after
+                    changed_created = before is None and after is not None
+                    changed_deleted = before is not None and after is None
                     break
         except Exception:
             pass
@@ -324,6 +333,9 @@ async def _post_receive_pack_tasks(repo_id: int, user_id: int | None) -> None:
                 user,
                 before_sha=changed_before,
                 ref_name=changed_branch,
+                after_sha=changed_after,
+                created=changed_created,
+                deleted=changed_deleted,
             )
         except Exception:
             pass

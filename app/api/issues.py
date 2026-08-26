@@ -391,7 +391,7 @@ async def update_issue(
         issue.title != old_title
         or issue.body != old_body
         or issue.state != old_state
-        or any(key in body for key in ("milestone", "assignees", "labels", "state_reason"))
+        or any(key in body for key in ("milestone", "assignees", "state_reason"))
     )
     if changed:
         await dispatch_event(

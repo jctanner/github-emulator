@@ -257,30 +257,34 @@ production tokens into event payloads.
 
 ### Generic Actions tests
 
-- [ ] A repository workflow with on: issues: types: [opened] creates one run
+- [x] A repository workflow with on: issues: types: [opened] creates one run
       when an issue is opened.
-- [ ] The run records event=issues, action=opened, the authenticated actor, and
+- [x] The run records event=issues, action=opened, the authenticated actor, and
       a payload containing issue, repository, and sender.
-- [ ] edited and labeled create runs only when listed in types.
-- [ ] An unlisted issue action creates no run.
-- [ ] An issue_comment workflow receives issue, comment, and sender, and
+- [x] edited and labeled create runs only when listed in types.
+- [x] An unlisted issue action creates no run.
+- [x] An issue_comment workflow receives issue, comment, and sender, and
       GITHUB_EVENT_PATH contains the same JSON payload exposed as github.event.
-- [ ] Pull-request target and review workflows match the required actions and
+- [x] Pull-request target and review workflows match the required actions and
       expose pull_request, review, and label as applicable.
-- [ ] Existing push and workflow-dispatch tests continue to pass.
+- [x] Existing push and workflow-dispatch tests continue to pass.
 - [ ] A failed mutation creates no Actions run.
 - [ ] A bot-created comment follows the same event path and remains observable as
       a separate actor/event.
 
 ### Fullsend acceptance test
 
-- [ ] Seed a repository containing the Fullsend-style workflow:
+- [x] Seed a repository containing the Fullsend-style workflow:
 
       on:
         issues:
           types: [opened, edited, labeled]
         issue_comment:
           types: [created]
+
+      The M9 and M10 seed workflows now retain workflow_dispatch as a manual
+      fallback while also subscribing to the automatic issue/comment and
+      pull-request/review event matrix.
 
 - [ ] Create an issue through the emulator REST API or UI.
 - [ ] An Actions run is created automatically without workflow_dispatch.
