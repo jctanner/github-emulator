@@ -389,6 +389,29 @@ async def repo_page(
     db: AsyncSession = Depends(get_db),
 ):
     """Repository overview with file tree and README."""
+    return await _repo_page_for_ref(request, owner, repo_name, ref=None, db=db)
+
+
+@router.get("/{owner}/{repo_name}/tree/{ref}", response_class=HTMLResponse)
+async def repo_page_at_ref(
+    request: Request,
+    owner: str,
+    repo_name: str,
+    ref: str,
+    db: AsyncSession = Depends(get_db),
+):
+    """Repository overview at a specific branch/tag."""
+    return await _repo_page_for_ref(request, owner, repo_name, ref=ref, db=db)
+
+
+async def _repo_page_for_ref(
+    request: Request,
+    owner: str,
+    repo_name: str,
+    ref: str | None,
+    db: AsyncSession,
+):
+    """Shared implementation for repo page at any ref."""
     current_user = await _get_current_user(request, db)
     repo = await _get_repo(db, owner, repo_name)
     if repo is None:
@@ -399,20 +422,20 @@ async def repo_page(
     tree_entries = None
     readme_content = None
     default_branch = repo.default_branch or "main"
+    selected_ref = ref or default_branch
     commit_count = 0
     branch_count = 0
     tag_count = 0
+    branches = []
 
     if repo.disk_path and os.path.isdir(repo.disk_path):
-        tree_entries = await list_tree(repo.disk_path, default_branch)
+        tree_entries = await list_tree(repo.disk_path, selected_ref)
         if tree_entries:
-            # Sort: directories first, then files
             tree_entries.sort(key=lambda e: (0 if e["type"] == "tree" else 1, e["name"]))
-            # Try to find and read README
             for entry in tree_entries:
                 if entry["name"].lower().startswith("readme"):
                     raw = await get_file_content(
-                        repo.disk_path, default_branch, entry["name"]
+                        repo.disk_path, selected_ref, entry["name"]
                     )
                     if raw:
                         try:
@@ -421,7 +444,7 @@ async def repo_page(
                             readme_content = None
                     break
 
-        commit_count = await get_commit_count(repo.disk_path, default_branch)
+        commit_count = await get_commit_count(repo.disk_path, selected_ref)
         branches = await get_branches(repo.disk_path)
         branch_count = len(branches)
         tags = await get_tags(repo.disk_path)
@@ -454,6 +477,8 @@ async def repo_page(
             tree_entries=tree_entries,
             readme_content=readme_content,
             default_branch=default_branch,
+            selected_ref=selected_ref,
+            branches=[b["name"] for b in branches],
             open_issues_count=open_issues_count,
             open_pulls_count=open_pulls_count,
             commit_count=commit_count,
