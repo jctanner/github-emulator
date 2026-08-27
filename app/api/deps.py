@@ -10,7 +10,12 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.database import get_db
 from app.models.user import User
 from app.models.repository import Repository
-from app.services.auth_service import validate_basic_auth, validate_installation_token, validate_token
+from app.services.auth_service import (
+    get_installation_actor,
+    validate_basic_auth,
+    validate_installation_token,
+    validate_token,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -65,7 +70,7 @@ async def get_current_user(
             return None
         request.state.installation_token = installation_token
         request.state.is_installation_token = True
-        return installation_token.installation.user
+        return await get_installation_actor(db, installation_token)
     return await validate_token(db, token_value)
 
 

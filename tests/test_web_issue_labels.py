@@ -159,7 +159,10 @@ async def test_issue_web_flow_creates_closes_and_reopens_issue(
         return [{
             "_path": ".github/workflows/activity.yml",
             "name": "Activity",
-            "on": {"issues": {"types": ["opened"]}},
+            "on": {
+                "issues": {"types": ["opened"]},
+                "issue_comment": {"types": ["created"]},
+            },
             "jobs": {
                 "record": {
                     "runs-on": ["self-hosted"],
@@ -214,6 +217,14 @@ async def test_issue_web_flow_creates_closes_and_reopens_issue(
     assert "A web comment" in page.text
     assert "IssueComment" in page.text
     assert 'class="TimelineItem-avatar"' not in page.text
+
+    runs = (await db_session.execute(
+        select(WorkflowRun).order_by(WorkflowRun.id)
+    )).scalars().all()
+    assert len(runs) == 2
+    assert runs[1].event == "issue_comment"
+    assert runs[1].trigger_payload["action"] == "created"
+    assert runs[1].trigger_payload["comment"]["body"] == "A web comment"
 
     close_response = await client.post(
         f"/ui/{owner}/{repo_name}/issues/1/state",

@@ -8,7 +8,7 @@
 {% from "_octicons.html" import repo_icon, code, issue_opened, git_pull_request, history, lock %}
 
 {# ---- Repo header breadcrumb ---- #}
-<div class="mb-3">
+<div class="repo-breadcrumb mb-3">
     <div class="d-flex flex-items-center flex-wrap" style="gap:4px;">
         <span class="color-fg-muted">{{ repo_icon(16) }}</span>
         <a href="{{ url_prefix }}/{{ owner }}" class="text-bold Link--primary" style="font-size:20px;">{{ owner }}</a>
@@ -23,7 +23,7 @@
 </div>
 
 {# ---- Tab navigation ---- #}
-<nav class="UnderlineNav" aria-label="Repository">
+<nav class="UnderlineNav repo-nav" aria-label="Repository">
     <div class="UnderlineNav-body">
         <a class="UnderlineNav-item{% if active_tab == 'code' %} selected{% endif %}"
            href="{{ url_prefix }}/{{ owner }}/{{ repo.name }}">

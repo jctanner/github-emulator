@@ -24,7 +24,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database import get_db
 from app.models.branch import Branch
-from app.models.repository import Repository
+from app.models.repository import Collaborator, Repository
 from app.models.user import User
 from app.api.deps import get_current_user
 from app.git.bare_repo import get_branches as get_disk_branches
@@ -69,7 +69,7 @@ async def _check_read_access(
 
 
 async def _check_write_access(
-    repository: Repository, user: User | None
+    repository: Repository, user: User | None, db: AsyncSession
 ) -> None:
     """Check if user has write access to the repository."""
     if user is None:
@@ -78,8 +78,19 @@ async def _check_write_access(
             detail="Authentication required",
             headers={"WWW-Authenticate": 'Basic realm="GitHub Emulator"'},
         )
-    if user.id != repository.owner_id and not user.site_admin:
-        # TODO: check collaborator access
+    if user.id == repository.owner_id or user.site_admin:
+        return
+
+    result = await db.execute(
+        select(Collaborator).where(
+            Collaborator.repo_id == repository.id,
+            Collaborator.user_id == user.id,
+        )
+    )
+    collaborator = result.scalar_one_or_none()
+    if collaborator is None or collaborator.permission not in {
+        "push", "maintain", "admin"
+    }:
         raise HTTPException(status_code=403, detail="Permission denied")
 
 
@@ -362,7 +373,7 @@ async def info_refs(
 
     # Check access
     if service == "git-receive-pack":
-        await _check_write_access(repository, user)
+        await _check_write_access(repository, user, db)
     else:
         await _check_read_access(repository, user)
 
@@ -450,7 +461,7 @@ async def git_receive_pack(
     Requires authentication with write access.
     """
     repository = await _resolve_repo(db, owner, repo_name)
-    await _check_write_access(repository, user)
+    await _check_write_access(repository, user, db)
 
     repo_path = repository.disk_path
     if not os.path.isdir(repo_path):

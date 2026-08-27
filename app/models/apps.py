@@ -24,9 +24,16 @@ class GitHubApp(Base):
     slug: Mapped[str] = mapped_column(String, unique=True, nullable=False, index=True)
     private_key_pem: Mapped[str] = mapped_column(Text, nullable=False)
     permissions: Mapped[dict] = mapped_column(JSON, default=dict)
+    # GitHub App API calls are performed as the App's bot account.  Keep the
+    # installation owner separate so account and repository semantics remain
+    # intact.
+    bot_user_id: Mapped[int | None] = mapped_column(
+        Integer, ForeignKey("users.id"), nullable=True, index=True
+    )
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
 
     installations = relationship("AppInstallation", back_populates="app", lazy="selectin")
+    bot_user = relationship("User", foreign_keys=[bot_user_id], lazy="selectin")
 
 class AppInstallation(Base):
     __tablename__ = "app_installations"

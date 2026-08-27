@@ -9,6 +9,7 @@ from typing import Annotated, Optional, Union
 import strawberry
 
 from app.graphql.connections import Connection, PageInfo, Edge
+from app.graphql.types.user import GitHubUser
 
 
 @strawberry.type
@@ -147,10 +148,40 @@ class AutoMergeRequest:
     commit_body: Optional[str] = None
 
 
+@strawberry.type(name="Bot")
+class ReviewRequestBotStub:
+    """A minimal GitHub App/bot reviewer."""
+
+    login: str = ""
+
+
+@strawberry.type
+class ReviewRequestOrganizationStub:
+    """A minimal organization nested under a team reviewer."""
+
+    login: str = ""
+
+
+@strawberry.type(name="Team")
+class ReviewRequestTeamStub:
+    """A minimal team reviewer."""
+
+    organization: Optional[ReviewRequestOrganizationStub] = None
+    name: Optional[str] = None
+    slug: Optional[str] = None
+
+
+RequestedReviewer = Annotated[
+    Union[GitHubUser, ReviewRequestBotStub, ReviewRequestTeamStub],
+    strawberry.union("RequestedReviewer"),
+]
+
+
 @strawberry.type
 class ReviewRequestStub:
-    """A review request stub."""
-    requested_reviewer: Optional[str] = None
+    """A review request stub compatible with the GitHub CLI query."""
+
+    requested_reviewer: Optional[RequestedReviewer] = None
 
 
 @strawberry.type

@@ -86,7 +86,7 @@ async def _repo_ref_sha(db_session, full_name: str, ref: str) -> str:
 async def test_repo_navigation_shows_issue_and_pull_request_counts(
     client, test_token, repo_with_branch
 ):
-    """Repository navigation shows both counters on either list page."""
+    """Repository navigation shows both counters on list and detail pages."""
     await client.post(
         f"{API}/repos/testuser/pr-repo/issues",
         json={"title": "Navigation count issue"},
@@ -98,8 +98,14 @@ async def test_repo_navigation_shows_issue_and_pull_request_counts(
         headers=auth_headers(test_token),
     )
     assert response.status_code == 201
+    pr_number = response.json()["number"]
 
-    for path in ("pulls", "issues"):
+    for path in (
+        "pulls",
+        "issues",
+        "pulls/" + str(pr_number),
+        "issues/1",
+    ):
         page = await client.get(f"/ui/testuser/pr-repo/{path}")
         assert page.status_code == 200
         assert re.search(
@@ -514,6 +520,106 @@ async def test_pr_web_renders_markdown_body_and_comments(
     assert 'class="TimelineItem-avatar"' not in page.text
     assert "<script>alert" not in page.text
     assert "&lt;script&gt;alert" in page.text
+
+
+@pytest.mark.asyncio
+async def test_pr_web_renders_labels_on_list_and_detail(
+    client, db_session, test_token, repo_with_branch
+):
+    """Labels attached to a PR are visible in both PR web views."""
+    repo_name = await _create_real_pr_with_diff(
+        client, db_session, test_token, repo_name="pr-web-label-repo"
+    )
+    response = await client.post(
+        f"{API}/repos/testuser/{repo_name}/issues/1/labels",
+        json={"labels": ["ready-for-review"]},
+        headers=auth_headers(test_token),
+    )
+    assert response.status_code == 200
+
+    list_page = await client.get(f"/ui/testuser/{repo_name}/pulls")
+    assert list_page.status_code == 200
+    assert 'aria-label="Pull request labels"' in list_page.text
+    assert "ready-for-review" in list_page.text
+
+    detail_page = await client.get(f"/ui/testuser/{repo_name}/pulls/1")
+    assert detail_page.status_code == 200
+    assert 'aria-label="Pull request labels"' in detail_page.text
+    assert 'class="issue-detail-sidebar"' in detail_page.text
+    assert "ready-for-review" in detail_page.text
+
+
+@pytest.mark.asyncio
+async def test_pr_web_can_add_edit_and_close_pull_request(
+    client, db_session, test_user, test_token, repo_with_branch
+):
+    """The PR conversation supports comments and closing/reopening a PR."""
+    repo_name = await _create_real_pr_with_diff(
+        client, db_session, test_token, repo_name="pr-web-conversation-repo"
+    )
+    client.cookies.set("ui_session", _sign_session("testuser"))
+
+    page = await client.get(f"/ui/testuser/{repo_name}/pulls/1")
+    assert page.status_code == 200
+    assert "Add a comment" in page.text
+    assert "Comment" in page.text
+    assert "Close pull request" in page.text
+
+    create_response = await client.post(
+        f"/ui/testuser/{repo_name}/pulls/1/comments",
+        data={"body": "A PR conversation comment"},
+        follow_redirects=False,
+    )
+    assert create_response.status_code == 302
+
+    comments_response = await client.get(
+        f"{API}/repos/testuser/{repo_name}/issues/1/comments",
+        headers=auth_headers(test_token),
+    )
+    assert comments_response.status_code == 200
+    comment = comments_response.json()[0]
+    assert comment["body"] == "A PR conversation comment"
+
+    page = await client.get(f"/ui/testuser/{repo_name}/pulls/1")
+    assert "A PR conversation comment" in page.text
+    assert f"/pulls/1/comments/{comment['id']}" in page.text
+
+    edit_response = await client.post(
+        f"/ui/testuser/{repo_name}/pulls/1/comments/{comment['id']}",
+        data={"body": "An edited PR comment"},
+        follow_redirects=False,
+    )
+    assert edit_response.status_code == 302
+    page = await client.get(f"/ui/testuser/{repo_name}/pulls/1")
+    assert "An edited PR comment" in page.text
+    assert "A PR conversation comment" not in page.text
+
+    close_response = await client.post(
+        f"/ui/testuser/{repo_name}/pulls/1/state",
+        data={"state": "closed"},
+        follow_redirects=False,
+    )
+    assert close_response.status_code == 302
+    pr_response = await client.get(
+        f"{API}/repos/testuser/{repo_name}/pulls/1",
+        headers=auth_headers(test_token),
+    )
+    assert pr_response.json()["state"] == "closed"
+    page = await client.get(f"/ui/testuser/{repo_name}/pulls/1")
+    assert "Reopen pull request" in page.text
+    assert "Close pull request" not in page.text
+
+    reopen_response = await client.post(
+        f"/ui/testuser/{repo_name}/pulls/1/state",
+        data={"state": "open"},
+        follow_redirects=False,
+    )
+    assert reopen_response.status_code == 302
+    pr_response = await client.get(
+        f"{API}/repos/testuser/{repo_name}/pulls/1",
+        headers=auth_headers(test_token),
+    )
+    assert pr_response.json()["state"] == "open"
 
 
 @pytest.mark.asyncio

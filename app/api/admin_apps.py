@@ -12,6 +12,7 @@ from app.config import settings
 from app.models.apps import AppInstallation, GitHubApp
 from app.models.organization import Organization
 from app.models.user import User
+from app.services.auth_service import ensure_app_bot
 
 router = APIRouter(prefix="/admin/api/apps", tags=["admin-apps"])
 
@@ -81,6 +82,8 @@ async def create_app(body: dict, user: AuthUser, db: DbSession):
         permissions=body.get("permissions", {}),
     )
     db.add(app)
+    await db.flush()
+    await ensure_app_bot(db, app)
     await db.commit()
     await db.refresh(app)
     result = _app_admin_json(app)
@@ -101,6 +104,8 @@ async def get_app(app_id: str, user: AuthUser, db: DbSession):
     app = (await db.execute(select(GitHubApp).where(GitHubApp.app_id == app_id))).scalar_one_or_none()
     if app is None:
         raise HTTPException(status_code=404, detail="Not Found")
+    await ensure_app_bot(db, app)
+    await db.commit()
     result = _app_admin_json(app)
     result["installations"] = [_installation_admin_json(item) for item in app.installations or []]
     result["has_private_key"] = bool(app.private_key_pem)

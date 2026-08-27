@@ -58,6 +58,63 @@ async def test_cancel_queued_run_marks_job_cancelled(client, db_session, test_us
 
 
 @pytest.mark.asyncio
+async def test_cancel_active_run_marks_job_cancelled(client, db_session, test_user, test_token, test_repo_with_init):
+    _owner, _repo, repo = test_repo_with_init
+    workflow = Workflow(repo_id=repo["id"], name="Cancel active", path=".github/workflows/cancel-active.yml")
+    db_session.add(workflow)
+    await db_session.flush()
+    run = WorkflowRun(
+        workflow_id=workflow.id,
+        repo_id=repo["id"],
+        head_sha="active",
+        head_branch="main",
+        event="workflow_dispatch",
+        status="in_progress",
+        run_number=1,
+        actor_id=test_user.id,
+    )
+    db_session.add(run)
+    await db_session.flush()
+    db_session.add(WorkflowJob(run_id=run.id, name="active", status="in_progress"))
+    await db_session.commit()
+
+    response = await client.post(f"{API}/repos/testuser/init-repo/actions/runs/{run.id}/cancel", headers=auth_headers(test_token))
+    assert response.status_code == 202
+    jobs = await client.get(f"{API}/repos/testuser/init-repo/actions/runs/{run.id}/jobs", headers=auth_headers(test_token))
+    assert jobs.json()["jobs"][0]["status"] == "completed"
+    assert jobs.json()["jobs"][0]["conclusion"] == "cancelled"
+
+
+@pytest.mark.asyncio
+async def test_cancel_already_cancelled_run_sweeps_unfinished_job(client, db_session, test_user, test_token, test_repo_with_init):
+    _owner, _repo, repo = test_repo_with_init
+    workflow = Workflow(repo_id=repo["id"], name="Cancel stale", path=".github/workflows/cancel-stale.yml")
+    db_session.add(workflow)
+    await db_session.flush()
+    run = WorkflowRun(
+        workflow_id=workflow.id,
+        repo_id=repo["id"],
+        head_sha="stale",
+        head_branch="main",
+        event="workflow_dispatch",
+        status="completed",
+        conclusion="cancelled",
+        run_number=1,
+        actor_id=test_user.id,
+    )
+    db_session.add(run)
+    await db_session.flush()
+    db_session.add(WorkflowJob(run_id=run.id, name="orphan", status="in_progress"))
+    await db_session.commit()
+
+    response = await client.post(f"{API}/repos/testuser/init-repo/actions/runs/{run.id}/cancel", headers=auth_headers(test_token))
+    assert response.status_code == 202
+    jobs = await client.get(f"{API}/repos/testuser/init-repo/actions/runs/{run.id}/jobs", headers=auth_headers(test_token))
+    assert jobs.json()["jobs"][0]["status"] == "completed"
+    assert jobs.json()["jobs"][0]["conclusion"] == "cancelled"
+
+
+@pytest.mark.asyncio
 async def test_concurrency_group_cancels_previous_run(db_session, test_user, test_repo_with_init):
     _owner, _repo, repo = test_repo_with_init
     workflow = Workflow(repo_id=repo["id"], name="Concurrency", path=".github/workflows/concurrency.yml")

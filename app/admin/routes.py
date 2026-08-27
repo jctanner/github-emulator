@@ -28,6 +28,7 @@ from app.models.pull_request import PullRequest
 from app.models.repository import Repository
 from app.models.token import PersonalAccessToken
 from app.models.user import User
+from app.services.auth_service import ensure_app_bot
 from app.models.import_job import ImportJob
 from app.models.apps import AppInstallation, AppInstallationToken, GitHubApp
 from app.api.apps import _client_id, _private_key
@@ -760,6 +761,8 @@ async def create_app_handler(
         permissions=_permissions_from_form(form),
     )
     db.add(app)
+    await db.flush()
+    await ensure_app_bot(db, app)
     await db.commit()
     await db.refresh(app)
     return templates.TemplateResponse(

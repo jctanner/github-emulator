@@ -920,7 +920,7 @@ def _user_payload(user: User | None) -> dict | None:
         "login": user.login,
         "id": user.id,
         "node_id": f"U_{user.id}",
-        "type": "User",
+        "type": getattr(user, "type", "User") or "User",
         "site_admin": bool(user.site_admin),
     }
 
@@ -1389,7 +1389,7 @@ async def cancel_workflow_run(db: AsyncSession, run_id: int) -> WorkflowRun | No
     if not run:
         return None
 
-    if run.status == "completed":
+    if run.status == "completed" and run.conclusion != "cancelled":
         return run
 
     now = datetime.now(timezone.utc)
@@ -1398,7 +1398,7 @@ async def cancel_workflow_run(db: AsyncSession, run_id: int) -> WorkflowRun | No
         select(WorkflowJob).where(WorkflowJob.run_id == run_id)
     )
     for job in result.scalars().all():
-        if job.status in ("queued", "waiting"):
+        if job.status != "completed":
             job.status = "completed"
             job.conclusion = "cancelled"
             job.completed_at = now

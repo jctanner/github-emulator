@@ -8,10 +8,14 @@ body {
     background: #ffffff;
 }
 
-/* ---- Dark header ---- */
+/* ---- GitHub-like global header ---- */
 .Header {
-    background-color: #24292f !important;
-    padding: 12px 16px;
+    min-height: 64px;
+    box-sizing: border-box;
+    align-items: center;
+    gap: 8px;
+    background-color: #000000 !important;
+    padding: 16px 24px;
 }
 .Header-link.color-fg-on-emphasis {
     color: #ffffff !important;
@@ -31,6 +35,82 @@ body {
     background-color: #ffffff;
     color: #1f2328;
     border-color: #0969da;
+}
+.header-mobile-menu,
+.header-mobile-brand {
+    display: none;
+}
+.header-menu-icon {
+    color: #ffffff;
+    font-size: 24px;
+    line-height: 32px;
+}
+
+/* Repository sub-navigation uses GitHub's light canvas. */
+.color-bg-default.border-bottom {
+    background-color: #f6f8fa !important;
+}
+.repo-breadcrumb a {
+    color: #0969da !important;
+    text-decoration: none;
+}
+.repo-breadcrumb a:hover {
+    text-decoration: underline;
+}
+.repo-nav .UnderlineNav-body {
+    align-items: stretch;
+}
+.repo-nav .UnderlineNav-item {
+    padding-right: 16px;
+    padding-left: 16px;
+}
+
+/* Pull request list alignment and density. */
+.pulls-toolbar {
+    justify-content: space-between;
+    gap: 16px;
+}
+.pulls-state-tabs {
+    gap: 16px;
+}
+.pulls-state-tabs a {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    color: #1f2328;
+    text-decoration: none;
+}
+.pulls-state-tabs a:hover {
+    text-decoration: underline;
+}
+.pulls-state-tabs .color-fg-open {
+    color: #1a7f37;
+}
+.pulls-state-tabs .color-fg-closed {
+    color: #8250df;
+}
+.pull-list-row {
+    min-height: 80px;
+    padding: 16px;
+}
+.pull-list-icon {
+    width: 16px;
+    margin-right: 8px;
+    padding-top: 2px;
+    text-align: center;
+}
+.pull-list-row .Link--primary {
+    color: #1f2328;
+    font-size: 16px;
+    line-height: 1.5;
+    text-decoration: none;
+}
+.pull-list-row .Link--primary:hover {
+    color: #0969da;
+    text-decoration: underline;
+}
+.pull-list-row .color-fg-muted {
+    color: #656d76 !important;
 }
 
 /* ---- Blob / file viewer ---- */
@@ -343,6 +423,38 @@ td.blob-code {
     .labels-page-nav {
         flex-direction: row;
         overflow-x: auto;
+    }
+}
+
+@media (max-width: 900px) {
+    .Header {
+        position: relative;
+        justify-content: space-between;
+        padding: 16px;
+    }
+    .header-brand,
+    .header-search,
+    .header-desktop-item,
+    .header-current-user {
+        display: none !important;
+    }
+    .header-mobile-menu,
+    .header-mobile-brand {
+        display: flex;
+    }
+    .header-mobile-brand {
+        position: absolute;
+        left: 50%;
+        transform: translateX(-50%);
+    }
+    .header-auth-item {
+        margin-left: auto;
+    }
+    .header-auth-item .Header-link {
+        padding: 6px 12px;
+        border: 1px solid #30363d;
+        border-radius: 6px;
+        font-size: 14px;
     }
 }
 

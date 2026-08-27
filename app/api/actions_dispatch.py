@@ -236,6 +236,7 @@ async def poll_for_jobs(
             .join(WorkflowRun, WorkflowJob.run_id == WorkflowRun.id)
             .where(
                 WorkflowRun.repo_id == repository_id,
+                WorkflowRun.status.in_(("queued", "in_progress")),
                 WorkflowJob.status == "queued",
             )
             .order_by(WorkflowJob.created_at)
@@ -323,6 +324,15 @@ async def complete_job(
     job = result.scalar_one_or_none()
     if job is None:
         raise HTTPException(status_code=404, detail="Job not found")
+
+    # A runner may finish a process after its workflow was canceled.  Preserve
+    # the cancellation result instead of allowing that late callback to turn
+    # the job back into a successful execution.
+    if job.status == "completed" and job.conclusion == "cancelled":
+        runner.busy = False
+        runner.status = "online"
+        await db.commit()
+        return {"status": "completed", "conclusion": "cancelled"}
 
     conclusion = body.get("conclusion", "success")
     job.status = "completed"

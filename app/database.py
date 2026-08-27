@@ -60,6 +60,8 @@ async def init_db():
             app_column_names = {row[1] for row in apps_columns.fetchall()}
             if "client_id" not in app_column_names:
                 await conn.execute(text("ALTER TABLE github_apps ADD COLUMN client_id TEXT"))
+            if "bot_user_id" not in app_column_names:
+                await conn.execute(text("ALTER TABLE github_apps ADD COLUMN bot_user_id INTEGER"))
             await conn.execute(
                 text(
                     "UPDATE github_apps "

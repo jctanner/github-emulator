@@ -36,7 +36,8 @@ async def test_app_installation_token_is_repo_scoped(client, admin_token, test_r
 
     whoami = await client.get(f"{API}/user", headers={"Authorization": f"Bearer {token}"})
     assert whoami.status_code == 200
-    assert whoami.json()["login"] == "testuser"
+    assert whoami.json()["login"] == "fullsend-triage[bot]"
+    assert whoami.json()["type"] == "Bot"
     repositories = await client.get(f"{API}/app/installations/{installation_id}/repositories", headers=headers)
     assert repositories.status_code == 200
     assert repositories.json()["total_count"] == 1

@@ -14,6 +14,7 @@ Actions visibility and runner evaluation.
 
 ## Pending Tasks
 
+- `docs/tasks/pending/branch-protection-and-merge-readiness-parity.md`
 - `docs/tasks/pending/actions-runner-compose-bootstrap.md`
 - `docs/tasks/pending/actions-job-execution-loop.md`
 - `docs/tasks/pending/actions-hosted-runner-feasibility.md`
@@ -27,6 +28,8 @@ Actions visibility and runner evaluation.
 - `docs/tasks/done/actions-visible-api-and-web-ui.md`
 - `docs/tasks/done/admin-repos-import-api.md`
 - `docs/tasks/done/admin-app-frontend-lifecycle.md`
+- `docs/tasks/done/pull-request-web-conversation-controls.md`
+- `docs/tasks/done/pull-request-web-labels.md`
 
 ## Milestones
 
@@ -51,6 +54,9 @@ None tracked in the ledger.
 ## Fixed Bugs
 
 - `docs/bugs/fixed/concurrent-repository-mutations-return-500-on-sqlite-lock.md`
+- `docs/bugs/fixed/issue-comment-web-route-does-not-dispatch-actions.md`
+- `docs/bugs/fixed/fullsend-installation-token-attribution-and-review-loop.md`
+- `docs/bugs/fixed/cancelled-run-leaves-active-runner-job.md`
 
 ## Decisions
 

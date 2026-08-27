@@ -3,7 +3,7 @@
 import asyncio
 import base64
 from datetime import datetime, timezone
-from typing import Optional
+from typing import Annotated, Optional, Union
 
 import strawberry
 from strawberry.types import Info
@@ -100,6 +100,21 @@ class MergePullRequestInput:
 
 
 @strawberry.input
+class EnablePullRequestAutoMergeInput:
+    pull_request_id: strawberry.ID
+    merge_method: Optional[str] = None
+    commit_headline: Optional[str] = None
+    commit_body: Optional[str] = None
+    client_mutation_id: Optional[str] = None
+
+
+@strawberry.input
+class DisablePullRequestAutoMergeInput:
+    pull_request_id: strawberry.ID
+    client_mutation_id: Optional[str] = None
+
+
+@strawberry.input
 class AddReactionInput:
     subject_id: strawberry.ID
     content: str  # "+1", "-1", "laugh", "confused", "heart", "hooray", "rocket", "eyes"
@@ -135,6 +150,13 @@ class UpdatePullRequestInput:
     title: Optional[str] = None
     body: Optional[str] = None
     base_ref_name: Optional[str] = None
+    client_mutation_id: Optional[str] = None
+
+
+@strawberry.input
+class AddLabelsToLabelableInput:
+    labelable_id: strawberry.ID
+    label_ids: list[strawberry.ID]
     client_mutation_id: Optional[str] = None
 
 
@@ -193,6 +215,18 @@ class MergePullRequestPayload:
 
 
 @strawberry.type
+class EnablePullRequestAutoMergePayload:
+    pull_request: Optional[PullRequest] = None
+    client_mutation_id: Optional[str] = None
+
+
+@strawberry.type
+class DisablePullRequestAutoMergePayload:
+    pull_request: Optional[PullRequest] = None
+    client_mutation_id: Optional[str] = None
+
+
+@strawberry.type
 class ReactionType:
     """A reaction to a subject."""
     database_id: int
@@ -232,6 +266,18 @@ class UpdatePullRequestPayload:
     client_mutation_id: Optional[str] = None
 
 
+Labelable = Annotated[
+    Union[Issue, PullRequest],
+    strawberry.union("Labelable"),
+]
+
+
+@strawberry.type
+class AddLabelsToLabelablePayload:
+    labelable: Optional[Labelable] = None
+    client_mutation_id: Optional[str] = None
+
+
 # ---------------------------------------------------------------------------
 # Helper to resolve the authenticated user or raise
 # ---------------------------------------------------------------------------
@@ -251,6 +297,71 @@ def _require_auth(info: Info):
 @strawberry.type
 class Mutation:
     """Root mutation type for the GitHub GraphQL API emulator."""
+
+    @strawberry.mutation
+    async def add_labels_to_labelable(
+        self, info: Info, input: AddLabelsToLabelableInput
+    ) -> AddLabelsToLabelablePayload:
+        """Add labels using GitHub's labelable mutation used by ``gh pr edit``."""
+        from app.models.issue import Issue as IssueModel, IssueLabel
+        from app.models.label import Label as LabelModel
+        from app.models.pull_request import PullRequest as PRModel
+
+        _require_auth(info)
+        db = info.context["db"]
+
+        raw_id = base64.b64decode(str(input.labelable_id)).decode("utf-8")
+        type_name, _, id_str = raw_id.partition(":")
+        labelable_id = int(id_str)
+
+        issue = None
+        pull_request = None
+        if type_name.lower() == "pullrequest":
+            result = await db.execute(
+                select(PRModel).where(PRModel.id == labelable_id)
+            )
+            pull_request = result.scalar_one_or_none()
+            if pull_request:
+                issue_result = await db.execute(
+                    select(IssueModel).where(IssueModel.id == pull_request.issue_id)
+                )
+                issue = issue_result.scalar_one_or_none()
+        else:
+            result = await db.execute(
+                select(IssueModel).where(IssueModel.id == labelable_id)
+            )
+            issue = result.scalar_one_or_none()
+
+        if not issue:
+            raise ValueError(f"Labelable with id {labelable_id} not found")
+
+        for label_id in input.label_ids:
+            decoded_label_id = _decode_node_id(label_id)
+            label_result = await db.execute(
+                select(LabelModel).where(
+                    LabelModel.id == decoded_label_id,
+                    LabelModel.repo_id == issue.repo_id,
+                )
+            )
+            label = label_result.scalar_one_or_none()
+            if not label:
+                raise ValueError(f"Label with id {decoded_label_id} not found")
+            if not any(existing.id == label.id for existing in issue.labels):
+                issue.labels.append(label)
+
+        await db.commit()
+        await db.refresh(issue)
+
+        if pull_request:
+            from app.services.auto_merge_service import process_auto_merge
+            await process_auto_merge(db, pull_request, info.context.get("user"))
+            await db.refresh(pull_request)
+
+        labelable = pull_request_from_model(pull_request) if pull_request else issue_from_model(issue)
+        return AddLabelsToLabelablePayload(
+            labelable=labelable,
+            client_mutation_id=input.client_mutation_id,
+        )
 
     @strawberry.mutation
     async def create_issue(self, info: Info, input: CreateIssueInput) -> CreateIssuePayload:
@@ -614,6 +725,89 @@ class Mutation:
         await db.refresh(pr)
 
         return MergePullRequestPayload(
+            pull_request=pull_request_from_model(pr),
+            client_mutation_id=input.client_mutation_id,
+        )
+
+    @strawberry.mutation
+    async def enable_pull_request_auto_merge(
+        self, info: Info, input: EnablePullRequestAutoMergeInput
+    ) -> EnablePullRequestAutoMergePayload:
+        """Queue a PR for automatic merge when it becomes ready."""
+        from app.models.auto_merge import PullRequestAutoMerge
+        from app.models.pull_request import PullRequest as PRModel
+
+        current_user = _require_auth(info)
+        db = info.context["db"]
+        pr_id = _decode_node_id(input.pull_request_id)
+        result = await db.execute(select(PRModel).where(PRModel.id == pr_id))
+        pr = result.scalar_one_or_none()
+        if pr is None:
+            raise ValueError(f"Pull request with id {pr_id} not found")
+        if pr.merged:
+            raise ValueError("Pull request is already merged")
+        if pr.issue is not None and pr.issue.state == "closed":
+            raise ValueError("Pull request is closed")
+
+        method = (input.merge_method or "MERGE").upper()
+        if method not in {"MERGE", "SQUASH", "REBASE"}:
+            raise ValueError("merge_method must be MERGE, SQUASH, or REBASE")
+
+        request_result = await db.execute(
+            select(PullRequestAutoMerge).where(
+                PullRequestAutoMerge.pull_request_id == pr.id
+            )
+        )
+        request = request_result.scalar_one_or_none()
+        if request is None:
+            request = PullRequestAutoMerge(
+                pull_request_id=pr.id,
+                enabled_at=datetime.now(timezone.utc),
+                enabled_by_id=current_user.id,
+            )
+            db.add(request)
+        request.enabled_at = datetime.now(timezone.utc)
+        request.enabled_by_id = current_user.id
+        request.merge_method = method
+        request.commit_headline = input.commit_headline
+        request.commit_body = input.commit_body
+        await db.commit()
+        await db.refresh(pr)
+
+        from app.services.auto_merge_service import process_auto_merge
+        await process_auto_merge(db, pr, current_user)
+        await db.refresh(pr)
+        return EnablePullRequestAutoMergePayload(
+            pull_request=pull_request_from_model(pr),
+            client_mutation_id=input.client_mutation_id,
+        )
+
+    @strawberry.mutation
+    async def disable_pull_request_auto_merge(
+        self, info: Info, input: DisablePullRequestAutoMergeInput
+    ) -> DisablePullRequestAutoMergePayload:
+        """Cancel a queued auto-merge request."""
+        from app.models.auto_merge import PullRequestAutoMerge
+        from app.models.pull_request import PullRequest as PRModel
+
+        _require_auth(info)
+        db = info.context["db"]
+        pr_id = _decode_node_id(input.pull_request_id)
+        result = await db.execute(select(PRModel).where(PRModel.id == pr_id))
+        pr = result.scalar_one_or_none()
+        if pr is None:
+            raise ValueError(f"Pull request with id {pr_id} not found")
+        request_result = await db.execute(
+            select(PullRequestAutoMerge).where(
+                PullRequestAutoMerge.pull_request_id == pr.id
+            )
+        )
+        request = request_result.scalar_one_or_none()
+        if request is not None:
+            await db.delete(request)
+            await db.commit()
+            await db.refresh(pr)
+        return DisablePullRequestAutoMergePayload(
             pull_request=pull_request_from_model(pr),
             client_mutation_id=input.client_mutation_id,
         )

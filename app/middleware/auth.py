@@ -12,6 +12,7 @@ from app.database import get_db
 from app.models import User
 from app.services.auth_service import (
     validate_basic_auth,
+    get_installation_actor,
     validate_installation_token,
     validate_token,
 )
@@ -71,11 +72,7 @@ async def _extract_user_from_auth(
             if installation_token is not None and request is not None:
                 request.state.installation_token = installation_token
                 request.state.is_installation_token = True
-            return (
-                installation_token.installation.user
-                if installation_token is not None
-                else None
-            )
+            return await get_installation_actor(db, installation_token) if installation_token else None
         return await validate_token(db, credentials)
 
     if scheme == "basic":

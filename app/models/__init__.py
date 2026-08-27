@@ -6,6 +6,7 @@ from app.models.repository import Repository, Collaborator, StarredRepo
 from app.models.branch import Branch, BranchProtection
 from app.models.issue import Issue, IssueAssignee, IssueLabel
 from app.models.pull_request import PullRequest
+from app.models.auto_merge import PullRequestAutoMerge
 from app.models.label import Label
 from app.models.milestone import Milestone
 from app.models.comment import IssueComment, PRReviewComment, CommitComment
@@ -35,6 +36,7 @@ __all__ = [
     "Branch", "BranchProtection",
     "Issue", "IssueAssignee", "IssueLabel",
     "PullRequest",
+    "PullRequestAutoMerge",
     "Label",
     "Milestone",
     "IssueComment", "PRReviewComment", "CommitComment",

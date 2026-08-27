@@ -260,6 +260,10 @@ async def add_issue_labels(
     await db.refresh(issue)
     for label in added_labels:
         await _dispatch_label_event(db, repository, user, issue, "labeled", label)
+    if issue.pull_request is not None:
+        from app.services.auto_merge_service import process_auto_merge
+        await process_auto_merge(db, issue.pull_request, user)
+        await db.refresh(issue)
     return [LabelResponse.from_db(l, BASE, owner, repo) for l in issue.labels]
 
 
@@ -308,6 +312,10 @@ async def set_issue_labels(
     for name, label in old_labels.items():
         if name not in new_labels:
             await _dispatch_label_event(db, repository, user, issue, "unlabeled", label)
+    if issue.pull_request is not None:
+        from app.services.auto_merge_service import process_auto_merge
+        await process_auto_merge(db, issue.pull_request, user)
+        await db.refresh(issue)
     return [LabelResponse.from_db(l, BASE, owner, repo) for l in issue.labels]
 
 

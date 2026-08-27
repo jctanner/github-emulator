@@ -293,6 +293,8 @@ async def test_installation_token_auth_and_commit_verification(
         f"{API}/user", headers={"Authorization": f"Bearer {installation_token}"}
     )
     assert user_response.status_code == 200
+    assert user_response.json()["login"] == "verification-app[bot]"
+    assert user_response.json()["type"] == "Bot"
     commits = await client.get(
         f"{API}/repos/{repo['full_name']}/commits",
         headers={"Authorization": f"Bearer {installation_token}"},

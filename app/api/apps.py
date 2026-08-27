@@ -17,6 +17,7 @@ from app.models.apps import AppInstallation, AppInstallationToken, GitHubApp
 from app.models.repository import Repository
 from app.models.user import User
 from app.schemas.user import _fmt_dt
+from app.services.auth_service import ensure_app_bot
 
 router = APIRouter(tags=["apps"])
 
@@ -105,6 +106,8 @@ async def _app_from_jwt(request: Request, db: DbSession) -> GitHubApp:
                 algorithms=["RS256"],
                 options={"verify_aud": False},
             )
+        await ensure_app_bot(db, app)
+        await db.commit()
         return app
     except (JWTError, ValueError, TypeError) as exc:
         raise HTTPException(status_code=401, detail="Invalid GitHub App JWT") from exc
@@ -123,6 +126,8 @@ async def create_app(body: dict, user: AuthUser, db: DbSession):
         raise HTTPException(status_code=409, detail="App slug already exists")
     app = GitHubApp(app_id=app_id, client_id=_client_id(), name=name, slug=slug, private_key_pem=_private_key(), permissions=body.get("permissions", {}))
     db.add(app)
+    await db.flush()
+    await ensure_app_bot(db, app)
     await db.commit()
     await db.refresh(app)
     result = _app_json(app)
@@ -163,6 +168,8 @@ async def get_admin_app(app_id: str, user: AuthUser, db: DbSession):
     app = (await db.execute(select(GitHubApp).where(GitHubApp.app_id == app_id))).scalar_one_or_none()
     if app is None:
         raise HTTPException(status_code=404, detail="App not found")
+    await ensure_app_bot(db, app)
+    await db.commit()
     result = _app_json(app)
     # Private keys are returned only by the development-only create response.
     # Ordinary lookup/list surfaces must remain safe to render and log.

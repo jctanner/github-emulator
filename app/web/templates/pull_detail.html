@@ -33,6 +33,7 @@
             <span class="branch-name">{{ pr.base_label or pr.base_ref or '?' }}</span>
             from
             <span class="branch-name">{{ pr.head_label or pr.head_ref or '?' }}</span>
+            &middot; {{ comments|length }} comment{{ 's' if comments|length != 1 else '' }}
         </span>
     </div>
 </div>
@@ -144,6 +145,8 @@
     </div>
     {% endif %}
 {% else %}
+    <div class="issue-detail-layout">
+    <main class="issue-detail-main">
     {% if merge_error %}
     <div class="flash flash-error mb-3">
         {{ merge_error }}
@@ -176,6 +179,15 @@
                 {% if comment.created_at %}
                 <span class="color-fg-muted ml-1">commented on {{ comment.created_at.strftime('%b %d, %Y') }}</span>
                 {% endif %}
+                {% if current_user and (comment.user_id == current_user.id or current_user.site_admin) %}
+                <details class="ml-auto">
+                    <summary class="btn-link f6">Edit</summary>
+                    <form method="post" action="{{ url_prefix }}/{{ owner }}/{{ repo.name }}/pulls/{{ pr.number }}/comments/{{ comment.id }}" class="mt-2">
+                        <textarea name="body" rows="4" class="form-control input-block">{{ comment.body }}</textarea>
+                        <button type="submit" class="btn btn-primary btn-sm mt-2">Save comment</button>
+                    </form>
+                </details>
+                {% endif %}
             </div>
             <div class="Box-body">
                 <div class="comment-body markdown-body">{{ comment.body_html|safe }}</div>
@@ -183,6 +195,27 @@
         </div>
     </div>
     {% endfor %}
+
+    {% if current_user %}
+    <section class="issue-comment-composer">
+        <h2 class="f4 mb-2">Add a comment</h2>
+        <form id="pull-comment-form" method="post"
+              action="{{ url_prefix }}/{{ owner }}/{{ repo.name }}/pulls/{{ pr.number }}/comments">
+            <div class="issue-comment-editor">
+                <div class="issue-comment-tabs">
+                    <span class="issue-comment-tab selected">Write</span>
+                    <span class="issue-comment-tab">Preview</span>
+                </div>
+                <textarea name="body" rows="6" class="form-control input-block"
+                          placeholder="Use Markdown to format your comment"></textarea>
+            </div>
+        </form>
+        <div class="issue-comment-actions">
+            <span class="color-fg-muted f6">Markdown is supported</span>
+            <button type="submit" form="pull-comment-form" class="btn btn-primary btn-sm">Comment</button>
+        </div>
+    </section>
+    {% endif %}
 
     <div class="Box mb-4">
         <div class="Box-row d-flex flex-items-center flex-justify-between flex-wrap" style="gap:12px;">
@@ -200,18 +233,54 @@
                 <div class="color-fg-muted f6">Merging will close this pull request.</div>
                 {% endif %}
             </div>
-            {% if pr.state == "open" and not pr.merged and pr.mergeable is not sameas false %}
-                {% if can_merge %}
+            {% if pr.state == "open" and not pr.merged and can_merge %}
+                <div class="d-flex flex-items-center" style="gap:8px;">
+                <form method="post" action="{{ url_prefix }}/{{ owner }}/{{ repo.name }}/pulls/{{ pr.number }}/state">
+                    <input type="hidden" name="state" value="closed">
+                    <button type="submit" class="btn btn-outline">Close pull request</button>
+                </form>
+                {% if pr.mergeable is not sameas false %}
                 <form method="post" action="{{ url_prefix }}/{{ owner }}/{{ repo.name }}/pulls/{{ pr.number }}/merge">
                     <button type="submit" class="btn btn-primary">Merge pull request</button>
                 </form>
-                {% elif current_user %}
-                <span class="color-fg-muted f6">You do not have permission to merge.</span>
-                {% else %}
-                <a class="btn btn-primary" href="{{ url_prefix }}/login">Sign in to merge</a>
                 {% endif %}
+                </div>
+            {% elif pr.state != "open" and not pr.merged and can_merge %}
+                <form method="post" action="{{ url_prefix }}/{{ owner }}/{{ repo.name }}/pulls/{{ pr.number }}/state">
+                    <input type="hidden" name="state" value="open">
+                    <button type="submit" class="btn btn-outline">Reopen pull request</button>
+                </form>
+            {% elif pr.state == "open" and not current_user %}
+                <a class="btn btn-primary" href="{{ url_prefix }}/login">Sign in to merge or close</a>
+            {% elif pr.state == "open" and current_user and not can_merge %}
+                <span class="color-fg-muted f6">You do not have permission to close or merge.</span>
             {% endif %}
         </div>
+    </div>
+    </main>
+
+    <aside class="issue-detail-sidebar">
+        <section class="issue-sidebar-section">
+            <div class="issue-sidebar-heading">Labels</div>
+            <div class="issue-label-current" aria-label="Pull request labels">
+                {% if labels %}
+                    {% for label in labels %}
+                    <span class="IssueLabel"
+                          style="background-color:#{{ label.color or 'ededed' }};color:{% if label.color and label.color in ['000000','0e1116','1a1e22'] %}#fff{% else %}#1f2328{% endif %};">
+                        {{ label.name }}
+                    </span>
+                    {% endfor %}
+                {% else %}
+                    <span class="color-fg-muted f6">None yet</span>
+                {% endif %}
+            </div>
+            {% if not current_user %}
+            <p class="color-fg-muted f6 mt-2 mb-0">
+                <a href="{{ url_prefix }}/login">Sign in</a> to edit labels.
+            </p>
+            {% endif %}
+        </section>
+    </aside>
     </div>
 {% endif %}
 {% endblock %}

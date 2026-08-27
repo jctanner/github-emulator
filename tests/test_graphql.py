@@ -238,6 +238,101 @@ async def test_graphql_pull_requests_accepts_gh_list_arguments(client, test_user
 
 
 @pytest.mark.asyncio
+async def test_graphql_pull_request_lookup_accepts_gh_edit_query(client, test_user, test_token):
+    """The lookup query used by ``gh pr edit --add-label`` validates."""
+    await client.post(
+        f"{API}/user/repos",
+        json={"name": "gql-edit"},
+        headers=auth_headers(test_token),
+    )
+    resp = await client.post(
+        "/graphql",
+        json={
+            "query": """
+                query PullRequestByNumber($owner: String!, $repo: String!, $pr_number: Int!) {
+                    repository(owner: $owner, name: $repo) {
+                        pullRequest(number: $pr_number) {
+                            id
+                            author { login ... on User { id name } }
+                            url
+                            title
+                            body
+                            baseRefName
+                            reviewRequests(first: 100) {
+                                nodes {
+                                    requestedReviewer {
+                                        __typename
+                                        ... on User { login name }
+                                        ... on Bot { login }
+                                        ... on Team {
+                                            organization { login }
+                                            name
+                                            slug
+                                        }
+                                    }
+                                }
+                            }
+                            labels(first: 100) {
+                                nodes { id name description color }
+                                totalCount
+                            }
+                            milestone { number title description dueOn }
+                            assignees(first: 100) {
+                                nodes { id login name databaseId }
+                                totalCount
+                            }
+                            projectItems(first: 100) {
+                                nodes { id }
+                                totalCount
+                            }
+                            number
+                        }
+                    }
+                }
+            """,
+            "variables": {"owner": "testuser", "repo": "gql-edit", "pr_number": 1},
+        },
+        headers=auth_headers(test_token),
+    )
+    assert resp.status_code == 200
+    assert "errors" not in resp.json()
+
+
+@pytest.mark.asyncio
+async def test_graphql_add_labels_to_labelable_accepts_gh_edit_mutation(
+    client, test_user, test_token
+):
+    """The label mutation used by ``gh pr edit --add-label`` is exposed."""
+    resp = await client.post(
+        "/graphql",
+        json={
+            "query": """
+                mutation AddLabels($input: AddLabelsToLabelableInput!) {
+                    addLabelsToLabelable(input: $input) {
+                        clientMutationId
+                        labelable {
+                            ... on Issue { id }
+                            ... on PullRequest { id }
+                        }
+                    }
+                }
+            """,
+            "variables": {
+                "input": {
+                    "labelableId": "SXNzdWU6MQ==",
+                    "labelIds": [],
+                    "clientMutationId": "test",
+                }
+            },
+        },
+        headers=auth_headers(test_token),
+    )
+    assert resp.status_code == 200
+    data = resp.json()
+    assert "errors" not in data or "not found" in data["errors"][0]["message"]
+
+
+@pytest.mark.asyncio
 async def test_graphql_variables(client, test_user, test_token):
     """GraphQL queries support variables."""
     resp = await client.post(

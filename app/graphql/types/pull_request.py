@@ -110,6 +110,7 @@ class PullRequest:
     _merge_commit_sha: strawberry.Private[Optional[str]] = None
     _head_repo_id: strawberry.Private[Optional[int]] = None
     _merged_by_id: strawberry.Private[Optional[int]] = None
+    _auto_merge_request: strawberry.Private[Optional[AutoMergeRequest]] = None
 
     @strawberry.field
     def id(self) -> strawberry.ID:
@@ -161,7 +162,10 @@ class PullRequest:
             return "DRAFT"
         if self.merged:
             return "CLEAN"
-        return "UNKNOWN"
+        # The emulator does not model GitHub's complete branch-protection and
+        # required-check calculation. Open, non-draft PRs are represented as
+        # blocked until the readiness label is applied.
+        return "BLOCKED"
 
     @strawberry.field
     def maintainer_can_modify(self) -> bool:
@@ -177,7 +181,7 @@ class PullRequest:
 
     @strawberry.field
     def auto_merge_request(self) -> Optional[AutoMergeRequest]:
-        return None
+        return self._auto_merge_request
 
     @strawberry.field
     def reaction_groups(self) -> list[ReactionGroup]:
@@ -407,7 +411,13 @@ class PullRequest:
         return empty_connection()
 
     @strawberry.field
-    def review_requests(self) -> Connection[ReviewRequestStub]:
+    def review_requests(
+        self,
+        first: Optional[int] = 10,
+        after: Optional[str] = None,
+        last: Optional[int] = None,
+        before: Optional[str] = None,
+    ) -> Connection[ReviewRequestStub]:
         return empty_connection()
 
     @strawberry.field
@@ -415,11 +425,23 @@ class PullRequest:
         return empty_connection()
 
     @strawberry.field
-    def project_cards(self) -> Connection[ProjectCardStub]:
+    def project_cards(
+        self,
+        first: Optional[int] = 10,
+        after: Optional[str] = None,
+        last: Optional[int] = None,
+        before: Optional[str] = None,
+    ) -> Connection[ProjectCardStub]:
         return empty_connection()
 
     @strawberry.field
-    def project_items(self) -> Connection[ProjectV2Stub]:
+    def project_items(
+        self,
+        first: Optional[int] = 10,
+        after: Optional[str] = None,
+        last: Optional[int] = None,
+        before: Optional[str] = None,
+    ) -> Connection[ProjectV2Stub]:
         return empty_connection()
 
 
@@ -458,6 +480,16 @@ def pull_request_from_model(pr) -> PullRequest:
     else:
         url = f"{base_url}/pull/{issue.number}"
 
+    auto_merge = getattr(pr, "auto_merge", None)
+    auto_merge_request = None
+    if auto_merge is not None:
+        auto_merge_request = AutoMergeRequest(
+            enabled_at=(auto_merge.enabled_at.isoformat() if auto_merge.enabled_at else None),
+            merge_method=auto_merge.merge_method,
+            commit_headline=auto_merge.commit_headline,
+            commit_body=auto_merge.commit_body,
+        )
+
     return PullRequest(
         database_id=pr.id,
         number=issue.number,
@@ -483,4 +515,5 @@ def pull_request_from_model(pr) -> PullRequest:
         _merge_commit_sha=pr.merge_commit_sha,
         _head_repo_id=pr.head_repo_id,
         _merged_by_id=pr.merged_by_id,
+        _auto_merge_request=auto_merge_request,
     )

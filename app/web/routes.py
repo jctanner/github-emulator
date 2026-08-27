@@ -59,6 +59,11 @@ def _issue_url(owner: str, repo_name: str, number: int, error: str | None = None
     return url
 
 
+def _pull_url(owner: str, repo_name: str, number: int) -> str:
+    """Build a pull-request page URL."""
+    return f"{_URL_PREFIX}/{owner}/{repo_name}/pulls/{number}"
+
+
 def _labels_url(owner: str, repo_name: str, error: str | None = None) -> str:
     """Build a repository labels URL, optionally carrying an editor error."""
     url = f"{_URL_PREFIX}/{owner}/{repo_name}/labels"
@@ -113,6 +118,26 @@ def _ctx(request: Request, **extra) -> dict:
     # current_user is set by individual route handlers via extra kwargs
     context.setdefault("current_user", None)
     return context
+
+
+async def _repo_nav_counts(db: AsyncSession, repo: Repository) -> tuple[int, int]:
+    """Return open issue and pull-request counts for repository navigation."""
+    pr_issue_ids = select(PullRequest.issue_id)
+    open_issues_count = (await db.execute(
+        select(func.count(Issue.id)).where(
+            Issue.repo_id == repo.id,
+            Issue.state == "open",
+            ~Issue.id.in_(pr_issue_ids),
+        )
+    )).scalar() or 0
+    open_pulls_count = (await db.execute(
+        select(func.count(Issue.id)).where(
+            Issue.repo_id == repo.id,
+            Issue.state == "open",
+            Issue.id.in_(pr_issue_ids),
+        )
+    )).scalar() or 0
+    return open_issues_count, open_pulls_count
 
 
 def _read_job_log(job_id: int) -> Optional[str]:
@@ -750,6 +775,7 @@ async def issue_detail(
     repo_labels = list(labels_result.scalars().all())
     issue_label_names = {label.name for label in issue.labels}
     label_error = request.query_params.get("label_error")
+    open_issues_count, open_pulls_count = await _repo_nav_counts(db, repo)
 
     return templates.TemplateResponse(
         request=request,
@@ -759,6 +785,8 @@ async def issue_detail(
             issue=issue, comments=comments,
             repo_labels=repo_labels, issue_label_names=issue_label_names,
             label_error=label_error,
+            open_issues_count=open_issues_count,
+            open_pulls_count=open_pulls_count,
             current_user=current_user,
         ),
     )
@@ -791,8 +819,23 @@ async def create_issue_comment_web(
     form = await request.form()
     body = str(form.get("body", "")).strip()
     if body:
-        await comment_service.create_issue_comment(
+        comment = await comment_service.create_issue_comment(
             db, issue_id=issue.id, user_id=current_user.id, body=body
+        )
+        await dispatch_event(
+            db,
+            repo,
+            current_user,
+            "issue_comment",
+            "created",
+            build_activity_payload(
+                repo,
+                current_user,
+                "created",
+                issue=issue,
+                pull_request=issue.pull_request,
+                comment=comment,
+            ),
         )
 
     return RedirectResponse(
@@ -1098,6 +1141,7 @@ async def pulls_list(
         pr.state = pr.issue.state if pr.issue else "open"
         pr.user_login = pr.issue.user.login if pr.issue and pr.issue.user else "unknown"
         pr.updated_at = pr.issue.updated_at if pr.issue else None
+        pr.labels = pr.issue.labels if pr.issue else []
         if pr.state == "open":
             open_count += 1
         else:
@@ -1410,18 +1454,208 @@ async def pull_detail(
         c.user_login = c.user.login if c.user else "unknown"
         c.body_html = render_markdown(c.body)
 
+    open_issues_count, open_pulls_count = await _repo_nav_counts(db, repo)
+
     return templates.TemplateResponse(
         request=request,
         name="pull_detail.html",
         context=_ctx(
             request, owner=owner, repo=repo, repo_name=repo.name,
             pr=pr, comments=comments, active_pr_tab=active_pr_tab,
+            labels=issue.labels,
             diff_files=diff_files, commits=commits,
             commit_count=commit_count,
+            open_issues_count=open_issues_count,
+            open_pulls_count=open_pulls_count,
             can_merge=_can_merge_repo(repo, current_user),
             merge_error=merge_error,
             current_user=current_user,
         ),
+    )
+
+
+@router.post("/{owner}/{repo_name}/pulls/{number:int}/comments")
+async def create_pull_comment_web(
+    request: Request,
+    owner: str,
+    repo_name: str,
+    number: int,
+    db: AsyncSession = Depends(get_db),
+):
+    """Add a conversation comment from the pull-request page."""
+    current_user = await _get_current_user(request, db)
+    if not current_user:
+        return RedirectResponse(url="/ui/login", status_code=302)
+
+    repo = await _get_repo(db, owner, repo_name)
+    if repo is None:
+        return HTMLResponse(content="<h1>404 - Not Found</h1>", status_code=404)
+
+    result = await db.execute(
+        select(Issue).where(Issue.repo_id == repo.id, Issue.number == number)
+    )
+    issue = result.scalar_one_or_none()
+    if issue is None or issue.pull_request is None:
+        return HTMLResponse(content="<h1>404 - PR Not Found</h1>", status_code=404)
+
+    form = await request.form()
+    body = str(form.get("body", "")).strip()
+    if body:
+        comment = await comment_service.create_issue_comment(
+            db, issue_id=issue.id, user_id=current_user.id, body=body
+        )
+        await dispatch_event(
+            db,
+            repo,
+            current_user,
+            "issue_comment",
+            "created",
+            build_activity_payload(
+                repo,
+                current_user,
+                "created",
+                issue=issue,
+                pull_request=issue.pull_request,
+                comment=comment,
+            ),
+        )
+
+    return RedirectResponse(
+        url=_pull_url(owner, repo_name, number), status_code=302
+    )
+
+
+@router.post("/{owner}/{repo_name}/pulls/{number:int}/comments/{comment_id:int}")
+async def update_pull_comment_web(
+    request: Request,
+    owner: str,
+    repo_name: str,
+    number: int,
+    comment_id: int,
+    db: AsyncSession = Depends(get_db),
+):
+    """Edit a conversation comment from the pull-request page."""
+    current_user = await _get_current_user(request, db)
+    if not current_user:
+        return RedirectResponse(url="/ui/login", status_code=302)
+
+    repo = await _get_repo(db, owner, repo_name)
+    if repo is None:
+        return HTMLResponse(content="<h1>404 - Not Found</h1>", status_code=404)
+
+    result = await db.execute(
+        select(Issue).where(Issue.repo_id == repo.id, Issue.number == number)
+    )
+    issue = result.scalar_one_or_none()
+    if issue is None or issue.pull_request is None:
+        return HTMLResponse(content="<h1>404 - PR Not Found</h1>", status_code=404)
+
+    comment = await comment_service.get_issue_comment(db, comment_id)
+    if comment is None or comment.issue_id != issue.id:
+        return HTMLResponse(content="<h1>404 - Comment Not Found</h1>", status_code=404)
+    if comment.user_id != current_user.id and not current_user.site_admin:
+        return HTMLResponse(content="<h1>403 - Forbidden</h1>", status_code=403)
+
+    form = await request.form()
+    body = str(form.get("body", "")).strip()
+    if body:
+        await comment_service.update_issue_comment(db, comment, body)
+        await dispatch_event(
+            db,
+            repo,
+            current_user,
+            "issue_comment",
+            "edited",
+            build_activity_payload(
+                repo,
+                current_user,
+                "edited",
+                issue=issue,
+                pull_request=issue.pull_request,
+                comment=comment,
+            ),
+        )
+
+    return RedirectResponse(
+        url=_pull_url(owner, repo_name, number), status_code=302
+    )
+
+
+@router.post("/{owner}/{repo_name}/pulls/{number:int}/state")
+async def update_pull_state_web(
+    request: Request,
+    owner: str,
+    repo_name: str,
+    number: int,
+    db: AsyncSession = Depends(get_db),
+):
+    """Close or reopen a pull request from its web page."""
+    current_user = await _get_current_user(request, db)
+    if not current_user:
+        return RedirectResponse(url="/ui/login", status_code=302)
+
+    repo = await _get_repo(db, owner, repo_name)
+    if repo is None:
+        return HTMLResponse(content="<h1>404 - Not Found</h1>", status_code=404)
+    if not _can_merge_repo(repo, current_user):
+        return HTMLResponse(content="<h1>403 - Forbidden</h1>", status_code=403)
+
+    result = await db.execute(
+        select(Issue).where(Issue.repo_id == repo.id, Issue.number == number)
+    )
+    issue = result.scalar_one_or_none()
+    if issue is None or issue.pull_request is None:
+        return HTMLResponse(content="<h1>404 - PR Not Found</h1>", status_code=404)
+
+    pr = issue.pull_request
+    form = await request.form()
+    new_state = str(form.get("state", "")).strip().lower()
+    if new_state not in {"open", "closed"}:
+        return HTMLResponse(content="<h1>400 - Invalid pull-request state</h1>", status_code=400)
+    if pr.merged and new_state == "open":
+        return RedirectResponse(url=_pull_url(owner, repo_name, number), status_code=302)
+
+    old_state = issue.state
+    if old_state != new_state:
+        if new_state == "closed":
+            issue.closed_at = datetime.now(timezone.utc)
+            issue.state_reason = "completed"
+            issue.closed_by_id = current_user.id
+            repo.open_issues_count = max(0, (repo.open_issues_count or 0) - 1)
+        else:
+            issue.closed_at = None
+            issue.state_reason = None
+            issue.closed_by_id = None
+            repo.open_issues_count = (repo.open_issues_count or 0) + 1
+        issue.state = new_state
+        await db.commit()
+        # Async SQLAlchemy expires scalar attributes on commit. Refresh the
+        # objects before constructing the GitHub event payload so the web
+        # route does not attempt implicit IO outside a greenlet.
+        await db.refresh(issue)
+        await db.refresh(pr)
+        action = "closed" if new_state == "closed" else "reopened"
+        await dispatch_event(
+            db,
+            repo,
+            current_user,
+            "pull_request_target",
+            action,
+            build_activity_payload(
+                repo,
+                current_user,
+                action,
+                issue=issue,
+                pull_request=pr,
+                ref=f"refs/heads/{pr.base_ref}",
+                sha=pr.base_sha,
+            ),
+            ref=pr.base_ref,
+            sha=pr.base_sha,
+        )
+
+    return RedirectResponse(
+        url=_pull_url(owner, repo_name, number), status_code=302
     )
 
 
