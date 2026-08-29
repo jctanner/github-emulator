@@ -671,6 +671,9 @@ async def test_pr_web_merge_button_merges_pull_request(
 
     main_after = await _repo_ref_sha(db_session, f"testuser/{repo_name}", "main")
     assert main_after == pr_data["merge_commit_sha"]
+    branch = await client.get(f"{API}/repos/testuser/{repo_name}/branches/main")
+    assert branch.status_code == 200
+    assert branch.json()["commit"]["sha"] == pr_data["merge_commit_sha"]
 
     commit_page = await client.get(
         f"/ui/testuser/{repo_name}/commit/{pr_data['merge_commit_sha']}"

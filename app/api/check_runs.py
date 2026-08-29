@@ -110,6 +110,9 @@ async def create_check_run(
     db.add(cr)
     await db.commit()
     await db.refresh(cr)
+    from app.services.merge_readiness_service import reevaluate_auto_merges
+
+    await reevaluate_auto_merges(db, repository.id, head_sha=head_sha)
     return _check_run_json(cr, owner, repo, BASE)
 
 
@@ -166,6 +169,9 @@ async def update_check_run(
 
     await db.commit()
     await db.refresh(cr)
+    from app.services.merge_readiness_service import reevaluate_auto_merges
+
+    await reevaluate_auto_merges(db, repository.id, head_sha=cr.head_sha)
     return _check_run_json(cr, owner, repo, BASE)
 
 

@@ -32,9 +32,10 @@ services:
     environment:
       - GITHUB_EMULATOR_URL=https://github-emulator
       - GITHUB_EMULATOR_TOKEN=${GITHUB_EMULATOR_RUNNER_TOKEN:-}
+      - RUNNER_SCOPE=${RUNNER_SCOPE:-repository}
       - RUNNER_REPO=${RUNNER_REPO:-admin/test-repo}
-      - RUNNER_NAME=docker-runner-1
-      - RUNNER_LABELS=self-hosted,linux
+      - RUNNER_NAME=${RUNNER_NAME:-docker-runner-1}
+      - RUNNER_LABELS=${RUNNER_LABELS:-self-hosted,linux}
     depends_on:
       - github-emulator
     restart: unless-stopped

@@ -225,7 +225,7 @@ def render_expressions(value: object, context: dict) -> object:
             expression = match.group(1).strip()
             # Step outputs only exist after a prior step has run. Preserve the
             # expression for the runner's runtime renderer.
-            if expression.startswith("steps."):
+            if expression.startswith("steps.") or expression == "github.token":
                 return match.group(0)
             # Keep one workflow usable for both an automatic event and an
             # explicit workflow_dispatch. This is the common GitHub Actions

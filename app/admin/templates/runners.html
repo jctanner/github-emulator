@@ -1,0 +1,71 @@
+{% extends "base.html" %}
+
+{% block title %}Runners - GitHub Emulator Admin{% endblock %}
+
+{% block content %}
+<div class="d-flex flex-items-center flex-justify-between mb-3">
+    <div>
+        <h2 class="f2 mb-1">Actions runners</h2>
+        <p class="color-fg-muted mb-0">Runner registrations and the repositories or organizations they can serve.</p>
+    </div>
+</div>
+
+<div class="stats-grid mb-4">
+    <div class="stat-card"><h3>{{ runners|length }}</h3><p>Total runners</p></div>
+    <div class="stat-card"><h3>{{ online_count }}</h3><p>Online</p></div>
+    <div class="stat-card"><h3>{{ busy_count }}</h3><p>Busy</p></div>
+    <div class="stat-card"><h3>{{ repository_scoped_count }}</h3><p>Repository scoped</p></div>
+    <div class="stat-card"><h3>{{ enterprise_scoped_count }}</h3><p>Enterprise scoped</p></div>
+    <div class="stat-card"><h3>{{ site_wide_count }}</h3><p>Site-wide</p></div>
+</div>
+
+{% if runners %}
+<table class="admin-table">
+    <thead>
+        <tr>
+            <th>Runner</th>
+            <th>Scope</th>
+            <th>Status</th>
+            <th>Labels</th>
+            <th>Last heartbeat</th>
+            <th>Current job</th>
+        </tr>
+    </thead>
+    <tbody>
+        {% for runner in runners %}
+        <tr>
+            <td>
+                <strong>{{ runner.name }}</strong>
+                <div class="color-fg-muted f6">#{{ runner.id }} · {{ runner.os }}</div>
+            </td>
+            <td>
+                <div class="f6 color-fg-muted">{{ runner.scope_type }}</div>
+                {% if runner.scope_url %}<a href="{{ runner.scope_url }}">{{ runner.scope_name }}</a>{% else %}{{ runner.scope_name }}{% endif %}
+            </td>
+            <td>
+                <span class="State State--small{% if runner.status == 'online' %} State--open{% else %} State--closed{% endif %}">{{ runner.status }}</span>
+                {% if runner.busy %}<div class="f6 mt-1">Busy</div>{% endif %}
+            </td>
+            <td>
+                {% for label in runner.labels %}<span class="Label mr-1">{{ label }}</span>{% else %}<span class="color-fg-muted">None</span>{% endfor %}
+            </td>
+            <td>{{ runner.last_heartbeat or "Never" }}</td>
+            <td>
+                {% if runner.current_job %}
+                <a href="{{ runner.current_job.url }}">{{ runner.current_job.name }}</a>
+                <div class="color-fg-muted f6">{{ runner.current_job.repository }} · job #{{ runner.current_job.id }}</div>
+                {% else %}
+                <span class="color-fg-muted">Idle</span>
+                {% endif %}
+            </td>
+        </tr>
+        {% endfor %}
+    </tbody>
+</table>
+{% else %}
+<div class="blankslate">
+    <h3 class="blankslate-heading">No runners registered</h3>
+    <p>Runner registrations appear here after a worker registers through the Actions runner API.</p>
+</div>
+{% endif %}
+{% endblock %}

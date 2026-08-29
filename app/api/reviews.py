@@ -125,9 +125,8 @@ async def create_review(
             ref=pr.base_ref,
             sha=pr.base_sha,
         )
-        if state == "APPROVED":
-            from app.services.auto_merge_service import process_auto_merge
-            await process_auto_merge(db, pr, user)
+        from app.services.auto_merge_service import process_auto_merge
+        await process_auto_merge(db, pr, user)
     return _review_json(review, owner, repo, pull_number, BASE)
 
 
@@ -193,9 +192,8 @@ async def submit_review(
         ref=pr.base_ref,
         sha=pr.base_sha,
     )
-    if review.state == "APPROVED":
-        from app.services.auto_merge_service import process_auto_merge
-        await process_auto_merge(db, pr, user)
+    from app.services.auto_merge_service import process_auto_merge
+    await process_auto_merge(db, pr, user)
     return _review_json(review, owner, repo, pull_number, BASE)
 
 
@@ -216,4 +214,7 @@ async def dismiss_review(
     review.state = "DISMISSED"
     await db.commit()
     await db.refresh(review)
+    from app.services.auto_merge_service import process_auto_merge
+
+    await process_auto_merge(db, pr, user)
     return _review_json(review, owner, repo, pull_number, BASE)

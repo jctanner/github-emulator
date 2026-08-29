@@ -28,6 +28,7 @@ from app.graphql.types.stubs import (
     ReleaseStub,
     ProjectV2Stub,
     ProjectCardStub,
+    MergeQueueStub,
     empty_connection,
 )
 
@@ -215,6 +216,11 @@ class Repository:
     @strawberry.field
     def delete_branch_on_merge(self) -> bool:
         return False
+
+    @strawberry.field
+    def merge_queue(self, branch: str) -> Optional[MergeQueueStub]:
+        """Return no queue unless merge queues are explicitly implemented."""
+        return None
 
     # --- Boolean flags (stubs) ---
 

@@ -44,6 +44,35 @@ async def test_graphql_repository(client, test_user, test_token):
 
 
 @pytest.mark.asyncio
+async def test_graphql_repository_merge_queue_is_null_when_unconfigured(
+    client, test_user, test_token
+):
+    """GitHub exposes mergeQueue but returns null when the branch has none."""
+    await client.post(
+        f"{API}/user/repos",
+        json={"name": "gql-no-merge-queue"},
+        headers=auth_headers(test_token),
+    )
+
+    resp = await client.post(
+        "/graphql",
+        json={
+            "query": """
+                { repository(owner: "testuser", name: "gql-no-merge-queue") {
+                    mergeQueue(branch: "main") { id }
+                }}
+            """
+        },
+        headers=auth_headers(test_token),
+    )
+
+    assert resp.status_code == 200
+    assert resp.json() == {
+        "data": {"repository": {"mergeQueue": None}}
+    }
+
+
+@pytest.mark.asyncio
 async def test_graphql_user(client, test_user, test_token):
     """Query user returns user details."""
     resp = await client.post(

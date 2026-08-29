@@ -12,7 +12,7 @@ from app.graphql.connections import Connection, build_connection
 from app.graphql.types.user import GitHubUser, user_from_model, _node_id
 from app.graphql.types.enums import IssueState
 from app.graphql.types.repository import Label, MilestoneType, label_from_model, milestone_from_model
-from app.graphql.types.issue import IssueComment, comment_from_model
+from app.graphql.types.issue import IssueComment, comment_from_model, issue_from_model
 from app.graphql.types.stubs import (
     ReactionGroup,
     STANDARD_REACTION_GROUPS,
@@ -79,6 +79,12 @@ class Commit:
     """A Git commit within a pull request."""
     oid: str
     message: str = ""
+
+
+@strawberry.type
+class PullRequestCommit:
+    """A commit as exposed through GitHub's pull-request commit connection."""
+    commit: Commit
 
 
 @strawberry.type
@@ -153,19 +159,34 @@ class PullRequest:
         return False
 
     @strawberry.field
-    def review_decision(self) -> Optional[str]:
-        return None
+    async def review_decision(self, info: Info) -> Optional[str]:
+        from app.models.pull_request import PullRequest as PRModel
+        from app.services.merge_readiness_service import evaluate_merge_readiness
+
+        db = info.context["db"]
+        result = await db.execute(select(PRModel).where(PRModel.id == self._pr_id))
+        pull_request = result.scalar_one_or_none()
+        if pull_request is None:
+            return None
+        readiness = await evaluate_merge_readiness(
+            db, pull_request, actor=info.context.get("user")
+        )
+        return readiness.review_decision
 
     @strawberry.field
-    def merge_state_status(self) -> str:
-        if self.draft:
-            return "DRAFT"
-        if self.merged:
-            return "CLEAN"
-        # The emulator does not model GitHub's complete branch-protection and
-        # required-check calculation. Open, non-draft PRs are represented as
-        # blocked until the readiness label is applied.
-        return "BLOCKED"
+    async def merge_state_status(self, info: Info) -> str:
+        from app.models.pull_request import PullRequest as PRModel
+        from app.services.merge_readiness_service import evaluate_merge_readiness
+
+        db = info.context["db"]
+        result = await db.execute(select(PRModel).where(PRModel.id == self._pr_id))
+        pull_request = result.scalar_one_or_none()
+        if pull_request is None:
+            return "UNKNOWN"
+        readiness = await evaluate_merge_readiness(
+            db, pull_request, actor=info.context.get("user")
+        )
+        return readiness.state
 
     @strawberry.field
     def maintainer_can_modify(self) -> bool:
@@ -359,7 +380,7 @@ class PullRequest:
         after: Optional[str] = None,
         last: Optional[int] = None,
         before: Optional[str] = None,
-    ) -> Connection[Commit]:
+    ) -> Connection[PullRequestCommit]:
         """Return a connection of commits. Currently returns the head SHA as a
         single commit since the emulator does not track individual commits in
         the database."""
@@ -371,7 +392,7 @@ class PullRequest:
         pr = result.scalar_one_or_none()
         commits = []
         if pr:
-            commits = [Commit(oid=pr.head_sha, message="")]
+            commits = [PullRequestCommit(commit=Commit(oid=pr.head_sha, message=""))]
         return build_connection(
             commits, lambda c: c, len(commits),
             first=first, after=after, last=last, before=before,
@@ -401,14 +422,39 @@ class PullRequest:
         )
 
     @strawberry.field
-    def closing_issues_references(
+    async def closing_issues_references(
         self,
+        info: Info,
         first: Optional[int] = 10,
         after: Optional[str] = None,
         last: Optional[int] = None,
         before: Optional[str] = None,
     ) -> Connection[Annotated["Issue", strawberry.lazy("app.graphql.types.issue")]]:
-        return empty_connection()
+        from app.models.pull_request import PullRequest as PullRequestModel
+        from app.models.repository import Repository
+        from app.services.closing_issue_service import resolve_closing_issues
+
+        db = info.context["db"]
+        pr_result = await db.execute(
+            select(PullRequestModel).where(PullRequestModel.id == self._pr_id)
+        )
+        pull_request = pr_result.scalar_one_or_none()
+        repo_result = await db.execute(
+            select(Repository).where(Repository.id == self._repo_id)
+        )
+        repository = repo_result.scalar_one_or_none()
+        if pull_request is None or repository is None:
+            return empty_connection()
+        issues = await resolve_closing_issues(db, pull_request, repository)
+        return build_connection(
+            issues,
+            issue_from_model,
+            len(issues),
+            first=first,
+            after=after,
+            last=last,
+            before=before,
+        )
 
     @strawberry.field
     def review_requests(
@@ -483,8 +529,11 @@ def pull_request_from_model(pr) -> PullRequest:
     auto_merge = getattr(pr, "auto_merge", None)
     auto_merge_request = None
     if auto_merge is not None:
+        enabled_by = getattr(auto_merge, "enabled_by", None)
         auto_merge_request = AutoMergeRequest(
             enabled_at=(auto_merge.enabled_at.isoformat() if auto_merge.enabled_at else None),
+            enabled_by=(user_from_model(enabled_by) if enabled_by is not None else None),
+            author_email=(enabled_by.email if enabled_by is not None else None),
             merge_method=auto_merge.merge_method,
             commit_headline=auto_merge.commit_headline,
             commit_body=auto_merge.commit_body,

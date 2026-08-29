@@ -56,12 +56,38 @@ async def init_db():
             runs_columns = await conn.execute(text("PRAGMA table_info(workflow_runs)"))
             if "concurrency_group" not in {row[1] for row in runs_columns.fetchall()}:
                 await conn.execute(text("ALTER TABLE workflow_runs ADD COLUMN concurrency_group TEXT"))
+            runner_columns = await conn.execute(text("PRAGMA table_info(runners)"))
+            if "enterprise_slug" not in {row[1] for row in runner_columns.fetchall()}:
+                await conn.execute(text("ALTER TABLE runners ADD COLUMN enterprise_slug TEXT"))
             apps_columns = await conn.execute(text("PRAGMA table_info(github_apps)"))
             app_column_names = {row[1] for row in apps_columns.fetchall()}
             if "client_id" not in app_column_names:
                 await conn.execute(text("ALTER TABLE github_apps ADD COLUMN client_id TEXT"))
             if "bot_user_id" not in app_column_names:
                 await conn.execute(text("ALTER TABLE github_apps ADD COLUMN bot_user_id INTEGER"))
+            protection_columns = await conn.execute(text("PRAGMA table_info(branch_protections)"))
+            protection_column_names = {row[1] for row in protection_columns.fetchall()}
+            for column in (
+                "required_linear_history",
+                "allow_force_pushes",
+                "allow_deletions",
+                "block_creations",
+                "lock_branch",
+                "allow_fork_syncing",
+            ):
+                if column not in protection_column_names:
+                    await conn.execute(
+                        text(
+                            f"ALTER TABLE branch_protections ADD COLUMN {column} "
+                            "BOOLEAN NOT NULL DEFAULT 0"
+                        )
+                    )
+            pull_request_columns = await conn.execute(text("PRAGMA table_info(pull_requests)"))
+            pull_request_column_names = {row[1] for row in pull_request_columns.fetchall()}
+            if "last_push_by_id" not in pull_request_column_names:
+                await conn.execute(
+                    text("ALTER TABLE pull_requests ADD COLUMN last_push_by_id INTEGER")
+                )
             await conn.execute(
                 text(
                     "UPDATE github_apps "

@@ -33,6 +33,12 @@ class BranchProtection(Base):
     enforce_admins: Mapped[bool] = mapped_column(Boolean, default=False)
     required_pull_request_reviews: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     restrictions: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    required_linear_history: Mapped[bool] = mapped_column(Boolean, default=False)
+    allow_force_pushes: Mapped[bool] = mapped_column(Boolean, default=False)
+    allow_deletions: Mapped[bool] = mapped_column(Boolean, default=False)
+    block_creations: Mapped[bool] = mapped_column(Boolean, default=False)
+    lock_branch: Mapped[bool] = mapped_column(Boolean, default=False)
+    allow_fork_syncing: Mapped[bool] = mapped_column(Boolean, default=False)
 
     # Relationships
     branch = relationship("Branch", back_populates="protection", lazy="selectin")

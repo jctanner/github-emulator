@@ -18,6 +18,7 @@ from sqlalchemy.orm import selectinload
 from app.api.deps import AuthUser, CurrentUser, DbSession, get_repo_or_404
 from app.config import settings
 from app.git.bare_repo import get_compare_diff, get_log, normalize_branch_ref
+from app.models.branch import Branch
 from app.models.issue import Issue
 from app.models.pull_request import PullRequest
 from app.models.repository import Repository
@@ -163,6 +164,30 @@ async def _attach_resolved_refs(pr: PullRequest, repository: Repository) -> None
     pr.resolved_head_sha = head_sha
     pr.resolved_base_sha = base_sha
     pr.resolved_head_label = f"{owner_login or 'unknown'}:{head_ref}"
+
+
+async def _record_merged_base_sha(
+    db,
+    repository: Repository,
+    base_ref: str,
+    merge_sha: str | None,
+) -> None:
+    """Keep the persisted branch row aligned with a successful Git merge."""
+    if not merge_sha:
+        return
+    branch_name = base_ref.removeprefix("refs/heads/")
+    result = await db.execute(
+        select(Branch).where(
+            Branch.repo_id == repository.id,
+            Branch.name == branch_name,
+        )
+    )
+    branch = result.scalar_one_or_none()
+    if branch is None:
+        db.add(Branch(repo_id=repository.id, name=branch_name, sha=merge_sha))
+    else:
+        branch.sha = merge_sha
+    repository.pushed_at = datetime.now(timezone.utc)
 
 
 def _commit_json(owner: str, repo: str, commit: dict) -> dict:
@@ -587,6 +612,8 @@ async def create_pull(
         base_ref=base_ref,
         base_sha=base_sha,
         draft=body.get("draft", False),
+        mergeable=True,
+        last_push_by_id=user.id,
     )
     db.add(pr)
     await db.commit()
@@ -765,13 +792,47 @@ async def merge_pull(
         f"{commit_title}\n\nMerge {pr.head_ref} into {pr.base_ref}",
     )
 
+    from app.services.merge_readiness_service import evaluate_merge_readiness
+
+    readiness = await evaluate_merge_readiness(
+        db,
+        pr,
+        actor=user,
+        merge_method=merge_method,
+    )
+    if not readiness.ready:
+        status_code = 409 if readiness.state == "DIRTY" else 405
+        return JSONResponse(
+            status_code=status_code,
+            content={
+                "sha": None,
+                "merged": False,
+                "message": "; ".join(readiness.reasons) or "Pull Request is not mergeable",
+            },
+        )
+
+    from app.services.closing_issue_service import resolve_closing_issues
+
+    linked_issues = await resolve_closing_issues(
+        db,
+        pr,
+        repository,
+        include_commit_messages=True,
+    )
+
     pr.merged = True
     pr.merged_at = now
     pr.merged_by_id = user.id
     pr.merge_commit_sha = body.get("sha", pr.resolved_head_sha)
     issue.state = "closed"
     issue.closed_at = now
+    issue.state_reason = "completed"
+    issue.closed_by_id = user.id
     repository.open_issues_count = max(0, repository.open_issues_count - 1)
+
+    from app.services.closing_issue_service import close_linked_issues
+
+    closed_linked_issues = close_linked_issues(linked_issues, user, now)
 
     # --- Perform actual git operations in the bare repo ---
     try:
@@ -784,6 +845,9 @@ async def merge_pull(
         )
         if git_sha:
             pr.merge_commit_sha = git_sha
+            await _record_merged_base_sha(
+                db, repository, pr.resolved_base_ref, git_sha
+            )
             logger.info(
                 "PR #%d merged via git (%s): sha=%s",
                 pull_number, merge_method, git_sha,
@@ -793,11 +857,37 @@ async def merge_pull(
                 "PR #%d: git %s did not produce a SHA; using DB-only merge",
                 pull_number, merge_method,
             )
+            if repository.disk_path and os.path.isdir(repository.disk_path):
+                from app.services.git_service import get_ref_sha
+
+                actual_head = await get_ref_sha(repository.disk_path, pr.resolved_head_ref)
+                actual_base = await get_ref_sha(repository.disk_path, pr.resolved_base_ref)
+                if actual_head and actual_base:
+                    await db.rollback()
+                    return JSONResponse(
+                        status_code=409,
+                        content={
+                            "sha": None,
+                            "merged": False,
+                            "message": "Head branch was modified or merge conflicts were introduced",
+                        },
+                    )
     except Exception:
         logger.exception(
             "PR #%d: git merge failed; falling back to DB-only merge",
             pull_number,
         )
+        if repository.disk_path and os.path.isdir(repository.disk_path):
+            from app.services.git_service import get_ref_sha
+
+            actual_head = await get_ref_sha(repository.disk_path, pr.resolved_head_ref)
+            actual_base = await get_ref_sha(repository.disk_path, pr.resolved_base_ref)
+            if actual_head and actual_base:
+                await db.rollback()
+                return JSONResponse(
+                    status_code=409,
+                    content={"sha": None, "merged": False, "message": "Merge failed"},
+                )
 
     await db.commit()
 
@@ -826,6 +916,9 @@ async def merge_pull(
         ref=pr.base_ref,
         sha=pr.merge_commit_sha or pr.base_sha,
     )
+    from app.services.closing_issue_service import dispatch_linked_issue_closed_events
+
+    await dispatch_linked_issue_closed_events(db, closed_linked_issues, user)
 
     return {
         "sha": pr.merge_commit_sha,

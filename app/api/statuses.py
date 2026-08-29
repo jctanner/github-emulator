@@ -54,6 +54,9 @@ async def create_status(
     db.add(status)
     await db.commit()
     await db.refresh(status)
+    from app.services.merge_readiness_service import reevaluate_auto_merges
+
+    await reevaluate_auto_merges(db, repository.id, head_sha=sha)
     return _status_json(status, owner, repo, BASE)
 
 

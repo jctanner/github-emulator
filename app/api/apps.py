@@ -177,6 +177,66 @@ async def get_admin_app(app_id: str, user: AuthUser, db: DbSession):
     return result
 
 
+@router.patch("/admin/apps/{app_id}")
+async def update_admin_app(app_id: str, body: dict, user: AuthUser, db: DbSession):
+    """Reconcile development App metadata and optionally its installations."""
+    if not user.site_admin:
+        raise HTTPException(status_code=403, detail="site admin required")
+    app = (
+        await db.execute(select(GitHubApp).where(GitHubApp.app_id == app_id))
+    ).scalar_one_or_none()
+    if app is None:
+        raise HTTPException(status_code=404, detail="App not found")
+
+    if "name" in body:
+        name = str(body["name"]).strip()
+        if not name:
+            raise HTTPException(status_code=422, detail="name must not be empty")
+        app.name = name
+    if "slug" in body:
+        slug = str(body["slug"]).strip()
+        if not slug:
+            raise HTTPException(status_code=422, detail="slug must not be empty")
+        duplicate = (
+            await db.execute(
+                select(GitHubApp).where(
+                    GitHubApp.slug == slug,
+                    GitHubApp.id != app.id,
+                )
+            )
+        ).scalar_one_or_none()
+        if duplicate is not None:
+            raise HTTPException(status_code=409, detail="App slug already exists")
+        app.slug = slug
+
+    installations_updated = 0
+    if "permissions" in body:
+        permissions = body["permissions"]
+        if not isinstance(permissions, dict) or not all(
+            isinstance(key, str) and isinstance(value, str)
+            for key, value in permissions.items()
+        ):
+            raise HTTPException(status_code=422, detail="permissions must be an object of strings")
+        app.permissions = permissions
+        if body.get("sync_installations") is True:
+            installations = (
+                await db.execute(
+                    select(AppInstallation).where(AppInstallation.app_id == app.id)
+                )
+            ).scalars().all()
+            for installation in installations:
+                installation.permissions = dict(permissions)
+                installations_updated += 1
+
+    await ensure_app_bot(db, app)
+    await db.commit()
+    await db.refresh(app)
+    result = _app_json(app)
+    result["has_private_key"] = bool(app.private_key_pem)
+    result["installations_updated"] = installations_updated
+    return result
+
+
 @router.get("/app")
 async def get_app(request: Request, db: DbSession):
     return _app_json(await _app_from_jwt(request, db))

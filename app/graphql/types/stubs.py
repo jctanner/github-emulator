@@ -141,11 +141,20 @@ class StatusCheckRollup:
 
 @strawberry.type
 class AutoMergeRequest:
-    """An auto merge request stub."""
+    """A queued pull-request auto-merge request."""
     enabled_at: Optional[str] = None
+    enabled_by: Optional[GitHubUser] = None
+    author_email: Optional[str] = None
     merge_method: str = "MERGE"
     commit_headline: Optional[str] = None
     commit_body: Optional[str] = None
+
+
+@strawberry.type(name="MergeQueue")
+class MergeQueueStub:
+    """A minimal merge queue type for GitHub GraphQL compatibility."""
+
+    id: strawberry.ID
 
 
 @strawberry.type(name="Bot")

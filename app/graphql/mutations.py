@@ -661,6 +661,8 @@ class Mutation:
             base_ref=input.base_ref_name,
             base_sha=base_sha,
             draft=input.draft,
+            mergeable=True,
+            last_push_by_id=current_user.id,
         )
         db.add(new_pr)
 
@@ -669,6 +671,30 @@ class Mutation:
         await db.commit()
         await db.refresh(new_pr)
         await db.refresh(new_issue)
+
+        # GitHub emits the same pull_request activity regardless of whether a
+        # pull request is created through REST or GraphQL (gh pr create uses
+        # this mutation). Keep Actions behavior identical across both paths.
+        from app.services.workflow_service import build_activity_payload, dispatch_event
+
+        await dispatch_event(
+            db,
+            repo,
+            current_user,
+            "pull_request_target",
+            "opened",
+            build_activity_payload(
+                repo,
+                current_user,
+                "opened",
+                issue=new_issue,
+                pull_request=new_pr,
+                ref=f"refs/heads/{new_pr.base_ref}",
+                sha=new_pr.base_sha,
+            ),
+            ref=new_pr.base_ref,
+            sha=new_pr.base_sha,
+        )
 
         return CreatePullRequestPayload(
             pull_request=pull_request_from_model(new_pr),
@@ -698,6 +724,36 @@ class Mutation:
         if pr.merged:
             raise ValueError("Pull request is already merged")
 
+        from app.services.merge_readiness_service import evaluate_merge_readiness
+
+        readiness = await evaluate_merge_readiness(
+            db,
+            pr,
+            actor=current_user,
+            merge_method=(input.merge_method or "MERGE").lower(),
+        )
+        if not readiness.ready:
+            raise ValueError(
+                "; ".join(readiness.reasons) or "Pull request is not mergeable"
+            )
+
+        repo_result = await db.execute(
+            select(RepoModel).where(RepoModel.id == pr.repo_id)
+        )
+        repo = repo_result.scalar_one_or_none()
+        from app.services.closing_issue_service import resolve_closing_issues
+
+        linked_issues = (
+            await resolve_closing_issues(
+                db,
+                pr,
+                repo,
+                include_commit_messages=True,
+            )
+            if repo is not None
+            else []
+        )
+
         # Mark as merged
         now = datetime.now(timezone.utc)
         pr.merged = True
@@ -713,16 +769,29 @@ class Mutation:
         if issue and issue.state == "open":
             issue.state = "closed"
             issue.closed_at = now
-
-            repo_result = await db.execute(
-                select(RepoModel).where(RepoModel.id == pr.repo_id)
-            )
-            repo = repo_result.scalar_one_or_none()
+            issue.state_reason = "completed"
+            issue.closed_by_id = current_user.id
             if repo and repo.open_issues_count > 0:
                 repo.open_issues_count -= 1
 
+        from app.services.closing_issue_service import close_linked_issues
+
+        closed_linked_issues = close_linked_issues(
+            linked_issues,
+            current_user,
+            now,
+        )
+
         await db.commit()
         await db.refresh(pr)
+
+        from app.services.closing_issue_service import dispatch_linked_issue_closed_events
+
+        await dispatch_linked_issue_closed_events(
+            db,
+            closed_linked_issues,
+            current_user,
+        )
 
         return MergePullRequestPayload(
             pull_request=pull_request_from_model(pr),

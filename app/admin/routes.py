@@ -31,6 +31,7 @@ from app.models.user import User
 from app.services.auth_service import ensure_app_bot
 from app.models.import_job import ImportJob
 from app.models.apps import AppInstallation, AppInstallationToken, GitHubApp
+from app.models.actions import Runner, WorkflowJob, WorkflowRun
 from app.api.apps import _client_id, _private_key
 from app.services.auth_service import hash_password, verify_password
 from app.services.import_service import start_single_import, start_bulk_import
@@ -940,8 +941,27 @@ async def create_installation_handler(
             AppInstallation.account_login == account_login,
         )
     )
-    if existing.scalar_one_or_none() is not None:
-        return RedirectResponse(url=f"/admin/apps/{app_id}", status_code=303)
+    existing_installation = existing.scalar_one_or_none()
+    if existing_installation is not None:
+        existing_repositories = ", ".join(existing_installation.repositories or []) or "no repositories"
+        context = await _app_detail_context(
+            request,
+            db,
+            admin_user,
+            app_id,
+            flash_message=(
+                f"{app.name} already has installation #{existing_installation.id} "
+                f"for {account_login} ({existing_repositories}). Remove that "
+                "installation before creating a replacement for the same account."
+            ),
+            flash_type="error",
+        )
+        return templates.TemplateResponse(
+            request=request,
+            name="app_detail.html",
+            context=context,
+            status_code=409,
+        )
 
     admin_result = await db.execute(select(User).where(User.login == admin_user))
     owner = admin_result.scalar_one_or_none() or account_user
@@ -979,16 +999,51 @@ async def delete_installation(
         )
     )
     installation = installation_result.scalar_one_or_none()
-    if installation is not None:
-        await db.execute(
-            sa_delete(AppInstallationToken).where(
-                AppInstallationToken.installation_id == installation.id
-            )
+    if installation is None:
+        context = await _app_detail_context(
+            request,
+            db,
+            admin_user,
+            app_id,
+            flash_message=(
+                f"Installation #{installation_id} was not found for this App; "
+                "nothing was removed."
+            ),
+            flash_type="error",
         )
-        await db.delete(installation)
-        await db.commit()
+        return templates.TemplateResponse(
+            request=request,
+            name="app_detail.html",
+            context=context,
+            status_code=404,
+        )
 
-    return RedirectResponse(url=f"/admin/apps/{app_id}", status_code=303)
+    account_login = installation.account_login
+    repositories = ", ".join(installation.repositories or []) or "no repositories"
+    await db.execute(
+        sa_delete(AppInstallationToken).where(
+            AppInstallationToken.installation_id == installation.id
+        )
+    )
+    await db.delete(installation)
+    await db.commit()
+
+    context = await _app_detail_context(
+        request,
+        db,
+        admin_user,
+        app_id,
+        flash_message=(
+            f"Removed installation #{installation_id} for {account_login} "
+            f"({repositories}) and revoked its installation tokens."
+        ),
+        flash_type="success",
+    )
+    return templates.TemplateResponse(
+        request=request,
+        name="app_detail.html",
+        context=context,
+    )
 
 
 @router.get("/installations/{installation_id}", response_class=HTMLResponse)
@@ -1165,6 +1220,134 @@ async def list_repos(
         request=request,
         name="repos.html",
         context=_ctx(request, admin_user=admin_user, repos=repos),
+    )
+
+
+# ---------------------------------------------------------------------------
+# Routes: Actions runners
+# ---------------------------------------------------------------------------
+
+@router.get("/runners", response_class=HTMLResponse)
+async def list_runners(
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+):
+    """List runner registrations, scope, health, and current assignments."""
+    admin_user = _get_admin_user(request)
+    if not admin_user:
+        return RedirectResponse(url="/admin/login", status_code=302)
+
+    runners = list(
+        (
+            await db.execute(
+                select(Runner).order_by(Runner.name, Runner.id)
+            )
+        ).scalars().all()
+    )
+
+    repo_ids = {runner.repo_id for runner in runners if runner.repo_id is not None}
+    org_ids = {runner.org_id for runner in runners if runner.org_id is not None}
+    repositories = {}
+    organizations = {}
+    if repo_ids:
+        repositories = {
+            repo.id: repo
+            for repo in (
+                await db.execute(select(Repository).where(Repository.id.in_(repo_ids)))
+            ).scalars().all()
+        }
+    if org_ids:
+        organizations = {
+            org.id: org
+            for org in (
+                await db.execute(select(Organization).where(Organization.id.in_(org_ids)))
+            ).scalars().all()
+        }
+
+    current_jobs = {}
+    runner_ids = [runner.id for runner in runners]
+    if runner_ids:
+        assignments = await db.execute(
+            select(WorkflowJob, WorkflowRun, Repository)
+            .join(WorkflowRun, WorkflowJob.run_id == WorkflowRun.id)
+            .join(Repository, WorkflowRun.repo_id == Repository.id)
+            .where(
+                WorkflowJob.runner_id.in_(runner_ids),
+                WorkflowJob.status == "in_progress",
+            )
+            .order_by(WorkflowJob.started_at.desc(), WorkflowJob.id.desc())
+        )
+        for job, run, repository in assignments.all():
+            current_jobs.setdefault(
+                job.runner_id,
+                {
+                    "id": job.id,
+                    "name": job.name,
+                    "run_id": run.id,
+                    "repository": repository.full_name,
+                    "url": f"/ui/{repository.full_name}/actions/jobs/{job.id}",
+                },
+            )
+
+    runner_views = []
+    for runner in runners:
+        repository = repositories.get(runner.repo_id)
+        organization = organizations.get(runner.org_id)
+        if repository is not None:
+            scope_type = "Repository"
+            scope_name = repository.full_name
+            scope_url = f"/ui/{repository.full_name}"
+        elif organization is not None:
+            scope_type = "Organization"
+            scope_name = organization.login
+            scope_url = f"/ui/{organization.login}"
+        elif runner.enterprise_slug:
+            scope_type = "Enterprise"
+            scope_name = runner.enterprise_slug
+            scope_url = None
+        else:
+            scope_type = "Site-wide"
+            scope_name = "All repositories"
+            scope_url = None
+
+        runner_views.append(
+            {
+                "id": runner.id,
+                "name": runner.name,
+                "os": runner.os,
+                "status": runner.status,
+                "busy": runner.busy,
+                "labels": runner.labels or [],
+                "scope_type": scope_type,
+                "scope_name": scope_name,
+                "scope_url": scope_url,
+                "last_heartbeat": _format_dt(runner.last_heartbeat),
+                "created_at": _format_dt(runner.created_at),
+                "current_job": current_jobs.get(runner.id),
+            }
+        )
+
+    return templates.TemplateResponse(
+        request=request,
+        name="runners.html",
+        context=_ctx(
+            request,
+            admin_user=admin_user,
+            runners=runner_views,
+            online_count=sum(runner.status == "online" for runner in runners),
+            busy_count=sum(bool(runner.busy) for runner in runners),
+            repository_scoped_count=sum(runner.repo_id is not None for runner in runners),
+            organization_scoped_count=sum(runner.org_id is not None for runner in runners),
+            enterprise_scoped_count=sum(
+                runner.enterprise_slug is not None for runner in runners
+            ),
+            site_wide_count=sum(
+                runner.repo_id is None
+                and runner.org_id is None
+                and runner.enterprise_slug is None
+                for runner in runners
+            ),
+        ),
     )
 
 

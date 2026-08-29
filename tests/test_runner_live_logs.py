@@ -40,9 +40,15 @@ def test_runner_uploads_output_before_job_completion(monkeypatch, tmp_path):
     runner = runner_module.RunnerClient()
     uploads = []
     completions = []
-    runner._upload_logs = lambda job_id, chunk: uploads.append((time.monotonic(), chunk))
-    runner._report_progress = lambda job_id, steps: None
-    runner._complete_job = lambda job_id, conclusion, steps: completions.append(time.monotonic())
+    runner._upload_logs = lambda repository, job_id, chunk: uploads.append(
+        (time.monotonic(), chunk)
+    )
+    runner._report_progress = lambda repository, job_id, steps: None
+    runner._complete_job = (
+        lambda repository, job_id, conclusion, steps: completions.append(
+            time.monotonic()
+        )
+    )
 
     runner.execute_job({
         "job_id": 7,

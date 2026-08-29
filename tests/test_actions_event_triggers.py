@@ -345,3 +345,59 @@ async def test_pull_request_review_and_push_sync_events(
     assert runs[1].trigger_payload["review"]["state"] == "APPROVED"
     assert runs[2].trigger_payload["created"] is False
     assert runs[3].trigger_payload["pull_request"]["number"] == 1
+
+
+@pytest.mark.asyncio
+async def test_graphql_pull_request_creation_dispatches_opened_event(
+    client, db_session, test_token, test_repo_with_init, monkeypatch
+):
+    async def fake_detect(_path, _ref="HEAD"):
+        return [{
+            "_path": ".github/workflows/activity.yml",
+            "name": "Activity",
+            "on": {"pull_request_target": {"types": ["opened"]}},
+            "jobs": {
+                "record": {
+                    "runs-on": ["self-hosted"],
+                    "steps": [{"run": "true"}],
+                }
+            },
+        }]
+
+    async def fake_ref_sha(_path, _ref):
+        return "b" * 40
+
+    monkeypatch.setattr(workflow_service, "detect_workflows", fake_detect)
+    monkeypatch.setattr(workflow_service, "get_ref_sha", fake_ref_sha)
+    _owner, _name, repository_json = test_repo_with_init
+
+    response = await client.post(
+        "/graphql",
+        headers=auth_headers(test_token),
+        json={
+            "query": """
+                mutation CreatePullRequest($input: CreatePullRequestInput!) {
+                  createPullRequest(input: $input) {
+                    pullRequest { number title }
+                  }
+                }
+            """,
+            "variables": {
+                "input": {
+                    "repositoryId": str(repository_json["id"]),
+                    "headRefName": "feature",
+                    "baseRefName": "main",
+                    "title": "GraphQL event PR",
+                    "body": "Created through gh-compatible GraphQL",
+                }
+            },
+        },
+    )
+
+    assert response.status_code == 200
+    assert "errors" not in response.json()
+    run = (await db_session.execute(select(WorkflowRun))).scalar_one()
+    assert run.event == "pull_request_target"
+    assert run.trigger_payload["action"] == "opened"
+    assert run.trigger_payload["pull_request"]["number"] == 1
+    assert run.trigger_payload["sender"]["login"] == "testuser"

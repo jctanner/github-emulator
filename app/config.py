@@ -36,6 +36,9 @@ class Settings(BaseSettings):
     # queue after this interval so a replacement runner can claim them.
     RUNNER_STALE_THRESHOLD_SECONDS: int = 120
 
+    # Single resettable enterprise used for enterprise-scoped Actions runners.
+    ENTERPRISE_SLUG: str = "breadboard"
+
     # GitHub App JWTs are accepted without signature verification by default
     # for emulator convenience. Set this to false for strict checks.
     APP_JWT_PERMISSIVE: bool = True

@@ -11,9 +11,10 @@ from fastapi import APIRouter, HTTPException, Query, Request
 from fastapi.responses import Response
 from sqlalchemy import select
 
-from app.api.deps import DbSession, get_repo_or_404
+from app.api.deps import AuthUser, DbSession, get_repo_or_404
 from app.config import settings
-from app.models.actions import Runner, RegistrationToken, WorkflowJob, WorkflowRun
+from app.models.actions import EnterpriseRunnerRegistrationToken, Runner, RegistrationToken, WorkflowJob, WorkflowRun
+from app.models.repository import Repository
 from app.services.auth_service import hash_token
 from app.services.workflow_service import check_run_completion, dispatch_ready_jobs
 
@@ -81,10 +82,19 @@ async def _create_runner_from_registration(
         select(RegistrationToken).where(RegistrationToken.token == reg_token)
     )
     reg = result.scalar_one_or_none()
+    enterprise_reg = None
     if reg is None:
+        result = await db.execute(
+            select(EnterpriseRunnerRegistrationToken).where(
+                EnterpriseRunnerRegistrationToken.token == reg_token
+            )
+        )
+        enterprise_reg = result.scalar_one_or_none()
+    if reg is None and enterprise_reg is None:
         raise HTTPException(status_code=401, detail="Invalid registration token")
 
-    if _is_expired(reg.expires_at):
+    registration = reg or enterprise_reg
+    if _is_expired(registration.expires_at):
         raise HTTPException(status_code=401, detail="Registration token expired")
 
     labels = body.get("labels", ["self-hosted", "linux"])
@@ -105,11 +115,14 @@ async def _create_runner_from_registration(
         labels=labels,
         busy=False,
         token_hash=hash_token(runner_token),
-        repo_id=reg.repo_id,
+        repo_id=reg.repo_id if reg is not None else None,
+        enterprise_slug=(
+            enterprise_reg.enterprise_slug if enterprise_reg is not None else None
+        ),
         last_heartbeat=datetime.now(timezone.utc),
     )
     db.add(runner)
-    await db.delete(reg)
+    await db.delete(registration)
     await db.commit()
     await db.refresh(runner)
     return runner, runner_token
@@ -177,6 +190,17 @@ def _registration_response(runner: Runner, runner_token: str, base: str | None =
     }
 
 
+def _runner_labels(body: dict) -> list[str]:
+    labels = body.get("labels", ["self-hosted", "linux"])
+    if not isinstance(labels, list):
+        return ["self-hosted", "linux"]
+    normalized = [
+        str(label.get("name", "")) if isinstance(label, dict) else str(label)
+        for label in labels
+    ]
+    return [label for label in normalized if label]
+
+
 @router.post("/actions/runner/register")
 async def register_runner(body: dict, db: DbSession):
     """Register a new runner using a registration token."""
@@ -187,6 +211,45 @@ async def register_runner(body: dict, db: DbSession):
         "runner_id": runner.id,
         "token": runner_token,
         "name": runner.name,
+    }
+
+
+@router.post("/admin/actions/runners/register")
+async def register_site_wide_runner(body: dict, user: AuthUser, db: DbSession):
+    """Register or replace an emulator-wide custom runner."""
+    if not user.site_admin:
+        raise HTTPException(status_code=403, detail="Site administrator required")
+
+    name = str(body.get("name") or "site-wide-runner").strip()
+    if not name:
+        raise HTTPException(status_code=422, detail="Runner name is required")
+
+    runner_token = f"ghp_runner_{secrets.token_urlsafe(32)}"
+    result = await db.execute(
+        select(Runner).where(
+            Runner.name == name,
+            Runner.repo_id.is_(None),
+            Runner.org_id.is_(None),
+        )
+    )
+    runner = result.scalar_one_or_none()
+    if runner is None:
+        runner = Runner(name=name, repo_id=None, org_id=None)
+        db.add(runner)
+
+    runner.os = str(body.get("os") or "linux")
+    runner.status = "online"
+    runner.labels = _runner_labels(body)
+    runner.busy = False
+    runner.token_hash = hash_token(runner_token)
+    runner.last_heartbeat = datetime.now(timezone.utc)
+    await db.commit()
+    await db.refresh(runner)
+    return {
+        "runner_id": runner.id,
+        "token": runner_token,
+        "name": runner.name,
+        "scope": "site",
     }
 
 
@@ -224,23 +287,67 @@ async def poll_for_jobs(
     """Long-poll for available jobs matching runner labels."""
     runner = await _get_runner_from_token(request, db)
     repository = await get_repo_or_404(owner, repo, db)
-    repository_id = repository.id
+    if runner.repo_id != repository.id:
+        raise HTTPException(
+            status_code=403,
+            detail="Runner is not registered for this repository",
+        )
+    return await _poll_for_jobs(
+        runner,
+        db,
+        labels=labels,
+        timeout=timeout,
+        repository_id=repository.id,
+    )
+
+
+@router.get("/actions/runner/jobs")
+async def poll_for_site_wide_jobs(
+    request: Request,
+    db: DbSession,
+    labels: str = Query("self-hosted,linux"),
+    timeout: int = Query(30, ge=1, le=60),
+):
+    """Long-poll across repositories using a site-wide runner token."""
+    runner = await _get_runner_from_token(request, db)
+    if runner.repo_id is not None or runner.org_id is not None:
+        raise HTTPException(status_code=403, detail="Site-wide runner required")
+    return await _poll_for_jobs(
+        runner,
+        db,
+        labels=labels,
+        timeout=timeout,
+        repository_id=None,
+    )
+
+
+async def _poll_for_jobs(
+    runner: Runner,
+    db,
+    *,
+    labels: str,
+    timeout: int,
+    repository_id: int | None,
+):
+    """Claim the oldest queued job in the runner's permitted scope."""
     runner_labels = {label.strip().lower() for label in labels.split(",") if label.strip()}
 
     await _requeue_stale_jobs(db)
 
     deadline = asyncio.get_event_loop().time() + timeout
     while asyncio.get_event_loop().time() < deadline:
-        result = await db.execute(
+        query = (
             select(WorkflowJob)
             .join(WorkflowRun, WorkflowJob.run_id == WorkflowRun.id)
             .where(
-                WorkflowRun.repo_id == repository_id,
                 WorkflowRun.status.in_(("queued", "in_progress")),
                 WorkflowJob.status == "queued",
             )
             .order_by(WorkflowJob.created_at)
         )
+        if repository_id is not None:
+            query = query.where(WorkflowRun.repo_id == repository_id)
+        result = await db.execute(query)
         jobs = result.scalars().all()
 
         for job in jobs:
@@ -263,6 +370,13 @@ async def poll_for_jobs(
                     select(WorkflowRun).where(WorkflowRun.id == job.run_id)
                 )
                 run = run_result.scalar_one_or_none()
+                repository = None
+                if run is not None:
+                    repository = (
+                        await db.execute(
+                            select(Repository).where(Repository.id == run.repo_id)
+                        )
+                    ).scalar_one_or_none()
                 if run and run.status == "queued":
                     run.status = "in_progress"
                     await db.commit()
@@ -280,6 +394,7 @@ async def poll_for_jobs(
                     "head_sha": run.head_sha if run else "",
                     "head_branch": run.head_branch if run else "main",
                     "run_number": run.run_number if run else job.run_id,
+                    "repository": repository.full_name if repository else "",
                 }
 
         await asyncio.sleep(2)

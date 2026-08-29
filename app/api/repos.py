@@ -10,6 +10,7 @@ from sqlalchemy import select, func as sa_func
 
 from app.api.deps import AuthUser, CurrentUser, DbSession
 from app.config import settings
+from app.models.branch import Branch
 from app.models.repository import Repository
 from app.models.user import User
 from app.models.organization import Organization
@@ -208,6 +209,13 @@ async def create_repo_for_user(body: dict, user: AuthUser, db: DbSession):
         )
         if commit_sha:
             repo.pushed_at = datetime.now(timezone.utc)
+            db.add(
+                Branch(
+                    repo_id=repo.id,
+                    name=repo.default_branch,
+                    sha=commit_sha,
+                )
+            )
             await db.commit()
             await db.refresh(repo)
 

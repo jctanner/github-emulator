@@ -13,7 +13,7 @@ from sqlalchemy import select
 
 from app.api.deps import DbSession, get_repo_or_404
 from app.config import settings
-from app.models.actions import Runner, RegistrationToken
+from app.models.actions import EnterpriseRunnerRegistrationToken, Runner, RegistrationToken
 from app.services.auth_service import hash_token
 
 router = APIRouter(tags=["actions-pipelines"])
@@ -27,6 +27,90 @@ def _is_expired(value: datetime) -> bool:
 
 def _request_base(request: Request) -> str:
     return settings.BASE_URL or f"{request.url.scheme}://{request.headers.get('host', request.url.netloc)}"
+
+
+@router.post("/_services/pipelines/enterprises/{enterprise}/_apis/pipelines/runs/register")
+async def pipelines_register_enterprise_runner(
+    enterprise: str, request: Request, db: DbSession,
+):
+    """Register an upstream actions/runner at enterprise scope."""
+    if enterprise != settings.ENTERPRISE_SLUG:
+        raise HTTPException(status_code=404, detail="Not Found")
+    body = await request.json()
+    reg_token = body.get("token", "")
+    result = await db.execute(
+        select(EnterpriseRunnerRegistrationToken).where(
+            EnterpriseRunnerRegistrationToken.token == reg_token,
+            EnterpriseRunnerRegistrationToken.enterprise_slug == enterprise,
+        )
+    )
+    registration = result.scalar_one_or_none()
+    if registration is None:
+        raise HTTPException(status_code=401, detail="Invalid registration token")
+    if _is_expired(registration.expires_at):
+        raise HTTPException(status_code=401, detail="Registration token expired")
+
+    labels_raw = body.get("labels", [])
+    labels = [
+        label.get("name", str(label)) if isinstance(label, dict) else str(label)
+        for label in labels_raw
+    ] if isinstance(labels_raw, list) else ["self-hosted"]
+    runner_token = f"ghp_runner_{secrets.token_urlsafe(32)}"
+    runner = Runner(
+        name=body.get("name", body.get("agentName", "runner")),
+        os=body.get("os", "linux"),
+        status="online",
+        labels=labels,
+        busy=False,
+        token_hash=hash_token(runner_token),
+        enterprise_slug=enterprise,
+        last_heartbeat=datetime.now(timezone.utc),
+    )
+    db.add(runner)
+    await db.delete(registration)
+    await db.commit()
+    await db.refresh(runner)
+    base = _request_base(request)
+    return {
+        "id": runner.id,
+        "name": runner.name,
+        "token": runner_token,
+        "serverUrl": base,
+        "gitServerUrl": base,
+        "pipelines_url": f"{base}/_services/pipelines",
+        "actionsServiceUrl": f"{base}/_apis/distributedtask",
+    }
+
+
+@router.delete("/_services/pipelines/enterprises/{enterprise}/_apis/pipelines/runs/{runner_id}")
+async def pipelines_deregister_enterprise_runner(
+    enterprise: str, runner_id: int, db: DbSession,
+):
+    result = await db.execute(select(Runner).where(
+        Runner.id == runner_id,
+        Runner.enterprise_slug == enterprise,
+    ))
+    runner = result.scalar_one_or_none()
+    if runner is None:
+        raise HTTPException(status_code=404, detail="Runner not found")
+    await db.delete(runner)
+    await db.commit()
+    return {"status": "removed"}
+
+
+@router.get("/_services/pipelines/enterprises/{enterprise}/_apis/pipelines/runs")
+async def pipelines_list_enterprise_runners(enterprise: str, db: DbSession):
+    result = await db.execute(
+        select(Runner).where(Runner.enterprise_slug == enterprise)
+    )
+    runners = result.scalars().all()
+    return {
+        "count": len(runners),
+        "value": [
+            {"id": r.id, "name": r.name, "status": r.status, "os": r.os}
+            for r in runners
+        ],
+    }
 
 
 @router.post("/_services/pipelines/{owner}/{repo}/_apis/pipelines/runs/register")

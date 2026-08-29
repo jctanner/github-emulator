@@ -329,6 +329,32 @@ async def _post_receive_pack_tasks(repo_id: int, user_id: int | None) -> None:
             pass
 
         try:
+            from app.models.issue import Issue
+            from app.models.pull_request import PullRequest
+            from app.services.merge_readiness_service import reevaluate_auto_merges
+
+            if changed_after is not None:
+                pull_requests = (
+                    await db.execute(
+                        select(PullRequest)
+                        .join(Issue, PullRequest.issue_id == Issue.id)
+                        .where(
+                            PullRequest.repo_id == repository.id,
+                            PullRequest.head_ref == changed_branch,
+                            Issue.state == "open",
+                        )
+                    )
+                ).scalars().all()
+                for pull_request in pull_requests:
+                    pull_request.head_sha = changed_after
+                    pull_request.last_push_by_id = user.id if user is not None else None
+                if pull_requests:
+                    await db.commit()
+            await reevaluate_auto_merges(db, repository.id)
+        except Exception:
+            pass
+
+        try:
             from app.services.index_service import index_repository
 
             await index_repository(db, repository)

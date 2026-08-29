@@ -11,7 +11,7 @@ scripts without touching real GitHub.
 - **Git Smart HTTP** -- clone, fetch, and push over HTTP/HTTPS against bare repositories
 - **Git SSH Transport** -- clone and push over SSH (port 2222 by default)
 - **Web UI** (`/ui/`) -- browse repositories, files, commits, issues, and pull requests in a GitHub-like interface
-- **Admin Panel** (`/admin/`) -- manage users, tokens, organisations, repositories, GitHub Apps/installations, and import repos from real GitHub
+- **Admin Panel** (`/admin/`) -- manage users, tokens, organisations, repositories, GitHub Apps/installations, inspect Actions runner registrations, and import repos from real GitHub
 - **GitHub Import** -- clone a single repo by URL or bulk-import all repos from a GitHub user/org via the admin panel
 - **Webhooks** -- event delivery with recorded payloads
 - **`gh` CLI Compatible** -- works as a `GH_HOST` target for the GitHub CLI
@@ -234,6 +234,19 @@ By default the runner watches `admin/test-repo`. Override it with:
 RUNNER_REPO=admin/my-repo make actions-runner-env
 docker compose up -d actions-runner
 ```
+
+The deterministic Python runner also supports an emulator-wide scope for
+administrator-managed shared workers:
+
+```bash
+RUNNER_SCOPE=site RUNNER_NAME=shared-runner \
+RUNNER_LABELS=self-hosted,linux,shared docker compose up -d actions-runner
+```
+
+Site-wide runners register through the emulator-specific authenticated
+`POST /api/v3/admin/actions/runners/register` endpoint and poll matching jobs
+across every repository. Repository-scoped runner tokens cannot use this poll
+path, and site-wide tokens cannot use repository-scoped polling.
 
 The project roadmap prefers real `actions/runner` compatibility for maximum
 fidelity, but the bundled Python runner is kept as the deterministic fallback.

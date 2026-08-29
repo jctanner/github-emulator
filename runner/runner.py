@@ -39,6 +39,7 @@ log = logging.getLogger("runner")
 EMULATOR_URL = os.environ.get("GITHUB_EMULATOR_URL", "https://localhost")
 ADMIN_TOKEN = os.environ.get("GITHUB_EMULATOR_TOKEN", "")
 REPO = os.environ.get("RUNNER_REPO", "admin/test-repo")
+RUNNER_SCOPE = os.environ.get("RUNNER_SCOPE", "repository").strip().lower()
 RUNNER_NAME = os.environ.get("RUNNER_NAME", platform.node())
 LABELS = os.environ.get("RUNNER_LABELS", "self-hosted,linux").split(",")
 WORKDIR = os.environ.get("RUNNER_WORKDIR", "/tmp/runner-work")
@@ -245,6 +246,20 @@ class RunnerClient:
 
     def register(self):
         """Register this runner with the emulator."""
+        if RUNNER_SCOPE == "site":
+            log.info("Registering site-wide runner '%s' with labels %s ...", RUNNER_NAME, LABELS)
+            resp = self.client.post(
+                f"{API}/admin/actions/runners/register",
+                headers={"Authorization": f"token {ADMIN_TOKEN}"},
+                json={"name": RUNNER_NAME, "labels": LABELS, "os": "linux"},
+            )
+            resp.raise_for_status()
+            data = resp.json()
+            self.runner_id = data["runner_id"]
+            self.runner_token = data["token"]
+            log.info("Registered as site-wide runner #%d", self.runner_id)
+            return
+
         log.info("Requesting registration token for %s ...", REPO)
         resp = self.client.post(
             f"{API}/repos/{REPO}/actions/runners/registration-token",
@@ -290,8 +305,13 @@ class RunnerClient:
     def poll_for_job(self):
         """Long-poll for an available job. Returns job dict or None."""
         try:
+            jobs_url = (
+                f"{API}/actions/runner/jobs"
+                if RUNNER_SCOPE == "site"
+                else f"{API}/repos/{REPO}/actions/runner/jobs"
+            )
             resp = self.client.get(
-                f"{API}/repos/{REPO}/actions/runner/jobs",
+                jobs_url,
                 params={"labels": ",".join(LABELS), "timeout": "30"},
                 headers=self._auth_headers(),
                 timeout=45.0,
@@ -309,6 +329,7 @@ class RunnerClient:
     def execute_job(self, job: dict):
         """Execute a job's steps and report results."""
         job_id = job["job_id"]
+        job_repository = str(job.get("repository") or REPO)
         log.info("=== Executing job #%d: %s ===", job_id, job.get("name", ""))
 
         os.makedirs(WORKDIR, exist_ok=True)
@@ -319,7 +340,7 @@ class RunnerClient:
 
         def append_log(chunk: str) -> None:
             if chunk:
-                self._upload_logs(job_id, chunk)
+                self._upload_logs(job_repository, job_id, chunk)
 
         append_log(f"Job {job_id}: {job.get('name', '')}\n")
 
@@ -334,11 +355,11 @@ class RunnerClient:
                 step["conclusion"] = "skipped"
                 append_log("Skipped because its condition evaluated to false\n")
                 append_log("##[endgroup]\n")
-                self._report_progress(job_id, steps)
+                self._report_progress(job_repository, job_id, steps)
                 continue
 
             step["status"] = "in_progress"
-            self._report_progress(job_id, steps)
+            self._report_progress(job_repository, job_id, steps)
 
             rendered_step = _render_local_action(step, {}, step_outputs)
             result, _step_log, step_updates = self._run_step(
@@ -365,10 +386,10 @@ class RunnerClient:
             else:
                 log.info("  Step %d passed", step_num)
 
-            self._report_progress(job_id, steps)
+            self._report_progress(job_repository, job_id, steps)
 
         conclusion = "success" if all_passed else "failure"
-        self._complete_job(job_id, conclusion, steps)
+        self._complete_job(job_repository, job_id, conclusion, steps)
         log.info("=== Job #%d finished: %s ===", job_id, conclusion)
 
         # Cleanup workdir
@@ -405,7 +426,7 @@ class RunnerClient:
             "CI": "true",
             "GITHUB_ACTIONS": "true",
             "GITHUB_API_URL": API,
-            "GITHUB_REPOSITORY": REPO,
+            "GITHUB_REPOSITORY": str(job.get("repository") or REPO),
             "GITHUB_SERVER_URL": EMULATOR_URL,
             "GITHUB_WORKSPACE": WORKDIR,
             "GITHUB_RUN_ID": str(job.get("run_id", "")),
@@ -416,7 +437,7 @@ class RunnerClient:
             "GITHUB_ACTOR": str(
                 job.get("event_payload", {}).get("sender", {}).get("login", "")
             ),
-            "GITHUB_REPOSITORY_OWNER": REPO.split("/", 1)[0],
+            "GITHUB_REPOSITORY_OWNER": str(job.get("repository") or REPO).split("/", 1)[0],
             "GITHUB_REF_NAME": str(
                 job.get("event_payload", {}).get("ref", "")
             ).removeprefix("refs/heads/").removeprefix("refs/tags/"),
@@ -600,7 +621,7 @@ class RunnerClient:
     def _checkout_step(self, step: dict, job: dict) -> tuple[str, str, dict[str, str]]:
         """Checkout a repository using the emulator's Git smart HTTP endpoint."""
         options = step.get("with") or {}
-        repository = str(options.get("repository") or REPO)
+        repository = str(options.get("repository") or job.get("repository") or REPO)
         ref = str(options.get("ref") or job.get("head_branch") or "main")
         ref = ref.removeprefix("refs/heads/")
         target = Path(WORKDIR) / str(options.get("path") or "")
@@ -640,30 +661,30 @@ class RunnerClient:
         except subprocess.CalledProcessError as exc:
             return "failure", f"Checkout failed: {exc.stdout or exc}\n", {}
 
-    def _report_progress(self, job_id: int, steps: list):
+    def _report_progress(self, repository: str, job_id: int, steps: list):
         try:
             self.client.patch(
-                f"{API}/repos/{REPO}/actions/runner/jobs/{job_id}",
+                f"{API}/repos/{repository}/actions/runner/jobs/{job_id}",
                 json={"steps": steps},
                 headers=self._auth_headers(),
             )
         except Exception:
             log.warning("Failed to report progress for job %d", job_id)
 
-    def _complete_job(self, job_id: int, conclusion: str, steps: list):
+    def _complete_job(self, repository: str, job_id: int, conclusion: str, steps: list):
         try:
             self.client.post(
-                f"{API}/repos/{REPO}/actions/runner/jobs/{job_id}/complete",
+                f"{API}/repos/{repository}/actions/runner/jobs/{job_id}/complete",
                 json={"conclusion": conclusion, "steps": steps},
                 headers=self._auth_headers(),
             )
         except Exception as e:
             log.error("Failed to report completion for job %d: %s", job_id, e)
 
-    def _upload_logs(self, job_id: int, log_data: str):
+    def _upload_logs(self, repository: str, job_id: int, log_data: str):
         try:
             self.client.post(
-                f"{API}/repos/{REPO}/actions/runner/jobs/{job_id}/logs",
+                f"{API}/repos/{repository}/actions/runner/jobs/{job_id}/logs",
                 content=log_data.encode(),
                 headers={**self._auth_headers(), "Content-Type": "text/plain"},
             )
@@ -678,7 +699,10 @@ class RunnerClient:
                 "helper or set GITHUB_EMULATOR_RUNNER_TOKEN in .env."
             )
             return
-        if not REPO or "/" not in REPO:
+        if RUNNER_SCOPE not in {"repository", "site"}:
+            log.error("RUNNER_SCOPE must be repository or site, got %r", RUNNER_SCOPE)
+            return
+        if RUNNER_SCOPE == "repository" and (not REPO or "/" not in REPO):
             log.error("RUNNER_REPO must be set as owner/repo, got %r", REPO)
             return
 
@@ -691,7 +715,8 @@ class RunnerClient:
                 time.sleep(10)
 
         self.start_heartbeat()
-        log.info("Runner ready. Polling for jobs on %s ...", REPO)
+        target = "all repositories" if RUNNER_SCOPE == "site" else REPO
+        log.info("Runner ready. Polling for jobs on %s ...", target)
 
         while True:
             try:

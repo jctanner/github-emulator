@@ -1,5 +1,6 @@
 """Event-driven pull request auto-merge processing."""
 
+import os
 from datetime import datetime, timezone
 
 from sqlalchemy import select
@@ -12,21 +13,12 @@ from app.models.repository import Repository
 from app.models.user import User
 
 
-READY_LABEL = "ready-for-merge"
-
-
 async def process_auto_merge(
     db: AsyncSession,
     pull_request: PullRequest,
     actor: User | None = None,
 ) -> bool:
-    """Merge an enabled PR once the emulator's readiness gate is satisfied.
-
-    GitHub's real readiness calculation includes branch protection, required
-    checks, approvals, merge queues, and conflict detection.  The emulator's
-    deterministic equivalent is the ``ready-for-merge`` label, which is what
-    the Fullsend review workflow already applies after an approval.
-    """
+    """Merge an enabled PR once shared branch-policy readiness is satisfied."""
     result = await db.execute(
         select(PullRequestAutoMerge).where(
             PullRequestAutoMerge.pull_request_id == pull_request.id
@@ -38,9 +30,7 @@ async def process_auto_merge(
 
     issue_result = await db.execute(select(Issue).where(Issue.id == pull_request.issue_id))
     issue = issue_result.scalar_one_or_none()
-    if issue is None or issue.state != "open" or READY_LABEL not in {
-        label.name for label in (issue.labels or [])
-    }:
+    if issue is None or issue.state != "open":
         return False
 
     repo_result = await db.execute(select(Repository).where(Repository.id == pull_request.repo_id))
@@ -48,9 +38,38 @@ async def process_auto_merge(
     if repository is None:
         return False
 
+    merge_actor = actor
+    if merge_actor is None:
+        actor_result = await db.execute(select(User).where(User.id == request.enabled_by_id))
+        merge_actor = actor_result.scalar_one_or_none()
+
+    from app.services.merge_readiness_service import evaluate_merge_readiness
+
+    readiness = await evaluate_merge_readiness(
+        db,
+        pull_request,
+        actor=merge_actor,
+        merge_method=(request.merge_method or "MERGE").lower(),
+    )
+    if not readiness.ready:
+        return False
+
+    from app.services.closing_issue_service import resolve_closing_issues
+
+    linked_issues = await resolve_closing_issues(
+        db,
+        pull_request,
+        repository,
+        include_commit_messages=True,
+    )
+
     # Reuse the emulator's existing real-git merge implementation.  Importing
     # lazily avoids a module cycle between the REST route and this service.
-    from app.api.pulls import _attach_resolved_refs, _perform_git_merge
+    from app.api.pulls import (
+        _attach_resolved_refs,
+        _perform_git_merge,
+        _record_merged_base_sha,
+    )
 
     await _attach_resolved_refs(pull_request, repository)
     merge_method = (request.merge_method or "MERGE").lower()
@@ -66,18 +85,39 @@ async def process_auto_merge(
             commit_message=body,
         )
     except Exception:
-        # The REST merge route has the same DB-only fallback for fixture repos
-        # whose refs are synthetic or whose checkout is not on disk.
         merge_sha = None
+
+    # A real repository with resolvable refs must produce a real merge. This
+    # closes the race where conflicts appear after readiness was evaluated.
+    if repository.disk_path and os.path.isdir(repository.disk_path) and merge_sha is None:
+        from app.services.git_service import get_ref_sha
+
+        actual_head = await get_ref_sha(repository.disk_path, pull_request.resolved_head_ref)
+        actual_base = await get_ref_sha(repository.disk_path, pull_request.resolved_base_ref)
+        if actual_head and actual_base:
+            return False
 
     now = datetime.now(timezone.utc)
     pull_request.merged = True
     pull_request.merged_at = now
-    pull_request.merged_by_id = actor.id if actor else request.enabled_by_id
+    pull_request.merged_by_id = merge_actor.id if merge_actor else request.enabled_by_id
     pull_request.merge_commit_sha = merge_sha or f"merge_{pull_request.head_sha[:8]}_{pull_request.base_sha[:8]}"
+    await _record_merged_base_sha(
+        db,
+        repository,
+        pull_request.resolved_base_ref,
+        merge_sha,
+    )
     issue.state = "closed"
     issue.closed_at = now
+    issue.state_reason = "completed"
+    issue.closed_by_id = merge_actor.id if merge_actor else request.enabled_by_id
     repository.open_issues_count = max(0, repository.open_issues_count - 1)
+    closed_linked_issues = []
+    if merge_actor is not None:
+        from app.services.closing_issue_service import close_linked_issues
+
+        closed_linked_issues = close_linked_issues(linked_issues, merge_actor, now)
     await db.delete(request)
     await db.commit()
     await db.refresh(issue)
@@ -85,7 +125,7 @@ async def process_auto_merge(
 
     from app.services.workflow_service import build_activity_payload, dispatch_event
 
-    event_actor = actor
+    event_actor = merge_actor
     if event_actor is None:
         actor_result = await db.execute(select(User).where(User.id == repository.owner_id))
         event_actor = actor_result.scalar_one_or_none()
@@ -108,4 +148,7 @@ async def process_auto_merge(
             ref=pull_request.base_ref,
             sha=pull_request.merge_commit_sha or pull_request.base_sha,
         )
+        from app.services.closing_issue_service import dispatch_linked_issue_closed_events
+
+        await dispatch_linked_issue_closed_events(db, closed_linked_issues, event_actor)
     return True

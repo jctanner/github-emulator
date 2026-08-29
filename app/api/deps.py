@@ -16,6 +16,7 @@ from app.services.auth_service import (
     validate_installation_token,
     validate_token,
 )
+from app.services.job_token_service import validate_job_token
 
 
 # ---------------------------------------------------------------------------
@@ -71,6 +72,12 @@ async def get_current_user(
         request.state.installation_token = installation_token
         request.state.is_installation_token = True
         return await get_installation_actor(db, installation_token)
+    validated = await validate_job_token(db, token_value)
+    if validated is not None:
+        job, run = validated
+        request.state.workflow_job = job
+        request.state.workflow_job_permissions = job.permissions or {}
+        return run.actor
     return await validate_token(db, token_value)
 
 

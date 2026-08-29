@@ -95,6 +95,44 @@ async def test_admin_can_install_app_and_mint_one_time_token(
         await db_session.execute(select(AppInstallation))
     ).scalar_one()
     installation_id = installation.id
+
+    reconciled = await client.patch(
+        f"{API}/admin/apps/7002",
+        headers=auth_headers(admin_token),
+        json={
+            "name": "Installation Test App",
+            "slug": "installation-test-app",
+            "permissions": {
+                "contents": "read",
+                "issues": "write",
+                "metadata": "read",
+            },
+            "sync_installations": True,
+        },
+    )
+    assert reconciled.status_code == 200
+    assert reconciled.json()["permissions"] == {
+        "contents": "read",
+        "issues": "write",
+        "metadata": "read",
+    }
+    assert reconciled.json()["installations_updated"] == 1
+    await db_session.refresh(installation)
+    assert installation.permissions == reconciled.json()["permissions"]
+
+    duplicate_response = await client.post(
+        "/admin/apps/7002/installations/create",
+        cookies=admin_cookies(),
+        data={
+            "account_login": "testuser",
+            "account_type": "User",
+            "repositories": [repo["full_name"]],
+        },
+    )
+    assert duplicate_response.status_code == 409
+    assert f"already has installation #{installation_id}" in duplicate_response.text
+    assert repo["full_name"] in duplicate_response.text
+
     detail = await client.get(
         f"/admin/installations/{installation_id}", cookies=admin_cookies()
     )
@@ -228,7 +266,10 @@ async def test_admin_app_lifecycle_controls_rotate_remove_and_delete(
         cookies=admin_cookies(),
         follow_redirects=False,
     )
-    assert removed.status_code == 303
+    assert removed.status_code == 200
+    assert f"Removed installation #{installation.id}" in removed.text
+    assert "testuser" in removed.text
+    assert repo["full_name"] in removed.text
     assert (
         await db_session.execute(
             select(AppInstallation).where(AppInstallation.id == installation.id)

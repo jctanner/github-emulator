@@ -1709,6 +1709,24 @@ async def merge_pull_web(
             status_code=302,
         )
 
+    from app.services.merge_readiness_service import evaluate_merge_readiness
+
+    readiness = await evaluate_merge_readiness(
+        db, pr, actor=current_user, merge_method="merge"
+    )
+    if not readiness.ready:
+        message = quote("; ".join(readiness.reasons) or "Pull request is not mergeable")
+        return RedirectResponse(url=f"{pr_url}?merge_error={message}", status_code=302)
+
+    from app.services.closing_issue_service import resolve_closing_issues
+
+    linked_issues = await resolve_closing_issues(
+        db,
+        pr,
+        repo,
+        include_commit_messages=True,
+    )
+
     now = datetime.now(timezone.utc)
     pr.merged = True
     pr.merged_at = now
@@ -1720,8 +1738,12 @@ async def merge_pull_web(
     issue.closed_by_id = current_user.id
     repo.open_issues_count = max(0, repo.open_issues_count - 1)
 
+    from app.services.closing_issue_service import close_linked_issues
+
+    closed_linked_issues = close_linked_issues(linked_issues, current_user, now)
+
     try:
-        from app.api.pulls import _perform_git_merge
+        from app.api.pulls import _perform_git_merge, _record_merged_base_sha
 
         git_sha = await _perform_git_merge(
             disk_path=repo.disk_path,
@@ -1732,10 +1754,14 @@ async def merge_pull_web(
         )
         if git_sha:
             pr.merge_commit_sha = git_sha
+            await _record_merged_base_sha(db, repo, base_ref, git_sha)
     except Exception:
         pass
 
     await db.commit()
+    from app.services.closing_issue_service import dispatch_linked_issue_closed_events
+
+    await dispatch_linked_issue_closed_events(db, closed_linked_issues, current_user)
     return RedirectResponse(url=pr_url, status_code=302)
 
 

@@ -18,7 +18,7 @@ async def _graphql(client, token, query, variables):
     return payload["data"]
 
 
-async def test_auto_merge_is_queued_and_processed_by_ready_label(
+async def test_auto_merge_on_unprotected_branch_merges_without_ready_label(
     client, test_token
 ):
     headers = auth_headers(test_token)
@@ -37,15 +37,7 @@ async def test_auto_merge_is_queued_and_processed_by_ready_label(
     assert pr_response.status_code == 201
     pr = pr_response.json()
 
-    label_response = await client.post(
-        f"{API}/repos/testuser/auto-merge/labels",
-        json={"name": "ready-for-merge", "color": "1f883d"},
-        headers=headers,
-    )
-    assert label_response.status_code == 201
-    label_id = label_response.json()["id"]
-
-    queued = await _graphql(
+    merged_request = await _graphql(
         client,
         test_token,
         """
@@ -68,31 +60,12 @@ async def test_auto_merge_is_queued_and_processed_by_ready_label(
             }
         },
     )
-    assert queued["enablePullRequestAutoMerge"]["pullRequest"] == {
+    assert merged_request["enablePullRequestAutoMerge"]["pullRequest"] == {
         "number": 1,
-        "merged": False,
-        "mergeStateStatus": "BLOCKED",
-        "autoMergeRequest": {
-            "mergeMethod": "SQUASH",
-            "commitHeadline": "Queue me",
-        },
+        "merged": True,
+        "mergeStateStatus": "CLEAN",
+        "autoMergeRequest": None,
     }
-
-    await _graphql(
-        client,
-        test_token,
-        """
-        mutation($input: AddLabelsToLabelableInput!) {
-          addLabelsToLabelable(input: $input) { labelable { ... on PullRequest { number } } }
-        }
-        """,
-        {
-            "input": {
-                "labelableId": pr["node_id"],
-                "labelIds": [str(label_id)],
-            }
-        },
-    )
 
     merged = await client.get(
         f"{API}/repos/testuser/auto-merge/pulls/1",
@@ -101,4 +74,3 @@ async def test_auto_merge_is_queued_and_processed_by_ready_label(
     assert merged.status_code == 200
     assert merged.json()["merged"] is True
     assert merged.json()["state"] == "closed"
-

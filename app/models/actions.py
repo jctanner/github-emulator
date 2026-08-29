@@ -20,6 +20,7 @@ class Runner(Base):
     last_heartbeat: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     repo_id: Mapped[int | None] = mapped_column(Integer, ForeignKey("repositories.id"), nullable=True)
     org_id: Mapped[int | None] = mapped_column(Integer, ForeignKey("organizations.id"), nullable=True)
+    enterprise_slug: Mapped[str | None] = mapped_column(String, nullable=True)
 
     created_at: Mapped[datetime] = mapped_column(
         DateTime, server_default=func.now()
@@ -48,6 +49,18 @@ class RegistrationToken(Base):
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     token: Mapped[str] = mapped_column(String, nullable=False, unique=True)
     repo_id: Mapped[int] = mapped_column(Integer, ForeignKey("repositories.id"), nullable=False)
+    expires_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime, server_default=func.now()
+    )
+
+
+class EnterpriseRunnerRegistrationToken(Base):
+    __tablename__ = "enterprise_runner_registration_tokens"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    token: Mapped[str] = mapped_column(String, nullable=False, unique=True)
+    enterprise_slug: Mapped[str] = mapped_column(String, nullable=False)
     expires_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)
     created_at: Mapped[datetime] = mapped_column(
         DateTime, server_default=func.now()

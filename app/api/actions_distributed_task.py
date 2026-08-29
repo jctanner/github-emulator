@@ -22,6 +22,7 @@ from sqlalchemy.orm.attributes import flag_modified
 from app.api.deps import DbSession
 from app.config import settings
 from app.models.actions import (
+    EnterpriseRunnerRegistrationToken,
     RegistrationToken,
     Runner,
     RunnerSession,
@@ -30,6 +31,7 @@ from app.models.actions import (
 )
 from app.models.repository import Repository
 from app.services.auth_service import hash_token
+from app.services.job_token_service import issue_job_token
 from app.services.workflow_service import check_run_completion, dispatch_ready_jobs
 
 router = APIRouter(tags=["actions-distributed-task"])
@@ -130,12 +132,19 @@ def _workflow_guid(kind: str, local_id: int) -> str:
 
 
 def _template_mapping(values: dict[str, str]) -> dict:
+    def template_value(value):
+        if isinstance(value, str):
+            stripped = value.strip()
+            if stripped.startswith("${{") and stripped.endswith("}}"):
+                return {"type": 3, "expr": stripped[3:-2].strip()}
+        return value
+
     return {
         "type": 2,
         "map": [
             {
                 "Key": key,
-                "Value": value,
+                "Value": template_value(value),
             }
             for key, value in values.items()
             if value is not None
@@ -143,14 +152,22 @@ def _template_mapping(values: dict[str, str]) -> dict:
     }
 
 
-def _context_dictionary(values: dict[str, str]) -> dict:
+def _context_value(value):
+    if isinstance(value, dict):
+        return _context_dictionary(value)
+    if isinstance(value, list):
+        return {"t": 1, "a": [_context_value(item) for item in value]}
+    return value
+
+
+def _context_dictionary(values: dict) -> dict:
     """Serialize values as PipelineContextData DictionaryContextData."""
     return {
         "t": 2,
         "d": [
             {
                 "k": key,
-                "v": value,
+                "v": _context_value(value),
             }
             for key, value in values.items()
             if value is not None
@@ -173,20 +190,7 @@ def _base64url_json(value: dict) -> str:
 
 
 def _job_access_token(job: WorkflowJob) -> str:
-    now = int(datetime.now(timezone.utc).timestamp())
-    return ".".join([
-        _base64url_json({"typ": "JWT", "alg": "None"}),
-        _base64url_json({
-            "iss": "github-emulator",
-            "aud": "github-emulator",
-            "sub": f"job:{job.id}",
-            "nbf": now - 60,
-            "iat": now,
-            "exp": now + 3600,
-            "orch_id": _workflow_guid("run", job.run_id),
-        }),
-        "",
-    ])
+    return issue_job_token(job)
 
 
 def _agent_json(
@@ -519,9 +523,18 @@ async def dt_register_pool_agent(
         select(RegistrationToken).where(RegistrationToken.token == reg_token)
     )
     reg = result.scalar_one_or_none()
+    enterprise_reg = None
     if reg is None:
+        result = await db.execute(
+            select(EnterpriseRunnerRegistrationToken).where(
+                EnterpriseRunnerRegistrationToken.token == reg_token
+            )
+        )
+        enterprise_reg = result.scalar_one_or_none()
+    if reg is None and enterprise_reg is None:
         raise HTTPException(status_code=401, detail="Invalid registration token")
-    if _is_expired(reg.expires_at):
+    registration = reg or enterprise_reg
+    if _is_expired(registration.expires_at):
         raise HTTPException(status_code=401, detail="Registration token expired")
 
     runner_token = f"ghp_runner_{secrets.token_urlsafe(32)}"
@@ -534,11 +547,14 @@ async def dt_register_pool_agent(
         labels=_labels_from_body(body),
         busy=False,
         token_hash=hash_token(runner_token),
-        repo_id=reg.repo_id,
+        repo_id=reg.repo_id if reg is not None else None,
+        enterprise_slug=(
+            enterprise_reg.enterprise_slug if enterprise_reg is not None else None
+        ),
         last_heartbeat=datetime.now(timezone.utc),
     )
     db.add(runner)
-    await db.delete(reg)
+    await db.delete(registration)
     await db.commit()
     await db.refresh(runner)
     return _agent_json(runner, runner_token, _request_base(request))
@@ -571,7 +587,7 @@ async def dt_update_pool_agent(
     pool_id: int, agent_id: int, request: Request, db: DbSession,
 ):
     """Update an existing pool-scoped agent during runner replacement."""
-    await _get_runner_from_token(request, db)
+    authenticated_runner = await _get_runner_from_token(request, db)
     body = await request.json()
     result = await db.execute(select(Runner).where(Runner.id == agent_id))
     runner = result.scalar_one_or_none()
@@ -585,6 +601,11 @@ async def dt_update_pool_agent(
     runner.labels = _labels_from_body(body) or runner.labels
     runner.status = "online"
     runner.last_heartbeat = datetime.now(timezone.utc)
+    if authenticated_runner.id != runner.id:
+        # config.sh --replace first creates a short-lived broker identity, then
+        # updates the existing named runner. GitHub does not expose that broker
+        # as a second runner registration.
+        await db.delete(authenticated_runner)
     await db.commit()
     await db.refresh(runner)
     return _agent_json(runner, base=_request_base(request))
@@ -683,6 +704,7 @@ def _job_request_message(
                 "base_ref": "",
                 "event_name": run.event if run else "workflow_dispatch",
                 "event_path": "",
+                "event": run.trigger_payload if run and run.trigger_payload else {},
                 "graphql_url": f"{runner_base_url}/api/graphql",
                 "head_ref": "",
                 "job": job.name,
@@ -697,6 +719,7 @@ def _job_request_message(
                 "run_number": str(run.run_number if run else job.run_id),
                 "server_url": runner_base_url,
                 "sha": sha,
+                "token": access_token,
                 "workflow": workflow_name,
                 "workspace": "",
             }),
@@ -750,10 +773,12 @@ def _job_step_message(job: WorkflowJob, step: dict) -> dict:
     return {
         "type": "Action",
         "id": _workflow_guid("step", (job.id * 1000) + number),
-        "name": f"step_{number}",
+        "name": step.get("id") or f"step_{number}",
+        "contextName": step.get("id"),
         "displayName": display_name,
         "enabled": True,
-        "condition": "success()",
+        "condition": step.get("if") or "success()",
+        "environment": _template_mapping(step.get("env") or {}),
         "reference": {
             "type": "Script",
         },
@@ -798,14 +823,25 @@ async def _claim_next_job(
     db,
     base_url: str | None = None,
 ) -> dict | Response:
-    job_result = await db.execute(
+    # The upstream runner keeps polling for control messages while it is busy.
+    # Those polls must not reserve another PipelineAgentJobRequest: the runner
+    # acknowledges such a message but cannot execute it alongside its current
+    # job, leaving the second job permanently in progress.
+    if runner.busy or runner.status == "busy":
+        return Response(status_code=204)
+
+    job_query = (
         select(WorkflowJob)
+        .join(WorkflowRun, WorkflowJob.run_id == WorkflowRun.id)
         .where(
             WorkflowJob.status == "queued",
             WorkflowJob.runner_id.is_(None),
         )
         .order_by(WorkflowJob.created_at)
     )
+    if runner.repo_id is not None:
+        job_query = job_query.where(WorkflowRun.repo_id == runner.repo_id)
+    job_result = await db.execute(job_query)
     runner_labels = {str(label).lower() for label in (runner.labels or [])}
     job = next(
         (
@@ -1000,6 +1036,7 @@ async def dt_get_messages(
         raise HTTPException(status_code=404, detail="Session not found")
 
     session.last_seen = datetime.now(timezone.utc)
+    runner.last_heartbeat = session.last_seen
     await db.commit()
 
     deadline = asyncio.get_event_loop().time() + 30

@@ -75,6 +75,7 @@ async def create_pr(
         base_sha=base_sha,
         draft=draft,
         mergeable=True,
+        last_push_by_id=user.id,
     )
     db.add(pr)
     await db.commit()

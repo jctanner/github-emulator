@@ -14,13 +14,20 @@ Actions visibility and runner evaluation.
 
 ## Pending Tasks
 
-- `docs/tasks/pending/branch-protection-and-merge-readiness-parity.md`
 - `docs/tasks/pending/actions-runner-compose-bootstrap.md`
 - `docs/tasks/pending/actions-job-execution-loop.md`
 - `docs/tasks/pending/actions-hosted-runner-feasibility.md`
 
+## Active Tasks
+
+- None.
+
 ## Completed Tasks
 
+- `docs/tasks/done/enterprise-real-actions-runner.md`
+- `docs/tasks/done/site-wide-actions-runner.md`
+- `docs/tasks/done/admin-runner-management-page.md`
+- `docs/tasks/done/branch-protection-and-merge-readiness-parity.md`
 - `docs/tasks/done/actions-issue-label-compatibility.md`
 - `docs/tasks/done/actions-stale-runner-recovery.md`
 - `docs/tasks/done/actions-live-job-logs.md`
@@ -49,10 +56,13 @@ Actions visibility and runner evaluation.
 
 ## Open Bugs
 
-None tracked in the ledger.
+- `docs/bugs/open/stale-actions-runner-registrations-accumulate.md`
 
 ## Fixed Bugs
 
+- `docs/bugs/fixed/merged-pr-does-not-close-linked-issues.md`
+- `docs/bugs/fixed/busy-real-runner-claims-second-job.md`
+- `docs/bugs/fixed/graphql-pull-request-create-does-not-dispatch-actions.md`
 - `docs/bugs/fixed/concurrent-repository-mutations-return-500-on-sqlite-lock.md`
 - `docs/bugs/fixed/issue-comment-web-route-does-not-dispatch-actions.md`
 - `docs/bugs/fixed/fullsend-installation-token-attribution-and-review-loop.md`
