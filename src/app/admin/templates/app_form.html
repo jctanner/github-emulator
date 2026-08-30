@@ -13,7 +13,7 @@
     <div class="mt-2">
         <button type="button" class="btn btn-primary" onclick="copySecret('created-private-key', this)">Copy private key</button>
         <button type="button" class="btn" onclick="downloadSecret('created-private-key', 'github-app-private-key.pem')">Download private key</button>
-        <a href="/admin/apps/{{ created_app.id }}" class="btn ml-2">Open App</a>
+        <a href="/ui/_admin/apps/{{ created_app.id }}" class="btn ml-2">Open App</a>
     </div>
 </div>
 <script>
@@ -35,7 +35,7 @@ function downloadSecret(id, filename) {
 <div class="flash mb-3"><strong>Not a production registration flow:</strong> permissions below are emulator test permissions and do not create a GitHub.com App.</div>
 
 <div class="Box p-4">
-    <form method="post" action="/admin/apps/create" class="admin-form">
+    <form method="post" action="/ui/_admin/apps/create" class="admin-form">
         <div class="form-group">
             <label for="name">App name</label>
             <input type="text" id="name" name="name" class="form-control" value="{{ form_values.get('name', '') }}" required>
@@ -67,7 +67,7 @@ function downloadSecret(id, filename) {
         {% endfor %}
         <div class="form-actions">
             <button type="submit" class="btn btn-primary">Create emulator App</button>
-            <a href="/admin/apps" class="btn ml-2">Cancel</a>
+            <a href="/ui/_admin/apps" class="btn ml-2">Cancel</a>
         </div>
     </form>
 </div>

@@ -42,7 +42,7 @@
                         {% endif %}
                     </div>
                     {% if current_user and current_user.site_admin %}
-                    <a class="btn btn-sm" href="/admin/installations/{{ installation.id }}">Configure</a>
+                    <a class="btn btn-sm" href="/ui/_admin/installations/{{ installation.id }}">Configure</a>
                     {% endif %}
                 </div>
                 {% endfor %}
@@ -52,7 +52,7 @@
                 <h3 class="blankslate-heading">No GitHub Apps installed</h3>
                 <p>Apps with access to this repository will appear here.</p>
                 {% if current_user and current_user.site_admin %}
-                <a class="btn mt-2" href="/admin/apps">Manage GitHub Apps</a>
+                <a class="btn mt-2" href="/ui/_admin/apps">Manage GitHub Apps</a>
                 {% endif %}
             </div>
             {% endif %}

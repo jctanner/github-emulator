@@ -18,12 +18,14 @@ Actions visibility and runner evaluation.
 - `docs/tasks/pending/actions-job-execution-loop.md`
 - `docs/tasks/pending/actions-hosted-runner-feasibility.md`
 
-## Active Tasks
-
-- None.
-
 ## Completed Tasks
 
+- `docs/tasks/done/architectural-maintainability-followups.md`
+- `docs/tasks/done/admin-ui-and-http-middleware.md`
+- `docs/tasks/done/route-and-actions-modularization.md`
+- `docs/tasks/done/versioned-database-migrations.md`
+- `docs/tasks/done/sqlite-write-policy.md`
+- `docs/tasks/done/test-architecture-and-contracts.md`
 - `docs/tasks/done/src-layout-reorganization.md`
 - `docs/tasks/done/repository-github-apps-settings-page.md`
 - `docs/tasks/done/repository-collaborator-settings-page.md`

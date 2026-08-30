@@ -26,8 +26,8 @@ target_metadata = Base.metadata
 # -- Helpers ------------------------------------------------------------------
 
 def _get_url() -> str:
-    """Return the database URL, preferring the environment variable."""
-    return os.environ.get(
+    """Return the explicitly configured URL, then environment/default values."""
+    return config.attributes.get("database_url") or os.environ.get(
         "GITHUB_EMULATOR_DATABASE_URL",
         config.get_main_option("sqlalchemy.url", "sqlite+aiosqlite:///data/github_emulator.db"),
     )

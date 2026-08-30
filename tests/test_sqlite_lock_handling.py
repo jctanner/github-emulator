@@ -5,12 +5,78 @@ from contextlib import contextmanager
 
 import pytest
 from sqlalchemy import func, select
+from sqlalchemy.exc import OperationalError
 
+from app.database_retry import commit_with_sqlite_retry
+from app.middleware.error_handler import RetryableDatabaseError
 from app.models.import_job import ImportJob
 from app.models.repository import Repository
 from tests.conftest import auth_headers
 
 API = "/api/v3"
+
+
+class _ReplayableSession:
+    def __init__(self, failures: int):
+        self.failures = failures
+        self.commits = 0
+        self.rollbacks = 0
+
+    async def commit(self):
+        self.commits += 1
+        if self.commits <= self.failures:
+            raise OperationalError("COMMIT", {}, Exception("database is locked"))
+
+    async def rollback(self):
+        self.rollbacks += 1
+
+
+@pytest.mark.asyncio
+async def test_shared_write_policy_replays_after_one_lock(monkeypatch):
+    session = _ReplayableSession(failures=1)
+    replay_count = 0
+
+    async def replay():
+        nonlocal replay_count
+        replay_count += 1
+
+    monkeypatch.setattr("app.database_retry.settings.SQLITE_WRITE_RETRY_ATTEMPTS", 2)
+    monkeypatch.setattr("app.database_retry.settings.SQLITE_WRITE_RETRY_DELAY_MS", 0)
+    await commit_with_sqlite_retry(session, label="test write", before_retry=replay)
+
+    assert session.commits == 2
+    assert session.rollbacks == 1
+    assert replay_count == 1
+
+
+@pytest.mark.asyncio
+async def test_shared_write_policy_exhaustion_is_retryable_503(monkeypatch):
+    session = _ReplayableSession(failures=2)
+    monkeypatch.setattr("app.database_retry.settings.SQLITE_WRITE_RETRY_ATTEMPTS", 2)
+    monkeypatch.setattr("app.database_retry.settings.SQLITE_WRITE_RETRY_DELAY_MS", 0)
+
+    with pytest.raises(RetryableDatabaseError):
+        await commit_with_sqlite_retry(
+            session,
+            label="test write",
+            before_retry=lambda: None,
+        )
+
+    assert session.commits == 2
+    assert session.rollbacks == 2
+
+
+@pytest.mark.asyncio
+async def test_shared_write_policy_does_not_retry_without_replay(monkeypatch):
+    session = _ReplayableSession(failures=1)
+    monkeypatch.setattr("app.database_retry.settings.SQLITE_WRITE_RETRY_ATTEMPTS", 3)
+    monkeypatch.setattr("app.database_retry.settings.SQLITE_WRITE_RETRY_DELAY_MS", 0)
+
+    with pytest.raises(RetryableDatabaseError):
+        await commit_with_sqlite_retry(session, label="unsafe write")
+
+    assert session.commits == 1
+    assert session.rollbacks == 1
 
 
 @contextmanager

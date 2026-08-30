@@ -19,5 +19,5 @@ as the REST path after the pull request is committed.
 
 ## Regression coverage
 
-`tests/test_actions_event_triggers.py` covers workflow dispatch from GraphQL
+`tests/actions/test_event_triggers.py` covers workflow dispatch from GraphQL
 pull-request creation.

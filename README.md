@@ -353,3 +353,8 @@ This project is intended **for integration testing only**. It implements enough
 of the GitHub API surface to exercise client libraries, CI tooling, and
 automation scripts in isolated environments. It is **not** a production-grade
 GitHub replacement and should never be exposed to untrusted networks.
+
+The persisted SQLite database and bare Git repositories are designed for a
+single emulator replica. Do not scale the application horizontally against the
+same data volume. See `docs/notes/architecture-boundaries.md` for module,
+runner, migration, and write-contention boundaries.

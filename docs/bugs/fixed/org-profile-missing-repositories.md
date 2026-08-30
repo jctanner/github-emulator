@@ -27,7 +27,7 @@ database ownership, while organization imports store the display namespace in
 
 ## Verification
 
-- `uv run pytest tests/test_web_profiles.py tests/test_web_actions.py -v`
+- `uv run pytest tests/test_web_profiles.py tests/actions/test_web.py -v`
   passed: 8 tests.
 - Added `test_org_profile_lists_repos_by_org_namespace`, which creates
   organization repositories under `opendatahub-io/*` with an importing user as

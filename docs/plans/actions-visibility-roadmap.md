@@ -35,8 +35,8 @@ simulation.
   timeline, log, and job request endpoints.
 - The Web UI has an Actions tab, run list, run detail, job detail, runner list,
   and log view.
-- Dedicated Actions API and Web UI tests exist in `tests/test_actions_api.py`
-  and `tests/test_web_actions.py`.
+- Dedicated Actions API and Web UI tests exist in `tests/actions/test_api.py`
+  and `tests/actions/test_web.py`.
 - `make actions-runner-env` bootstraps `.env` values for the compose
   `actions-runner` service.
 - `make actions-ui-smoke` runs desktop Playwright validation against a live UI
@@ -114,7 +114,7 @@ Those pages should show enough state to understand:
 ## Evidence Required
 
 - Dedicated tests for Actions API and UI routes.
-  Complete: `tests/test_actions_api.py` and `tests/test_web_actions.py`.
+  Complete: `tests/actions/test_api.py` and `tests/actions/test_web.py`.
 - Docker Compose validation using the `github-emulator` and `actions-runner`
   services, or the real-runner service variant once it exists.
   Compose bootstrap and smoke targets exist. Live compose validation could not

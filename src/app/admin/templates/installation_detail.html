@@ -6,16 +6,16 @@
 <div class="d-flex flex-items-center flex-justify-between mb-3">
     <div>
         <h2 class="f2 mb-1">Installation #{{ installation.id }}</h2>
-        <p class="color-fg-muted mb-0"><a href="/admin/apps/{{ installation.app_id }}">{{ installation.app_name }}</a> · {{ installation.account_login }}</p>
+        <p class="color-fg-muted mb-0"><a href="/ui/_admin/apps/{{ installation.app_id }}">{{ installation.app_name }}</a> · {{ installation.account_login }}</p>
     </div>
-    <a href="/admin/apps/{{ installation.app_id }}" class="btn">Back to App</a>
+    <a href="/ui/_admin/apps/{{ installation.app_id }}" class="btn">Back to App</a>
 </div>
 
 <div class="Box p-3 mb-3">
     <table class="admin-table admin-detail">
         <tbody>
             <tr><td>Installation ID</td><td>{{ installation.id }}</td></tr>
-            <tr><td>App</td><td><a href="/admin/apps/{{ installation.app_id }}">{{ installation.app_name }}</a></td></tr>
+            <tr><td>App</td><td><a href="/ui/_admin/apps/{{ installation.app_id }}">{{ installation.app_name }}</a></td></tr>
             <tr><td>Account</td><td>{{ installation.account_login }}</td></tr>
             <tr><td>Account type</td><td>{{ installation.account_type }}</td></tr>
             <tr><td>Repository selection</td><td>{{ installation.repository_selection }}</td></tr>
@@ -47,7 +47,7 @@ function copySecret(id, button) {
 <div class="Box p-3 mb-3">
     <h3 class="f3 mb-1">Mint test installation token</h3>
     <p class="color-fg-muted">Choose a repository subset. The raw token is displayed only in the immediate result page.</p>
-    <form method="post" action="/admin/installations/{{ installation.id }}/tokens/create" class="admin-form">
+    <form method="post" action="/ui/_admin/installations/{{ installation.id }}/tokens/create" class="admin-form">
         <fieldset>
             <legend>Repositories</legend>
             {% for repo in installation.repositories %}

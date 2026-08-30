@@ -8,8 +8,8 @@
         <h2 class="f2 mb-1">{{ app.name }}</h2>
         <p class="color-fg-muted mb-0"><code>{{ app.slug }}</code> · emulator App</p>
     </div>
-    <a href="/admin/apps" class="btn">Back to Apps</a>
-    <form method="post" action="/admin/apps/{{ app.id }}/delete" class="inline-delete" onsubmit="return confirm('Delete app {{ app.name }} and its installations?');">
+    <a href="/ui/_admin/apps" class="btn">Back to Apps</a>
+    <form method="post" action="/ui/_admin/apps/{{ app.id }}/delete" class="inline-delete" onsubmit="return confirm('Delete app {{ app.name }} and its installations?');">
         <button type="submit" class="btn btn-danger">Delete App</button>
     </form>
 </div>
@@ -24,7 +24,7 @@
             <tr><td>Created</td><td>{{ app.created_at }}</td></tr>
             <tr><td>Private key</td><td>{{ "Present (value hidden)" if app.has_private_key else "Not present" }}
                 {% if app.has_private_key %}
-                <form method="post" action="/admin/apps/{{ app.id }}/regenerate-key" class="inline-delete" onsubmit="return confirm('Regenerate this App key? Existing JWTs will stop working.');">
+                <form method="post" action="/ui/_admin/apps/{{ app.id }}/regenerate-key" class="inline-delete" onsubmit="return confirm('Regenerate this App key? Existing JWTs will stop working.');">
                     <button type="submit" class="btn btn-sm">Regenerate key</button>
                 </form>
                 {% endif %}
@@ -42,14 +42,14 @@
         <tbody>
         {% for installation in installations %}
         <tr>
-            <td><a href="/admin/installations/{{ installation.id }}">{{ installation.id }}</a></td>
+            <td><a href="/ui/_admin/installations/{{ installation.id }}">{{ installation.id }}</a></td>
             <td>{{ installation.account_login }}</td>
             <td>{{ installation.account_type }}</td>
             <td>{{ installation.repositories|join(', ') }}</td>
             <td>{% for key, value in installation.permissions.items() %}<code class="mr-2">{{ key }}:{{ value }}</code>{% else %}None{% endfor %}</td>
             <td>{{ installation.token_count }}</td>
             <td>
-                <form method="post" action="/admin/apps/{{ app.id }}/installations/{{ installation.id }}/delete" class="inline-delete" data-confirm="Remove installation #{{ installation.id }} for {{ installation.account_login }} from {{ installation.repositories|join(', ') }} and revoke its tokens?" onsubmit="return confirm(this.dataset.confirm);">
+                <form method="post" action="/ui/_admin/apps/{{ app.id }}/installations/{{ installation.id }}/delete" class="inline-delete" data-confirm="Remove installation #{{ installation.id }} for {{ installation.account_login }} from {{ installation.repositories|join(', ') }} and revoke its tokens?" onsubmit="return confirm(this.dataset.confirm);">
                     <button type="submit" class="btn btn-sm btn-danger">Remove #{{ installation.id }}</button>
                 </form>
             </td>
@@ -63,7 +63,7 @@
 <div class="Box p-3 mb-3">
     <h3 class="f3 mb-1">Create development installation</h3>
     <p class="color-fg-muted">Emulator shortcut: install this App for a local account and selected local repositories.</p>
-    <form method="post" action="/admin/apps/{{ app.id }}/installations/create" class="admin-form">
+    <form method="post" action="/ui/_admin/apps/{{ app.id }}/installations/create" class="admin-form">
         <div class="form-group">
             <label for="account_login">Local account</label>
             <select id="account_login" name="account_login" class="form-control" required>
@@ -90,7 +90,7 @@
     {% for installation in installations %}
     {% for token in installation.tokens %}
     <div class="border-bottom py-2">
-        <a href="/admin/installations/{{ installation.id }}">Installation #{{ installation.id }}</a>
+        <a href="/ui/_admin/installations/{{ installation.id }}">Installation #{{ installation.id }}</a>
         · <code>{{ token.prefix }}</code>
         · created {{ token.created_at }}
         · {{ token.expiry_state }}

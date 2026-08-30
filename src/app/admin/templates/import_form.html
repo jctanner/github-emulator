@@ -5,11 +5,11 @@
 {% block content %}
 <div class="d-flex flex-items-center flex-justify-between mb-3">
     <h2 class="f2">Import from GitHub</h2>
-    <a href="/admin/import/jobs" class="btn">View Jobs</a>
+    <a href="/ui/_admin/import/jobs" class="btn">View Jobs</a>
 </div>
 
 <div class="Box p-4">
-    <form method="post" action="/admin/import" class="admin-form">
+    <form method="post" action="/ui/_admin/import" class="admin-form">
         <div class="form-group">
             <label for="source_type">Import Type</label>
             <select id="source_type" name="source_type" class="form-control" required onchange="updateSourceLabel()">

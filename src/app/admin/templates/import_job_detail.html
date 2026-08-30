@@ -23,7 +23,7 @@
             <tr><td>Progress</td><td>{{ job.completed_count or 0 }} / {{ job.repo_count if job.repo_count is not none else "?" }}</td></tr>
             {% endif %}
             {% if job.parent_job_id %}
-            <tr><td>Parent Job</td><td><a href="/admin/import/jobs/{{ job.parent_job_id }}">#{{ job.parent_job_id }}</a></td></tr>
+            <tr><td>Parent Job</td><td><a href="/ui/_admin/import/jobs/{{ job.parent_job_id }}">#{{ job.parent_job_id }}</a></td></tr>
             {% endif %}
         </tbody>
     </table>
@@ -43,7 +43,7 @@
     <tbody>
         {% for child in child_jobs %}
         <tr>
-            <td><a href="/admin/import/jobs/{{ child.id }}">{{ child.id }}</a></td>
+            <td><a href="/ui/_admin/import/jobs/{{ child.id }}">{{ child.id }}</a></td>
             <td>{{ child.repo_name or "" }}</td>
             <td><span class="status-{{ child.status }}">{{ child.status }}</span></td>
             <td style="max-width: 400px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">{{ child.error_message or "" }}</td>
@@ -53,5 +53,5 @@
 </table>
 {% endif %}
 
-<a href="/admin/import/jobs" class="btn">Back to Jobs</a>
+<a href="/ui/_admin/import/jobs" class="btn">Back to Jobs</a>
 {% endblock %}

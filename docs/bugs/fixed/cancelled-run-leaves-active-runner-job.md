@@ -21,4 +21,4 @@ runner polling only claims queued jobs whose parent run is still `queued` or
 
 ## Regression coverage
 
-`tests/test_actions_fidelity.py` covers cancellation of an already active job.
+`tests/actions/test_fidelity.py` covers cancellation of an already active job.

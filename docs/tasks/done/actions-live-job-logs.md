@@ -21,7 +21,7 @@ and update the repository job page without a manual reload.
 
 ## Evidence
 
-- `uv run python -m pytest tests/test_web_actions.py tests/test_runner_live_logs.py -q`: 9 passed.
-- `uv run python -m pytest tests/test_actions_execution.py tests/test_actions_api.py tests/test_web_actions.py tests/test_runner_live_logs.py -q`: 18 passed.
+- `uv run python -m pytest tests/actions/test_web.py tests/actions/test_runner_live_logs.py -q`: 9 passed.
+- `uv run python -m pytest tests/actions/test_execution.py tests/actions/test_api.py tests/actions/test_web.py tests/actions/test_runner_live_logs.py -q`: 18 passed.
 - GitHub emulator and both runner image layers rebuilt/imported; `github-actions-runner` rollout completed.
 - Live UI page and `/actions/jobs/378/live` endpoint smoke-tested at `github.local`.

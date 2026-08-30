@@ -6,7 +6,7 @@ from pathlib import Path
 
 
 RUNNER_PATH = (
-    Path(__file__).parents[1]
+    Path(__file__).parents[2]
     / "src"
     / "runners"
     / "emulator"

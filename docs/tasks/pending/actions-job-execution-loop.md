@@ -43,7 +43,7 @@ expand it.
 - `src/runners/emulator/runner.py`
 - `src/runners/emulator/Dockerfile`
 - `docker-compose.yml`
-- `tests/test_actions_execution.py`
+- `tests/actions/test_execution.py`
 
 ## Open Design Question
 
@@ -74,7 +74,7 @@ Pending
   `specs/github-actions.md`:
   sessions, messages, job request accept/update, timelines, timeline records,
   and timeline log upload.
-- Added `tests/test_actions_execution.py` coverage for:
+- Added `tests/actions/test_execution.py` coverage for:
   custom runner success and log capture, failure with skipped dependent jobs,
   and pool-scoped protocol registration/session/message/timeline/log/completion.
 - Verification: `uv run --with pytest --with pytest-asyncio pytest tests/ -v`

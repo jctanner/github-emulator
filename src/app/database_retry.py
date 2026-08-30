@@ -34,7 +34,12 @@ async def commit_with_sqlite_retry(
     label: str,
     before_retry: Callable[[], Any | Awaitable[Any]] | None = None,
 ) -> None:
-    """Commit a short write transaction with bounded retry on SQLite locks."""
+    """Commit a replayable write transaction with bounded SQLite-lock retry.
+
+    Callers that mutate ORM state must provide ``before_retry`` to replay that
+    mutation after rollback. Non-replayable transactions intentionally surface
+    a retryable error instead of treating a second empty commit as success.
+    """
     attempts = max(1, settings.SQLITE_WRITE_RETRY_ATTEMPTS)
     delay = max(0, settings.SQLITE_WRITE_RETRY_DELAY_MS) / 1000
 
@@ -65,3 +70,7 @@ async def commit_with_sqlite_retry(
                 result = before_retry()
                 if asyncio.iscoroutine(result):
                     await result
+            else:
+                raise RetryableDatabaseError(
+                    "Database was busy and the write cannot be replayed safely"
+                ) from exc

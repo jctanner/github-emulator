@@ -20,5 +20,5 @@ is busy. The job remains queued and unassigned until a runner is available.
 
 ## Regression coverage
 
-`tests/test_actions_execution.py` verifies that a busy pool runner cannot claim
+`tests/actions/test_execution.py` verifies that a busy pool runner cannot claim
 a second queued job.

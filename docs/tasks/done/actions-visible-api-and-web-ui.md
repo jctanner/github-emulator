@@ -45,8 +45,8 @@ navigation only includes Code, Issues, and Pull requests.
 - `src/app/web/static/css/web.css`
 - `src/app/api/actions.py`
 - `src/app/api/actions_runners.py`
-- `tests/test_actions_api.py`
-- `tests/test_web_actions.py`
+- `tests/actions/test_api.py`
+- `tests/actions/test_web.py`
 - `tests/test_web_actions_playwright.py` or `scripts/actions-ui-smoke.*`
 
 ## Design Notes

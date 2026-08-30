@@ -10,11 +10,11 @@
     <h3 class="f3 mb-2">Token Created Successfully</h3>
     <p><strong>Important:</strong> Copy your new personal access token now. You will not be able to see it again.</p>
     <div class="token-display">{{ created_token }}</div>
-    <a href="/admin/tokens" class="btn btn-primary">Back to Tokens</a>
+    <a href="/ui/_admin/tokens" class="btn btn-primary">Back to Tokens</a>
 </div>
 {% else %}
 <div class="Box p-4">
-    <form method="post" action="/admin/tokens/create" class="admin-form">
+    <form method="post" action="/ui/_admin/tokens/create" class="admin-form">
         <div class="form-group">
             <label for="user_id">User</label>
             <select id="user_id" name="user_id" class="form-control" required>
@@ -47,7 +47,7 @@
         </fieldset>
         <div class="form-actions">
             <button type="submit" class="btn btn-primary">Create Token</button>
-            <a href="/admin/tokens" class="btn ml-2">Cancel</a>
+            <a href="/ui/_admin/tokens" class="btn ml-2">Cancel</a>
         </div>
     </form>
 </div>

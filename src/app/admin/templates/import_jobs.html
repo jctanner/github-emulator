@@ -5,7 +5,7 @@
 {% block content %}
 <div class="d-flex flex-items-center flex-justify-between mb-3">
     <h2 class="f2">Import Jobs</h2>
-    <a href="/admin/import" class="btn btn-primary">New Import</a>
+    <a href="/ui/_admin/import" class="btn btn-primary">New Import</a>
 </div>
 
 <table class="admin-table">
@@ -24,7 +24,7 @@
     <tbody>
         {% for job in jobs %}
         <tr>
-            <td><a href="/admin/import/jobs/{{ job.id }}">{{ job.id }}</a></td>
+            <td><a href="/ui/_admin/import/jobs/{{ job.id }}">{{ job.id }}</a></td>
             <td>{{ job.job_type }}</td>
             <td style="max-width: 300px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">{{ job.source_url or "" }}</td>
             <td>{{ job.repo_name or "" }}</td>

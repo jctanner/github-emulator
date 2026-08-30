@@ -137,8 +137,12 @@ def create_app() -> FastAPI:
     from app.middleware.rate_limit import RateLimitMiddleware
     from app.middleware.api_version import ApiVersionMiddleware
     from app.middleware.etag import ETagMiddleware
+    from app.middleware.request_id import RequestIdMiddleware
+    from app.middleware.security_headers import SecurityHeadersMiddleware
     from app.middleware.error_handler import register_error_handlers
 
+    app.add_middleware(SecurityHeadersMiddleware)
+    app.add_middleware(RequestIdMiddleware)
     app.add_middleware(ApiVersionMiddleware)
     app.add_middleware(RateLimitMiddleware)
     app.add_middleware(ETagMiddleware)
@@ -253,13 +257,15 @@ def create_app() -> FastAPI:
     # -- Admin frontend -------------------------------------------------------
     from app.admin.routes import router as admin_router
     from app.admin.routes import get_static_files_app
+    from app.admin.legacy import router as legacy_admin_router
 
     app.include_router(admin_router)
     app.mount(
-        "/admin/static",
+        "/ui/_admin/static",
         get_static_files_app(),
         name="admin-static",
     )
+    app.include_router(legacy_admin_router)
 
     # -- GHES-internal Actions endpoints (root-level, not under /api/v3/) -----
     from app.api.actions_pipelines import router as pipelines_router
