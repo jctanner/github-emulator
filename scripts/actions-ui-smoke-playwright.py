@@ -52,7 +52,7 @@ def main() -> int:
             ignore_https_errors=True,
         )
         login = page.request.post(
-            f"{base}/api/v3/session",
+            f"{base}/api/_ui/session",
             data={"username": args.username, "password": args.password},
         )
         if not login.ok:

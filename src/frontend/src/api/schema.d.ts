@@ -1028,6 +1028,65 @@ export interface paths {
         patch: operations["edit_user_admin_api_users__user_id__patch"];
         trace?: never;
     };
+    "/api/_ui/repos/{owner}/{repo}/navigation": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Repository Navigation
+         * @description Return lightweight open-work counts for persistent repository tabs.
+         */
+        get: operations["repository_navigation_api__ui_repos__owner___repo__navigation_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/_ui/repos/{owner}/{repo}/summary": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Repository Home Summary
+         * @description Return accurate repository-home counts without loading collections.
+         */
+        get: operations["repository_home_summary_api__ui_repos__owner___repo__summary_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/_ui/session": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get Browser Session */
+        get: operations["get_browser_session_api__ui_session_get"];
+        put?: never;
+        /** Create Browser Session */
+        post: operations["create_browser_session_api__ui_session_post"];
+        /** Delete Browser Session */
+        delete: operations["delete_browser_session_api__ui_session_delete"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/graphql": {
         parameters: {
             query?: never;
@@ -1824,7 +1883,11 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        get?: never;
+        /**
+         * List Org Repos
+         * @description List repositories owned by an organization.
+         */
+        get: operations["list_org_repos_api_v3_orgs__org__repos_get"];
         put?: never;
         /**
          * Create Org Repo
@@ -4220,25 +4283,6 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/api/v3/session": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /** Get Browser Session */
-        get: operations["get_browser_session_api_v3_session_get"];
-        put?: never;
-        /** Create Browser Session */
-        post: operations["create_browser_session_api_v3_session_post"];
-        /** Delete Browser Session */
-        delete: operations["delete_browser_session_api_v3_session_delete"];
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
     "/api/v3/teams/{team_id}": {
         parameters: {
             query?: never;
@@ -6085,6 +6129,92 @@ export interface components {
             /** Title */
             title?: string | null;
         };
+        /** OrganizationResponse */
+        OrganizationResponse: {
+            /** Avatar Url */
+            avatar_url: string;
+            /**
+             * Blog
+             * @default
+             */
+            blog: string;
+            /** Company */
+            company?: string | null;
+            /** Created At */
+            created_at?: string | null;
+            /** Description */
+            description?: string | null;
+            /** Email */
+            email?: string | null;
+            /** Events Url */
+            events_url: string;
+            /**
+             * Followers
+             * @default 0
+             */
+            followers: number;
+            /**
+             * Following
+             * @default 0
+             */
+            following: number;
+            /**
+             * Has Organization Projects
+             * @default true
+             */
+            has_organization_projects: boolean;
+            /**
+             * Has Repository Projects
+             * @default true
+             */
+            has_repository_projects: boolean;
+            /** Hooks Url */
+            hooks_url: string;
+            /** Html Url */
+            html_url: string;
+            /** Id */
+            id: number;
+            /**
+             * Is Verified
+             * @default false
+             */
+            is_verified: boolean;
+            /** Issues Url */
+            issues_url: string;
+            /** Location */
+            location?: string | null;
+            /** Login */
+            login: string;
+            /** Members Url */
+            members_url: string;
+            /** Name */
+            name?: string | null;
+            /** Node Id */
+            node_id: string;
+            /**
+             * Public Gists
+             * @default 0
+             */
+            public_gists: number;
+            /** Public Members Url */
+            public_members_url: string;
+            /**
+             * Public Repos
+             * @default 0
+             */
+            public_repos: number;
+            /** Repos Url */
+            repos_url: string;
+            /**
+             * Type
+             * @default Organization
+             */
+            type: string;
+            /** Updated At */
+            updated_at?: string | null;
+            /** Url */
+            url: string;
+        };
         /**
          * PRBranchRef
          * @description Branch reference in a PR (head or base).
@@ -6392,6 +6522,7 @@ export interface components {
              * @default 0
              */
             open_issues_count: number;
+            organization?: components["schemas"]["SimpleUser"] | null;
             owner: components["schemas"]["SimpleUser"];
             permissions?: components["schemas"]["RepoPermissions"] | null;
             /** Private */
@@ -6459,6 +6590,24 @@ export interface components {
              * @default false
              */
             web_commit_signoff_required: boolean;
+        };
+        /** RepositoryHomeSummaryResponse */
+        RepositoryHomeSummaryResponse: {
+            /** Branch Count */
+            branch_count: number;
+            /** Commit Count */
+            commit_count: number;
+            /** Default Branch */
+            default_branch: string;
+            /** Tag Count */
+            tag_count: number;
+        };
+        /** RepositoryNavigationResponse */
+        RepositoryNavigationResponse: {
+            /** Open Issues Count */
+            open_issues_count: number;
+            /** Open Pulls Count */
+            open_pulls_count: number;
         };
         /** RepositorySearchResponse */
         RepositorySearchResponse: {
@@ -8803,6 +8952,141 @@ export interface operations {
             };
         };
     };
+    repository_navigation_api__ui_repos__owner___repo__navigation_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                owner: string;
+                repo: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RepositoryNavigationResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    repository_home_summary_api__ui_repos__owner___repo__summary_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                owner: string;
+                repo: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RepositoryHomeSummaryResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_browser_session_api__ui_session_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["BrowserSessionResponse"];
+                };
+            };
+        };
+    };
+    create_browser_session_api__ui_session_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["BrowserLogin"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["BrowserSessionResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    delete_browser_session_api__ui_session_delete: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
     handle_http_get_api_graphql_get: {
         parameters: {
             query?: never;
@@ -10132,7 +10416,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": unknown;
+                    "application/json": components["schemas"]["OrganizationResponse"];
                 };
             };
             /** @description Validation Error */
@@ -10163,7 +10447,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": unknown;
+                    "application/json": components["schemas"]["OrganizationResponse"];
                 };
             };
             /** @description Validation Error */
@@ -10200,7 +10484,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": unknown;
+                    "application/json": components["schemas"]["OrganizationResponse"];
                 };
             };
             /** @description Validation Error */
@@ -10248,6 +10532,43 @@ export interface operations {
             };
         };
     };
+    list_org_repos_api_v3_orgs__org__repos_get: {
+        parameters: {
+            query?: {
+                type?: string;
+                sort?: string;
+                direction?: string;
+                per_page?: number;
+                page?: number;
+            };
+            header?: never;
+            path: {
+                org: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RepoResponse"][];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     create_org_repo_api_v3_orgs__org__repos_post: {
         parameters: {
             query?: never;
@@ -10271,7 +10592,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": unknown;
+                    "application/json": components["schemas"]["RepoResponse"];
                 };
             };
             /** @description Validation Error */
@@ -16077,77 +16398,6 @@ export interface operations {
             };
         };
     };
-    get_browser_session_api_v3_session_get: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["BrowserSessionResponse"];
-                };
-            };
-        };
-    };
-    create_browser_session_api_v3_session_post: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["BrowserLogin"];
-            };
-        };
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["BrowserSessionResponse"];
-                };
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
-        };
-    };
-    delete_browser_session_api_v3_session_delete: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Successful Response */
-            204: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-        };
-    };
     get_team_api_v3_teams__team_id__get: {
         parameters: {
             query?: never;
@@ -16577,7 +16827,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": unknown;
+                    "application/json": components["schemas"]["OrganizationResponse"][];
                 };
             };
         };
@@ -16960,7 +17210,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": unknown;
+                    "application/json": components["schemas"]["OrganizationResponse"][];
                 };
             };
             /** @description Validation Error */

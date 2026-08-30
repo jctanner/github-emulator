@@ -9,7 +9,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
 from app.database_retry import commit_with_sqlite_retry
-from app.models import Repository, User
+from app.models import Organization, Repository, User
 from app.services.git_service import (
     create_initial_commit,
     delete_bare_repo,
@@ -82,8 +82,17 @@ async def create_repo(
         disk_path = os.path.join(settings.DATA_DIR, namespace, f"{name}.git")
 
     # Build repository record
+    organization_id = None
+    if repository_owner_type == "Organization":
+        organization_id = (
+            await db.execute(select(Organization.id).where(Organization.login == namespace))
+        ).scalar_one_or_none()
+        if organization_id is None:
+            raise ValueError(f"Organization '{namespace}' does not exist.")
+
     repo = Repository(
         owner_id=owner.id,
+        organization_id=organization_id,
         owner_type=repository_owner_type,
         name=name,
         full_name=full_name,

@@ -4,7 +4,6 @@ import {api} from "../api/client";
 import type {components} from "../api/schema";
 import {Loadable} from "../components/Loadable";
 import {Octicon} from "../components/Octicon";
-import {RepositoryHeader} from "../components/RepositoryHeader";
 import {requireApiData, useApiData} from "../hooks/useApiData";
 
 type Commit = components["schemas"]["CommitResponse"];
@@ -25,7 +24,6 @@ export function CommitsPage() {
   );
   return (
     <>
-      <RepositoryHeader owner={owner} repo={repo} />
       <div className="page-heading">
         <h1>
           <Octicon name="history" /> Commits on {ref}

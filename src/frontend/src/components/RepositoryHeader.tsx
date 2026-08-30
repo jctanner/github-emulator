@@ -1,57 +1,57 @@
 import {Link, useLocation} from "react-router-dom";
 
-import {api} from "../api/client";
 import type {components} from "../api/schema";
-import {requireApiData, useApiData} from "../hooks/useApiData";
 import {Octicon} from "./Octicon";
 
 type Repository = components["schemas"]["RepoResponse"];
+type Navigation = components["schemas"]["RepositoryNavigationResponse"];
 
-type RepositoryHeaderProps =
-  | {repository: Repository; owner?: never; repo?: never}
-  | {repository?: never; owner: string; repo: string};
-
-export function RepositoryHeader(props: RepositoryHeaderProps) {
-  const owner = props.repository?.owner.login ?? props.owner ?? "";
-  const repo = props.repository?.name ?? props.repo ?? "";
+export function RepositoryHeader({
+  repository,
+  navigation,
+}: {
+  repository: Repository;
+  navigation: Navigation | null;
+}) {
+  const owner = repository.owner.login;
+  const repo = repository.name;
   const root = `/${owner}/${repo}`;
   const location = useLocation();
-  const metadata = useApiData<Repository>(
-    `repo-header:${owner}/${repo}`,
-    async () => {
-      if (props.repository) return props.repository;
-      const {data, response} = await api.GET("/api/v3/repos/{owner}/{repo}", {
-        params: {path: {owner, repo}},
-      });
-      return requireApiData(data, response, "Could not load repository.");
-    },
-  );
-  const repository = props.repository ?? metadata.data;
   const tabs = [
-    {label: "Code", to: root, icon: "code" as const, match: "code"},
+    {
+      label: "Code",
+      to: root,
+      icon: "code" as const,
+      match: "code",
+      count: undefined,
+    },
     {
       label: "Issues",
       to: `${root}/issues`,
       icon: "issue" as const,
       match: "issues",
+      count: navigation?.open_issues_count,
     },
     {
       label: "Pull requests",
       to: `${root}/pulls`,
       icon: "pull-request" as const,
       match: "pulls",
+      count: navigation?.open_pulls_count,
     },
     {
       label: "Actions",
       to: `${root}/actions`,
       icon: "history" as const,
       match: "actions",
+      count: undefined,
     },
     {
       label: "Settings",
       to: `${root}/settings`,
       icon: "gear" as const,
       match: "settings",
+      count: undefined,
     },
   ];
   const section =
@@ -67,12 +67,10 @@ export function RepositoryHeader(props: RepositoryHeaderProps) {
           <Link to={root}>
             <strong>{repo}</strong>
           </Link>
-          {repository ? (
-            <span className="badge visibility-badge">
-              {repository.visibility[0].toUpperCase() +
-                repository.visibility.slice(1)}
-            </span>
-          ) : null}
+          <span className="badge visibility-badge">
+            {repository.visibility[0].toUpperCase() +
+              repository.visibility.slice(1)}
+          </span>
         </div>
         <nav className="repo-nav" aria-label="Repository">
           {tabs.map((tab) => (
@@ -83,6 +81,9 @@ export function RepositoryHeader(props: RepositoryHeaderProps) {
             >
               <Octicon name={tab.icon} />
               {tab.label}
+              {tab.count !== undefined ? (
+                <span className="repo-nav-count">{tab.count}</span>
+              ) : null}
             </Link>
           ))}
         </nav>

@@ -30,6 +30,7 @@ class Organization(Base):
     # Relationships
     members = relationship("OrgMembership", back_populates="organization", lazy="selectin")
     teams = relationship("Team", back_populates="organization", lazy="selectin")
+    repositories = relationship("Repository", back_populates="organization", lazy="selectin")
 
 
 class OrgMembership(Base):

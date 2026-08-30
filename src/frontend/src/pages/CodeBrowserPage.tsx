@@ -5,7 +5,6 @@ import type {components} from "../api/schema";
 import {FileTypeIcon} from "../components/FileTypeIcon";
 import {Loadable} from "../components/Loadable";
 import {Octicon} from "../components/Octicon";
-import {RepositoryHeader} from "../components/RepositoryHeader";
 import {requireApiData, useApiData} from "../hooks/useApiData";
 import {decodeBase64Content} from "../utils/content";
 
@@ -40,7 +39,6 @@ export function CodeBrowserPage({blob = false}: {blob?: boolean}) {
 
   return (
     <>
-      <RepositoryHeader owner={owner} repo={repo} />
       <Loadable loading={result.loading} error={result.error}>
         <div className="code-browser-heading">
           <div className="breadcrumbs" aria-label="Path">

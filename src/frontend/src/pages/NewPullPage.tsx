@@ -4,7 +4,7 @@ import {useNavigate, useParams} from "react-router-dom";
 import {api} from "../api/client";
 import type {components} from "../api/schema";
 import {Loadable} from "../components/Loadable";
-import {RepositoryHeader} from "../components/RepositoryHeader";
+import {useRepositoryLayout} from "../components/RepositoryContext";
 import {requireApiData, useApiData} from "../hooks/useApiData";
 
 type Branch = components["schemas"]["BranchResponse"];
@@ -12,6 +12,7 @@ type Branch = components["schemas"]["BranchResponse"];
 export function NewPullPage() {
   const {owner = "", repo = ""} = useParams();
   const navigate = useNavigate();
+  const {reloadNavigation} = useRepositoryLayout();
   const branches = useApiData<Branch[]>(`new-pr:${owner}/${repo}`, async () => {
     const {data, response} = await api.GET(
       "/api/v3/repos/{owner}/{repo}/branches",
@@ -35,11 +36,11 @@ export function NewPullPage() {
     );
     if (!data || !response.ok)
       return setError("Could not create pull request.");
+    reloadNavigation();
     await navigate(`/${owner}/${repo}/pulls/${data.number}`);
   }
   return (
     <>
-      <RepositoryHeader owner={owner} repo={repo} />
       <Loadable loading={branches.loading} error={branches.error}>
         <form className="editor-form" onSubmit={(event) => void submit(event)}>
           <h1>Open a pull request</h1>

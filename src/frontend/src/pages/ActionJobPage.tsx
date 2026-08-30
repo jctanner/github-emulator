@@ -4,7 +4,6 @@ import {useParams} from "react-router-dom";
 import {api} from "../api/client";
 import type {components} from "../api/schema";
 import {Loadable} from "../components/Loadable";
-import {RepositoryHeader} from "../components/RepositoryHeader";
 import {requireApiData, useApiData} from "../hooks/useApiData";
 
 type Job = components["schemas"]["WorkflowJobResponse"];
@@ -38,7 +37,6 @@ export function ActionJobPage() {
   }, [id, owner, repo]);
   return (
     <>
-      <RepositoryHeader owner={owner} repo={repo} />
       <Loadable loading={job.loading} error={job.error}>
         {job.data ? (
           <>

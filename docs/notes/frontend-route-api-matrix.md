@@ -13,9 +13,12 @@ cookie as API authentication.
 
 The new same-origin frontend will use a browser-session API:
 
-- `POST /api/v3/session` authenticates a user and sets `ui_session`.
-- `GET /api/v3/session` returns the current browser user and a CSRF token.
-- `DELETE /api/v3/session` clears the browser session.
+- `POST /api/_ui/session` authenticates a user and sets `ui_session`.
+- `GET /api/_ui/session` returns the current UI user and a CSRF token.
+- `DELETE /api/_ui/session` clears the UI session.
+
+Browser-private endpoints deliberately live outside `/api/v3`, which remains
+reserved for GitHub-compatible REST contracts.
 - API authentication accepts a valid `ui_session` cookie when no Authorization
   credential is supplied.
 - Unsafe cookie-authenticated requests require an `X-CSRF-Token` header.

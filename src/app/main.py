@@ -196,6 +196,7 @@ def create_app() -> FastAPI:
     from app.api.admin_frontend import router as admin_frontend_router
     from app.api.oidc import router as oidc_router
     from app.api.browser_session import router as browser_session_router
+    from app.api.browser_repositories import router as browser_repositories_router
 
     # -- REST API routers (under /api/v3/ prefix) ----------------------------
     api_routers = [
@@ -212,10 +213,14 @@ def create_app() -> FastAPI:
         licenses_router, user_keys_router, deploy_keys_router,
         review_comments_router,
         apps_router,
-        browser_session_router,
     ]
     for router in api_routers:
         app.include_router(router, prefix="/api/v3")
+
+    # Private browser API. Keep emulator UI contracts outside GitHub's
+    # compatibility-owned /api/v3 namespace.
+    app.include_router(browser_session_router)
+    app.include_router(browser_repositories_router)
 
     # Root-level API endpoints (discovery doc, meta, rate_limit)
     app.include_router(root_router)

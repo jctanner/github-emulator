@@ -97,6 +97,35 @@ async def test_get_repo(client, test_user, test_token):
 
 
 @pytest.mark.asyncio
+async def test_organization_repo_reports_organization_as_owner(
+    client, test_user, test_token
+):
+    """Organization repositories must not expose their human creator as owner."""
+    headers = auth_headers(test_token)
+    org_response = await client.post(
+        f"{API}/orgs",
+        json={"login": "example-org"},
+        headers=headers,
+    )
+    assert org_response.status_code == 201
+    create_response = await client.post(
+        f"{API}/orgs/example-org/repos",
+        json={"name": "owned-repo"},
+        headers=headers,
+    )
+    assert create_response.status_code == 201
+
+    response = await client.get(f"{API}/repos/example-org/owned-repo")
+
+    assert response.status_code == 200
+    data = response.json()
+    assert data["owner"]["login"] == "example-org"
+    assert data["owner"]["type"] == "Organization"
+    assert data["organization"]["login"] == "example-org"
+    assert data["organization"]["type"] == "Organization"
+
+
+@pytest.mark.asyncio
 async def test_get_nonexistent_repo(client):
     """GET /repos/{owner}/{repo} returns 404 for missing repo."""
     resp = await client.get(f"{API}/repos/nobody/nothing")

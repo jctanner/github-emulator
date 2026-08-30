@@ -3,7 +3,6 @@ import {useParams} from "react-router-dom";
 import {api} from "../api/client";
 import type {components} from "../api/schema";
 import {Loadable} from "../components/Loadable";
-import {RepositoryHeader} from "../components/RepositoryHeader";
 import {requireApiData, useApiData} from "../hooks/useApiData";
 
 type Commit = components["schemas"]["CommitResponse"];
@@ -24,7 +23,6 @@ export function CommitPage() {
   );
   return (
     <>
-      <RepositoryHeader owner={owner} repo={repo} />
       <Loadable loading={result.loading} error={result.error}>
         {result.data ? (
           <section className="repo-summary">

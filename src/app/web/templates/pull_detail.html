@@ -261,7 +261,56 @@
 
     <aside class="issue-detail-sidebar">
         <section class="issue-sidebar-section">
-            <div class="issue-sidebar-heading">Labels</div>
+            <div class="issue-sidebar-heading">
+                <span>Labels</span>
+                {% if current_user %}
+                <details class="issue-label-settings" {% if label_error %}open{% endif %}>
+                    <summary class="issue-sidebar-settings" aria-label="Manage labels" title="Manage labels">⚙</summary>
+                    <div class="issue-label-popover">
+                        <h3 class="issue-label-popover-title">Apply labels to this pull request</h3>
+                        {% if label_error %}
+                        <div class="flash flash-error mb-3" role="alert">{{ label_error }}</div>
+                        {% endif %}
+                        <form method="post" action="{{ url_prefix }}/{{ owner }}/{{ repo.name }}/pulls/{{ pr.number }}/labels">
+                            <input type="search" class="form-control input-sm mb-2" placeholder="Filter labels"
+                                   aria-label="Filter labels" data-label-filter>
+                            <div class="issue-label-group-header">Selected</div>
+                            {% set selected_count = namespace(value=0) %}
+                            <div class="issue-label-picker">
+                                {% for label in repo_labels if label.name in issue_label_names %}
+                                {% set selected_count.value = selected_count.value + 1 %}
+                                <label class="issue-label-option" data-label-option data-label-name="{{ label.name|lower }}">
+                                    <input type="checkbox" name="labels" value="{{ label.name }}" checked
+                                           onchange="this.form.submit()">
+                                    <span class="issue-label-dot" style="background-color:#{{ label.color or 'ededed' }};"></span>
+                                    <span>{{ label.name }}</span>
+                                </label>
+                                {% endfor %}
+                            </div>
+                            {% if selected_count.value == 0 %}
+                            <div class="issue-label-empty">No selected labels</div>
+                            {% endif %}
+                            <div class="issue-label-group-header">Labels</div>
+                            <div class="issue-label-picker">
+                                {% for label in repo_labels if label.name not in issue_label_names %}
+                                <label class="issue-label-option" data-label-option data-label-name="{{ label.name|lower }}">
+                                    <input type="checkbox" name="labels" value="{{ label.name }}"
+                                           onchange="this.form.submit()">
+                                    <span class="issue-label-dot" style="background-color:#{{ label.color or 'ededed' }};"></span>
+                                    <span>{{ label.name }}</span>
+                                </label>
+                                {% else %}
+                                <div class="issue-label-empty">No labels have been created.</div>
+                                {% endfor %}
+                            </div>
+                        </form>
+                        <div class="issue-label-popover-footer">
+                            <a href="{{ url_prefix }}/{{ owner }}/{{ repo.name }}/labels">Edit labels</a>
+                        </div>
+                    </div>
+                </details>
+                {% endif %}
+            </div>
             <div class="issue-label-current" aria-label="Pull request labels">
                 {% if labels %}
                     {% for label in labels %}
@@ -282,5 +331,17 @@
         </section>
     </aside>
     </div>
+{% endif %}
+{% if current_user %}
+<script>
+document.querySelectorAll("[data-label-filter]").forEach(function (input) {
+    input.addEventListener("input", function () {
+        const query = input.value.trim().toLowerCase();
+        input.closest(".issue-label-popover").querySelectorAll("[data-label-option]").forEach(function (option) {
+            option.hidden = query && !option.dataset.labelName.includes(query);
+        });
+    });
+});
+</script>
 {% endif %}
 {% endblock %}

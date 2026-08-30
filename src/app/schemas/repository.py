@@ -59,6 +59,7 @@ class RepoResponse(BaseModel):
     full_name: str
     private: bool
     owner: SimpleUser
+    organization: Optional[SimpleUser] = None
     html_url: str
     description: Optional[str] = None
     fork: bool = False
@@ -161,7 +162,12 @@ class RepoResponse(BaseModel):
         repo_url = f"{api_base}/repos/{repo.full_name}"
         html_url = f"{base_url}/{repo.full_name}"
 
-        owner_simple = SimpleUser.from_db(owner_user, base_url)
+        organization = getattr(repo, "organization", None)
+        owner_simple = (
+            SimpleUser.from_organization(organization, base_url)
+            if repo.owner_type == "Organization" and organization is not None
+            else SimpleUser.from_db(owner_user, base_url)
+        )
 
         perm = None
         if permissions is not None:
@@ -176,6 +182,11 @@ class RepoResponse(BaseModel):
             full_name=repo.full_name,
             private=repo.private,
             owner=owner_simple,
+            organization=(
+                SimpleUser.from_organization(organization, base_url)
+                if organization is not None
+                else None
+            ),
             html_url=html_url,
             description=repo.description,
             fork=repo.fork,

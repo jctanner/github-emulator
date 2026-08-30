@@ -31,8 +31,13 @@ BASE = settings.BASE_URL
 def _repo_json(repo: Repository, base_url: str) -> dict:
     """Build a GitHub-compatible repository JSON object."""
     api = f"{base_url}/api/v3"
-    owner = repo.owner
-    owner_simple = SimpleUser.from_db(owner, base_url).model_dump() if owner else {}
+    organization = repo.organization if repo.owner_type == "Organization" else None
+    owner = organization or repo.owner
+    owner_simple = (
+        SimpleUser.from_organization(owner, base_url).model_dump()
+        if organization is not None
+        else SimpleUser.from_db(owner, base_url).model_dump() if owner else {}
+    )
 
     repo_url = f"{api}/repos/{repo.full_name}"
     html_url = f"{base_url}/{repo.full_name}"
@@ -44,6 +49,11 @@ def _repo_json(repo: Repository, base_url: str) -> dict:
         "full_name": repo.full_name,
         "private": repo.private,
         "owner": owner_simple,
+        "organization": (
+            SimpleUser.from_organization(organization, base_url).model_dump()
+            if organization is not None
+            else None
+        ),
         "html_url": html_url,
         "description": repo.description,
         "fork": repo.fork,
@@ -341,7 +351,10 @@ async def list_user_repos(
     if owner is None:
         raise HTTPException(status_code=404, detail="Not Found")
 
-    query = select(Repository).where(Repository.owner_id == owner.id)
+    query = select(Repository).where(
+        Repository.owner_id == owner.id,
+        Repository.owner_type == "User",
+    )
 
     # Filter out private repos for unauthenticated / non-owner users
     if current_user is None or (
@@ -428,7 +441,68 @@ async def list_authenticated_user_repos(
     )
 
 
-@router.post("/orgs/{org}/repos", status_code=201)
+@router.get("/orgs/{org}/repos", response_model=list[RepoResponse])
+async def list_org_repos(
+    org: str,
+    db: DbSession,
+    current_user: CurrentUser,
+    type: str = Query("all"),
+    sort: str = Query("created"),
+    direction: str = Query("desc"),
+    per_page: int = Query(30, ge=1, le=100),
+    page: int = Query(1, ge=1),
+):
+    """List repositories owned by an organization."""
+    organisation = (
+        await db.execute(select(Organization).where(Organization.login == org))
+    ).scalar_one_or_none()
+    if organisation is None:
+        raise HTTPException(status_code=404, detail="Not Found")
+
+    can_view_private = bool(current_user and current_user.site_admin)
+    if current_user is not None and not can_view_private:
+        membership = (
+            await db.execute(
+                select(OrgMembership.id).where(
+                    OrgMembership.org_id == organisation.id,
+                    OrgMembership.user_id == current_user.id,
+                    OrgMembership.state == "active",
+                )
+            )
+        ).scalar_one_or_none()
+        can_view_private = membership is not None
+
+    query = select(Repository).where(
+        Repository.organization_id == organisation.id,
+        Repository.owner_type == "Organization",
+    )
+    if not can_view_private or type == "public":
+        query = query.where(Repository.private == False)
+    elif type == "private":
+        query = query.where(Repository.private == True)
+    if type == "forks":
+        query = query.where(Repository.fork == True)
+    elif type == "sources":
+        query = query.where(Repository.fork == False)
+
+    sort_columns = {
+        "created": Repository.created_at,
+        "updated": Repository.updated_at,
+        "pushed": Repository.pushed_at,
+        "full_name": Repository.full_name,
+    }
+    sort_column = sort_columns.get(sort, Repository.created_at)
+    query = query.order_by(
+        sort_column.asc() if direction == "asc" else sort_column.desc()
+    )
+    query = query.offset((page - 1) * per_page).limit(per_page)
+    repositories = (await db.execute(query)).scalars().all()
+    return [_repo_json(repository, BASE) for repository in repositories]
+
+
+@router.post(
+    "/orgs/{org}/repos", status_code=201, response_model=RepoResponse
+)
 async def create_org_repo(
     org: str, body: dict, user: AuthUser, db: DbSession
 ):

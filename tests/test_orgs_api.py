@@ -43,6 +43,32 @@ async def test_get_org_not_found(client):
 
 
 @pytest.mark.asyncio
+async def test_list_org_repositories(client, test_user, test_token):
+    """GET /orgs/{org}/repos returns only that organization's repositories."""
+    headers = auth_headers(test_token)
+    await client.post(f"{API}/orgs", json={"login": "repo-org"}, headers=headers)
+    await client.post(
+        f"{API}/orgs/repo-org/repos",
+        json={"name": "org-project"},
+        headers=headers,
+    )
+    await client.post(
+        f"{API}/user/repos",
+        json={"name": "personal-project"},
+        headers=headers,
+    )
+
+    response = await client.get(f"{API}/orgs/repo-org/repos")
+
+    assert response.status_code == 200
+    repositories = response.json()
+    assert [repository["full_name"] for repository in repositories] == [
+        "repo-org/org-project"
+    ]
+    assert repositories[0]["owner"]["login"] == "repo-org"
+
+
+@pytest.mark.asyncio
 async def test_update_org(client, test_user, test_token):
     """PATCH /orgs/{org} updates organization."""
     await client.post(

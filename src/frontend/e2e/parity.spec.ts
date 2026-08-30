@@ -10,7 +10,7 @@ const updateBaselines = process.env.UPDATE_PARITY_BASELINES === "1";
 async function authenticate(page: Page): Promise<void> {
   const username = process.env.PARITY_USERNAME ?? "admin";
   const password = process.env.PARITY_PASSWORD ?? "admin";
-  const response = await page.request.post("/api/v3/session", {
+  const response = await page.request.post("/api/_ui/session", {
     data: {username, password},
   });
   expect(
@@ -149,6 +149,39 @@ test("candidate repository routes do not overflow a narrow viewport", async ({
       `${route.id} overflows by ${overflow}px`,
     ).toBeLessThanOrEqual(0);
   }
+});
+
+test("repository home uses summary counts instead of collection requests", async ({
+  page,
+}) => {
+  await authenticate(page);
+  const requests: string[] = [];
+  page.on("request", (request) => {
+    const url = new URL(request.url());
+    if (
+      url.pathname.startsWith("/api/") ||
+      url.pathname.startsWith("/api/_ui/")
+    ) {
+      requests.push(url.pathname);
+    }
+  });
+
+  const root = `/${parityFixture.owner}/${parityFixture.repository}`;
+  const response = await page.goto(`/ui${root}`);
+  expect(response?.ok()).toBe(true);
+  await expect(page.locator('[aria-label="Repository files"]')).toBeVisible();
+
+  const summaryPath = `/api/_ui/repos/${parityFixture.owner}/${parityFixture.repository}/summary`;
+  await expect.poll(() => requests.includes(summaryPath)).toBe(true);
+  expect(requests).not.toContain(
+    `/api/v3/repos/${parityFixture.owner}/${parityFixture.repository}/commits`,
+  );
+  expect(requests).not.toContain(
+    `/api/v3/repos/${parityFixture.owner}/${parityFixture.repository}/branches`,
+  );
+  expect(requests).not.toContain(
+    `/api/v3/repos/${parityFixture.owner}/${parityFixture.repository}/tags`,
+  );
 });
 
 for (const route of parityRoutes) {

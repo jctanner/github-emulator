@@ -85,6 +85,18 @@ class RepositorySearchResponse(BaseModel):
     items: list[RepoResponse]
 
 
+class RepositoryHomeSummaryResponse(BaseModel):
+    default_branch: str
+    commit_count: int
+    branch_count: int
+    tag_count: int
+
+
+class RepositoryNavigationResponse(BaseModel):
+    open_issues_count: int
+    open_pulls_count: int
+
+
 class GenericSearchResponse(BaseModel):
     total_count: int
     incomplete_results: bool

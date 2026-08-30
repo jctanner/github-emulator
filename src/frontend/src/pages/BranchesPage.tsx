@@ -5,14 +5,14 @@ import {api} from "../api/client";
 import type {components} from "../api/schema";
 import {Loadable} from "../components/Loadable";
 import {Octicon} from "../components/Octicon";
-import {RepositoryHeader} from "../components/RepositoryHeader";
+import {useRepository} from "../components/RepositoryContext";
 import {requireApiData, useApiData} from "../hooks/useApiData";
 
 type Branch = components["schemas"]["BranchResponse"];
-type Repository = components["schemas"]["RepoResponse"];
 
 export function BranchesPage() {
   const {owner = "", repo = ""} = useParams();
+  const repository = useRepository();
   const result = useApiData<Branch[]>(`branches:${owner}/${repo}`, async () => {
     const {data, response} = await api.GET(
       "/api/v3/repos/{owner}/{repo}/branches",
@@ -22,15 +22,6 @@ export function BranchesPage() {
     );
     return requireApiData(data, response, "Could not load branches.");
   });
-  const repository = useApiData<Repository>(
-    `repo:${owner}/${repo}`,
-    async () => {
-      const {data, response} = await api.GET("/api/v3/repos/{owner}/{repo}", {
-        params: {path: {owner, repo}},
-      });
-      return requireApiData(data, response, "Could not load repository.");
-    },
-  );
   const [name, setName] = useState("");
   const [source, setSource] = useState("");
   const [error, setError] = useState<string | null>(null);
@@ -60,7 +51,6 @@ export function BranchesPage() {
   }
   return (
     <>
-      <RepositoryHeader owner={owner} repo={repo} />
       <div className="page-heading">
         <h1>Branches</h1>
       </div>
@@ -100,7 +90,7 @@ export function BranchesPage() {
                   <Link to={`/${owner}/${repo}/tree/${branch.name}`}>
                     {branch.name}
                   </Link>
-                  {branch.name === repository.data?.default_branch ? (
+                  {branch.name === repository.default_branch ? (
                     <span className="badge">Default</span>
                   ) : null}
                   {branch.protected ? (
@@ -110,7 +100,7 @@ export function BranchesPage() {
                 <code className="muted">{branch.commit.sha.slice(0, 7)}</code>
               </div>
               {!branch.protected &&
-              branch.name !== repository.data?.default_branch ? (
+              branch.name !== repository.default_branch ? (
                 <button type="button" onClick={() => void remove(branch.name)}>
                   Delete
                 </button>

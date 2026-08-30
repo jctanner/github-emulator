@@ -87,6 +87,22 @@ class SimpleUser(BaseModel):
             site_admin=getattr(user, "site_admin", False),
         )
 
+    @classmethod
+    def from_organization(cls, organization, base_url: str) -> "SimpleUser":
+        """Construct GitHub's embedded owner object for an organization."""
+        avatar = organization.avatar_url or f"{base_url}/avatars/{organization.login}"
+        return cls(
+            login=organization.login,
+            id=organization.id,
+            node_id=_make_node_id("Organization", organization.id),
+            avatar_url=avatar,
+            gravatar_id="",
+            url=f"{base_url}/api/v3/orgs/{organization.login}",
+            html_url=f"{base_url}/{organization.login}",
+            type="Organization",
+            site_admin=False,
+        )
+
 
 class UserResponse(BaseModel):
     """Full GitHub-compatible user JSON response."""

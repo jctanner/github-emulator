@@ -3,12 +3,11 @@ import {useParams} from "react-router-dom";
 import {api} from "../api/client";
 import type {components} from "../api/schema";
 import {Loadable} from "../components/Loadable";
-import {RepositoryHeader} from "../components/RepositoryHeader";
 import {requireApiData, useApiData} from "../hooks/useApiData";
 
 type Runners = components["schemas"]["RunnerListResponse"];
 
-export function RunnersPage({embedded = false}: {embedded?: boolean}) {
+export function RunnersPage() {
   const {owner = "", repo = ""} = useParams();
   const runners = useApiData<Runners>(`runners:${owner}/${repo}`, async () => {
     const {data, response} = await api.GET(
@@ -26,7 +25,6 @@ export function RunnersPage({embedded = false}: {embedded?: boolean}) {
   }
   return (
     <>
-      {!embedded ? <RepositoryHeader owner={owner} repo={repo} /> : null}
       <div className="page-heading">
         <div>
           <h1>Actions runners</h1>

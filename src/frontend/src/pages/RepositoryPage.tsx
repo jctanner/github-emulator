@@ -5,60 +5,32 @@ import type {components} from "../api/schema";
 import {FileTypeIcon} from "../components/FileTypeIcon";
 import {Loadable} from "../components/Loadable";
 import {Octicon} from "../components/Octicon";
-import {RepositoryHeader} from "../components/RepositoryHeader";
+import {useRepository} from "../components/RepositoryContext";
 import {requireApiData, useApiData} from "../hooks/useApiData";
 import {decodeBase64Content} from "../utils/content";
 
-type Repository = components["schemas"]["RepoResponse"];
 type Content = components["schemas"]["ContentResponse"];
-type Commit = components["schemas"]["CommitResponse"];
-type Branch = components["schemas"]["BranchResponse"];
-type Tag = components["schemas"]["TagResponse"];
+type Summary = components["schemas"]["RepositoryHomeSummaryResponse"];
 
-interface RepositoryHomeData {
-  repository: Repository;
+interface RepositoryFilesData {
   contents: Content[];
   readme: Content | null;
-  commits: Commit[];
-  branches: Branch[];
-  tags: Tag[];
 }
 
 export function RepositoryPage() {
   const {owner = "", repo = ""} = useParams();
-  const result = useApiData<RepositoryHomeData>(
-    `repo-home:${owner}/${repo}`,
+  const repository = useRepository();
+  const ref = repository.default_branch;
+  const files = useApiData<RepositoryFilesData | null>(
+    `repo-files:${owner}/${repo}:${ref}`,
     async () => {
-      const repositoryResult = await api.GET("/api/v3/repos/{owner}/{repo}", {
-        params: {path: {owner, repo}},
-      });
-      const repository = requireApiData(
-        repositoryResult.data,
-        repositoryResult.response,
-        "Could not load repository.",
-      );
-      const ref = repository.default_branch;
-      const [
-        contentsResult,
-        readmeResult,
-        commitsResult,
-        branchesResult,
-        tagsResult,
-      ] = await Promise.all([
+      if (!ref) return null;
+      const [contentsResult, readmeResult] = await Promise.all([
         api.GET("/api/v3/repos/{owner}/{repo}/contents/{path}", {
           params: {path: {owner, repo, path: ""}, query: {ref}},
         }),
         api.GET("/api/v3/repos/{owner}/{repo}/readme", {
           params: {path: {owner, repo}, query: {ref}},
-        }),
-        api.GET("/api/v3/repos/{owner}/{repo}/commits", {
-          params: {path: {owner, repo}, query: {sha: ref, per_page: 100}},
-        }),
-        api.GET("/api/v3/repos/{owner}/{repo}/branches", {
-          params: {path: {owner, repo}, query: {per_page: 100}},
-        }),
-        api.GET("/api/v3/repos/{owner}/{repo}/tags", {
-          params: {path: {owner, repo}},
         }),
       ]);
 
@@ -76,7 +48,6 @@ export function RepositoryPage() {
       });
 
       return {
-        repository,
         contents,
         readme:
           readmeResult.response.status === 404
@@ -86,84 +57,84 @@ export function RepositoryPage() {
                 readmeResult.response,
                 "Could not load README.",
               ),
-        commits: requireApiData(
-          commitsResult.data,
-          commitsResult.response,
-          "Could not load commits.",
-        ),
-        branches: requireApiData(
-          branchesResult.data,
-          branchesResult.response,
-          "Could not load branches.",
-        ),
-        tags: requireApiData(
-          tagsResult.data,
-          tagsResult.response,
-          "Could not load tags.",
-        ),
       };
     },
   );
+  const summary = useApiData<Summary | null>(
+    `repo-summary:${owner}/${repo}:${files.data ? "ready" : "deferred"}`,
+    async () => {
+      if (!files.data) return null;
+      const {data, response} = await api.GET(
+        "/api/_ui/repos/{owner}/{repo}/summary",
+        {params: {path: {owner, repo}}},
+      );
+      return requireApiData(
+        data,
+        response,
+        "Could not load repository counts.",
+      );
+    },
+  );
 
-  const data = result.data;
-  const ref = data?.repository.default_branch ?? "main";
+  function count(value: number | undefined): number | string {
+    if (!files.data || summary.loading) return "…";
+    return value ?? "—";
+  }
 
   return (
-    <Loadable loading={result.loading} error={result.error}>
-      {data ? (
-        <>
-          <RepositoryHeader repository={data.repository} />
-          <div className="repo-home-toolbar">
-            <Link
-              className="branch-selector"
-              to={`/${owner}/${repo}/tree/${ref}`}
+    <>
+      <div className="repo-home-toolbar">
+        <Link className="branch-selector" to={`/${owner}/${repo}/tree/${ref}`}>
+          <Octicon name="branch" /> {ref}
+        </Link>
+        <Link className="button" to={`/${owner}/${repo}/new/${ref}/`}>
+          <Octicon name="plus" /> Add file
+        </Link>
+      </div>
+      <nav className="repo-activity" aria-label="Repository activity">
+        <Link to={`/${owner}/${repo}/commits/${ref}`}>
+          <Octicon name="history" />
+          <strong>{count(summary.data?.commit_count)}</strong> commits
+        </Link>
+        <Link to={`/${owner}/${repo}/branches`}>
+          <Octicon name="branch" />
+          <strong>{count(summary.data?.branch_count)}</strong> branches
+        </Link>
+        <Link to={`/${owner}/${repo}/tags`}>
+          <Octicon name="tag" />
+          <strong>{count(summary.data?.tag_count)}</strong> tags
+        </Link>
+      </nav>
+      <Loadable loading={files.loading || !ref} error={files.error}>
+        {files.data ? (
+          <>
+            <section
+              className="list-box repo-home-files"
+              aria-label="Repository files"
             >
-              <Octicon name="branch" /> {ref}
-            </Link>
-            <Link className="button" to={`/${owner}/${repo}/new/${ref}/`}>
-              <Octicon name="plus" /> Add file
-            </Link>
-          </div>
-          <nav className="repo-activity" aria-label="Repository activity">
-            <Link to={`/${owner}/${repo}/commits/${ref}`}>
-              <Octicon name="history" />
-              <strong>{data.commits.length}</strong> commits
-            </Link>
-            <Link to={`/${owner}/${repo}/branches`}>
-              <Octicon name="branch" />
-              <strong>{data.branches.length}</strong> branches
-            </Link>
-            <Link to={`/${owner}/${repo}/tags`}>
-              <Octicon name="tag" />
-              <strong>{data.tags.length}</strong> tags
-            </Link>
-          </nav>
-          <section
-            className="list-box repo-home-files"
-            aria-label="Repository files"
-          >
-            <h2 className="list-box-header">Files</h2>
-            {data.contents.map((item) => (
-              <div className="list-row file-row" key={item.path}>
-                <FileTypeIcon type={item.type} />
-                <Link
-                  to={`/${owner}/${repo}/${item.type === "dir" ? "tree" : "blob"}/${ref}/${item.path}`}
-                >
-                  {item.name}
-                </Link>
-              </div>
-            ))}
-          </section>
-          {data.readme ? (
-            <section className="file-view readme-view">
-              <h2>
-                <Octicon name="book" /> README
-              </h2>
-              <pre>{decodeBase64Content(data.readme.content)}</pre>
+              <h2 className="list-box-header">Files</h2>
+              {files.data.contents.map((item) => (
+                <div className="list-row file-row" key={item.path}>
+                  <FileTypeIcon type={item.type} />
+                  <Link
+                    to={`/${owner}/${repo}/${item.type === "dir" ? "tree" : "blob"}/${ref}/${item.path}`}
+                  >
+                    {item.name}
+                  </Link>
+                </div>
+              ))}
             </section>
-          ) : null}
-        </>
-      ) : null}
-    </Loadable>
+            {files.data.readme ? (
+              <section className="file-view readme-view">
+                <h2>
+                  <Octicon name="book" /> README
+                </h2>
+                <pre>{decodeBase64Content(files.data.readme.content)}</pre>
+              </section>
+            ) : null}
+          </>
+        ) : null}
+      </Loadable>
+    </>
   );
 }

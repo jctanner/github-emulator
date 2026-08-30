@@ -245,6 +245,17 @@ a:hover {
   background: rgb(208 215 222 / 32%);
 }
 
+.repo-nav-count {
+  min-width: 20px;
+  padding: 0 6px;
+  border-radius: 999px;
+  background: rgb(175 184 193 / 20%);
+  font-size: 12px;
+  font-weight: 500;
+  line-height: 20px;
+  text-align: center;
+}
+
 .badge {
   margin-left: 8px;
   padding: 2px 7px;
@@ -681,33 +692,6 @@ a:hover {
   gap: 12px;
 }
 
-.labels-layout {
-  display: grid;
-  grid-template-columns: 180px minmax(0, 1fr);
-  gap: 24px;
-  margin-top: 24px;
-}
-
-.labels-nav {
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-}
-
-.labels-nav a {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  padding: 8px 12px;
-  border-radius: 6px;
-  color: #1f2328;
-}
-
-.labels-nav a.selected {
-  background: #f6f8fa;
-  font-weight: 600;
-}
-
 .label-create-form {
   display: grid;
   grid-template-columns: minmax(120px, 1fr) 120px minmax(160px, 2fr) auto;
@@ -741,22 +725,123 @@ a:hover {
   font-family: ui-monospace, SFMono-Regular, Consolas, monospace !important;
 }
 
-.editable-label {
-  display: inline-flex;
+.label-manager {
+  padding: 16px 0;
+  border-bottom: 1px solid #d0d7de;
+}
+
+.label-manager-heading {
+  display: flex;
   align-items: center;
+  justify-content: space-between;
 }
 
-.editable-label button {
-  margin-left: -4px;
+.label-manager-heading h2 {
+  padding: 0;
   border: 0;
-  background: transparent;
-  cursor: pointer;
+  font-size: 12px;
 }
 
-.labels-editor select {
+.label-manager-heading details {
+  position: relative;
+}
+
+.label-manager-heading summary {
+  color: #656d76;
+  cursor: pointer;
+  font-size: 14px;
+  list-style: none;
+}
+
+.label-manager-heading summary::-webkit-details-marker {
+  display: none;
+}
+
+.label-manager-popover {
+  position: absolute;
+  z-index: 10;
+  top: 24px;
+  right: 0;
+  width: 320px;
+  padding: 12px;
+  border: 1px solid #d0d7de;
+  border-radius: 6px;
+  background: #fff;
+  box-shadow: 0 8px 24px rgb(140 149 159 / 25%);
+}
+
+.label-manager-popover h3 {
+  margin: 0 0 12px;
+  font-size: 16px;
+}
+
+.label-manager-popover > input {
+  width: 100%;
   padding: 6px 10px;
   border: 1px solid #d0d7de;
   border-radius: 6px;
+}
+
+.label-manager-popover h4 {
+  margin: 8px -12px 0;
+  padding: 8px 12px;
+  border-top: 1px solid #d8dee4;
+  border-bottom: 1px solid #d8dee4;
+  background: #f6f8fa;
+  color: #656d76;
+  font-size: 12px;
+}
+
+.label-manager-options {
+  display: flex;
+  max-height: 180px;
+  flex-direction: column;
+  overflow-y: auto;
+}
+
+.label-manager-option {
+  display: flex;
+  min-height: 28px;
+  align-items: center;
+  gap: 8px;
+  cursor: pointer;
+}
+
+.label-manager-option input {
+  width: auto;
+  margin: 0;
+}
+
+.label-manager-dot {
+  width: 12px;
+  height: 12px;
+  flex: 0 0 auto;
+  border: 1px solid rgb(31 35 40 / 15%);
+  border-radius: 50%;
+}
+
+.label-manager-empty {
+  margin: 0;
+  padding: 10px 4px;
+  color: #656d76;
+  font-size: 12px;
+}
+
+.label-manager-popover footer {
+  margin: 12px -12px -12px;
+  padding: 10px 12px;
+  border-top: 1px solid #d8dee4;
+  text-align: center;
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.label-manager-current {
+  display: flex;
+  min-height: 20px;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin-top: 8px;
 }
 
 .actions-layout {
@@ -1139,15 +1224,6 @@ a:hover {
   font-size: 14px;
 }
 
-.conversation-sidebar .labels-editor .button-row {
-  align-items: stretch;
-  flex-direction: column;
-}
-
-.conversation-sidebar .labels-editor select {
-  width: 100%;
-}
-
 .pr-tabs {
   display: flex;
   gap: 24px;
@@ -1350,7 +1426,6 @@ footer {
     width: 100%;
   }
 
-  .labels-layout,
   .conversation-layout,
   .actions-layout,
   .settings-layout {
@@ -1421,10 +1496,6 @@ footer {
   .settings-content .inline-editor select,
   .settings-content .inline-editor button {
     width: 100%;
-  }
-
-  .labels-nav {
-    flex-direction: row;
   }
 
   .label-create-form {

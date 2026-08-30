@@ -33,7 +33,7 @@ export function SessionProvider({children}: PropsWithChildren) {
   }, []);
 
   useEffect(() => {
-    void api.GET("/api/v3/session", {}).then(({data}) => {
+    void api.GET("/api/_ui/session", {}).then(({data}) => {
       applySession(data ?? null);
       setLoading(false);
     });
@@ -41,7 +41,7 @@ export function SessionProvider({children}: PropsWithChildren) {
 
   const login = useCallback(
     async (username: string, password: string) => {
-      const {data, error, response} = await api.POST("/api/v3/session", {
+      const {data, error, response} = await api.POST("/api/_ui/session", {
         body: {username, password},
       });
       if (error || !data) {
@@ -57,7 +57,7 @@ export function SessionProvider({children}: PropsWithChildren) {
   );
 
   const logout = useCallback(async () => {
-    await api.DELETE("/api/v3/session", {});
+    await api.DELETE("/api/_ui/session", {});
     applySession(null);
   }, [applySession]);
 

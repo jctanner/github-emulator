@@ -4,7 +4,6 @@ import {api} from "../api/client";
 import type {components} from "../api/schema";
 import {Loadable} from "../components/Loadable";
 import {Octicon} from "../components/Octicon";
-import {RepositoryHeader} from "../components/RepositoryHeader";
 import {requireApiData, useApiData} from "../hooks/useApiData";
 
 type Workflows = components["schemas"]["WorkflowListResponse"];
@@ -39,7 +38,6 @@ export function ActionsPage() {
   );
   return (
     <>
-      <RepositoryHeader owner={owner} repo={repo} />
       <div className="actions-layout">
         <aside>
           <h2>

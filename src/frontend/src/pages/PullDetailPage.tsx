@@ -4,12 +4,11 @@ import {useParams} from "react-router-dom";
 import {api} from "../api/client";
 import type {components} from "../api/schema";
 import {IssueComments} from "../components/IssueComments";
-import {IssueLabelsEditor} from "../components/IssueLabelsEditor";
+import {LabelManager} from "../components/LabelManager";
 import {Loadable} from "../components/Loadable";
-import {RepositoryHeader} from "../components/RepositoryHeader";
+import {useRepositoryLayout} from "../components/RepositoryContext";
 import {requireApiData, useApiData} from "../hooks/useApiData";
 
-type Repository = components["schemas"]["RepoResponse"];
 type Pull = components["schemas"]["PRResponse"];
 type Issue = components["schemas"]["IssueResponse"];
 type Comment = components["schemas"]["IssueCommentResponse"];
@@ -17,9 +16,9 @@ type Comment = components["schemas"]["IssueCommentResponse"];
 export function PullDetailPage() {
   const {owner = "", repo = "", number = "0"} = useParams();
   const pullNumber = Number(number);
+  const {reloadNavigation} = useRepositoryLayout();
   const [mutationError, setMutationError] = useState<string | null>(null);
   const page = useApiData<{
-    repository: Repository;
     pull: Pull;
     issue: Issue;
     comments: Comment[];
@@ -27,11 +26,8 @@ export function PullDetailPage() {
   }>(`pull:${owner}/${repo}:${pullNumber}`, async () => {
     const pullPath = {owner, repo, pull_number: pullNumber};
     const issuePath = {owner, repo, issue_number: pullNumber};
-    const [repoResult, pullResult, issueResult, commentsResult, labelsResult] =
+    const [pullResult, issueResult, commentsResult, labelsResult] =
       await Promise.all([
-        api.GET("/api/v3/repos/{owner}/{repo}", {
-          params: {path: {owner, repo}},
-        }),
         api.GET("/api/v3/repos/{owner}/{repo}/pulls/{pull_number}", {
           params: {path: pullPath},
         }),
@@ -46,11 +42,6 @@ export function PullDetailPage() {
         }),
       ]);
     return {
-      repository: requireApiData(
-        repoResult.data,
-        repoResult.response,
-        "Could not load repository.",
-      ),
       pull: requireApiData(
         pullResult.data,
         pullResult.response,
@@ -83,6 +74,7 @@ export function PullDetailPage() {
     );
     if (!response.ok) return setMutationError("Could not update pull request.");
     setMutationError(null);
+    reloadNavigation();
     page.reload();
   }
 
@@ -97,6 +89,7 @@ export function PullDetailPage() {
     if (!response.ok || !data?.merged)
       return setMutationError(data?.message ?? "Could not merge pull request.");
     setMutationError(null);
+    reloadNavigation();
     page.reload();
   }
 
@@ -125,7 +118,6 @@ export function PullDetailPage() {
     <Loadable loading={page.loading} error={page.error}>
       {page.data ? (
         <>
-          <RepositoryHeader repository={page.data.repository} />
           <header className="conversation-heading">
             <h1>
               {page.data.pull.title}{" "}
@@ -191,11 +183,11 @@ export function PullDetailPage() {
               )}
             </main>
             <aside className="conversation-sidebar">
-              <h2>Labels</h2>
-              <IssueLabelsEditor
+              <LabelManager
                 owner={owner}
                 repo={repo}
                 issueNumber={pullNumber}
+                subject="pull request"
                 assigned={page.data.issue.labels}
                 available={page.data.labels}
                 onChanged={page.reload}

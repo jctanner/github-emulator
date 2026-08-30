@@ -5,10 +5,8 @@ import type {components} from "../api/schema";
 import {LabelPill} from "../components/LabelPill";
 import {Loadable} from "../components/Loadable";
 import {Octicon} from "../components/Octicon";
-import {RepositoryHeader} from "../components/RepositoryHeader";
 import {requireApiData, useApiData} from "../hooks/useApiData";
 
-type Repository = components["schemas"]["RepoResponse"];
 type Issue = components["schemas"]["IssueResponse"];
 type Pull = components["schemas"]["PRResponse"];
 
@@ -16,13 +14,10 @@ export function IssuesPage() {
   const {owner = "", repo = ""} = useParams();
   const [search] = useSearchParams();
   const state = search.get("state") ?? "open";
-  const page = useApiData<{repository: Repository; issues: Issue[]}>(
+  const page = useApiData<{issues: Issue[]}>(
     `issues:${owner}/${repo}:${state}`,
     async () => {
-      const [repoResult, issuesResult, pullsResult] = await Promise.all([
-        api.GET("/api/v3/repos/{owner}/{repo}", {
-          params: {path: {owner, repo}},
-        }),
+      const [issuesResult, pullsResult] = await Promise.all([
         api.GET("/api/v3/repos/{owner}/{repo}/issues", {
           params: {path: {owner, repo}, query: {state}},
         }),
@@ -37,11 +32,6 @@ export function IssuesPage() {
       );
       const pullNumbers = new Set(pulls.map((pull: Pull) => pull.number));
       return {
-        repository: requireApiData(
-          repoResult.data,
-          repoResult.response,
-          "Could not load repository.",
-        ),
         issues: requireApiData(
           issuesResult.data,
           issuesResult.response,
@@ -55,7 +45,6 @@ export function IssuesPage() {
     <Loadable loading={page.loading} error={page.error}>
       {page.data ? (
         <>
-          <RepositoryHeader repository={page.data.repository} />
           <div className="page-heading work-list-heading">
             <nav className="state-filters" aria-label="Issue state">
               <Link
@@ -73,7 +62,6 @@ export function IssuesPage() {
               </Link>
             </nav>
             <div className="button-row">
-              <Link to={`/${owner}/${repo}/labels`}>Labels</Link>
               <Link className="button" to={`/${owner}/${repo}/issues/new`}>
                 <Octicon name="plus" /> New issue
               </Link>

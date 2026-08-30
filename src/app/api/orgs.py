@@ -7,6 +7,7 @@ from app.api.deps import AuthUser, CurrentUser, DbSession
 from app.config import settings
 from app.models.organization import Organization, OrgMembership
 from app.models.user import User
+from app.schemas.organization import OrganizationResponse
 from app.schemas.user import _fmt_dt, _make_node_id
 
 router = APIRouter(tags=["orgs"])
@@ -48,7 +49,7 @@ def _org_json(org: Organization, base_url: str) -> dict:
     }
 
 
-@router.post("/orgs", status_code=201)
+@router.post("/orgs", status_code=201, response_model=OrganizationResponse)
 async def create_org(body: dict, user: AuthUser, db: DbSession):
     """Create an organization."""
     login = body.get("login")
@@ -89,7 +90,7 @@ async def create_org(body: dict, user: AuthUser, db: DbSession):
     return _org_json(org, BASE)
 
 
-@router.get("/orgs/{org}")
+@router.get("/orgs/{org}", response_model=OrganizationResponse)
 async def get_org(org: str, db: DbSession, current_user: CurrentUser):
     """Get an organization."""
     result = await db.execute(select(Organization).where(Organization.login == org))
@@ -99,7 +100,7 @@ async def get_org(org: str, db: DbSession, current_user: CurrentUser):
     return _org_json(organisation, BASE)
 
 
-@router.patch("/orgs/{org}")
+@router.patch("/orgs/{org}", response_model=OrganizationResponse)
 async def update_org(org: str, body: dict, user: AuthUser, db: DbSession):
     """Update an organization."""
     result = await db.execute(select(Organization).where(Organization.login == org))
@@ -116,7 +117,7 @@ async def update_org(org: str, body: dict, user: AuthUser, db: DbSession):
     return _org_json(organisation, BASE)
 
 
-@router.get("/user/orgs")
+@router.get("/user/orgs", response_model=list[OrganizationResponse])
 async def list_user_orgs(user: AuthUser, db: DbSession):
     """List organizations for the authenticated user."""
     result = await db.execute(
@@ -128,7 +129,7 @@ async def list_user_orgs(user: AuthUser, db: DbSession):
     return [_org_json(o, BASE) for o in orgs]
 
 
-@router.get("/users/{username}/orgs")
+@router.get("/users/{username}/orgs", response_model=list[OrganizationResponse])
 async def list_user_orgs_public(
     username: str, db: DbSession, current_user: CurrentUser,
 ):

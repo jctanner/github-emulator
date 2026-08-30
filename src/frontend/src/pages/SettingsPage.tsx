@@ -5,11 +5,14 @@ import {api} from "../api/client";
 import type {components} from "../api/schema";
 import {Loadable} from "../components/Loadable";
 import {Octicon} from "../components/Octicon";
-import {RepositoryHeader} from "../components/RepositoryHeader";
+import {
+  useRepository,
+  useRepositoryLayout,
+} from "../components/RepositoryContext";
 import {RunnersPage} from "./RunnersPage";
+import {LabelsPage} from "./LabelsPage";
 import {requireApiData, useApiData} from "../hooks/useApiData";
 
-type Repository = components["schemas"]["RepoResponse"];
 type Branch = components["schemas"]["BranchResponse"];
 type Protection = components["schemas"]["BranchProtectionResponse"];
 type Collaborator = components["schemas"]["CollaboratorResponse"];
@@ -21,19 +24,7 @@ function formText(fields: FormData, name: string): string {
 }
 
 function GeneralSettings({owner, repo}: {owner: string; repo: string}) {
-  const repository = useApiData<Repository>(
-    `settings:${owner}/${repo}`,
-    async () => {
-      const {data, response} = await api.GET("/api/v3/repos/{owner}/{repo}", {
-        params: {path: {owner, repo}},
-      });
-      return requireApiData(
-        data,
-        response,
-        "Could not load repository settings.",
-      );
-    },
-  );
+  const {repository, reload} = useRepositoryLayout();
   const [message, setMessage] = useState<string | null>(null);
   async function save(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -51,113 +42,105 @@ function GeneralSettings({owner, repo}: {owner: string; repo: string}) {
     setMessage(
       response.ok ? "Repository settings saved." : "Could not save settings.",
     );
-    if (response.ok) repository.reload();
+    if (response.ok) reload();
   }
   return (
-    <Loadable loading={repository.loading} error={repository.error}>
-      {repository.data ? (
-        <form
-          className="editor-form settings-form"
-          onSubmit={(event) => void save(event)}
+    <form
+      className="editor-form settings-form"
+      onSubmit={(event) => void save(event)}
+    >
+      <h1>General</h1>
+      {message ? (
+        <p
+          className={
+            message.startsWith("Could") ? "flash-error" : "flash-success"
+          }
         >
-          <h1>General</h1>
-          {message ? (
-            <p
-              className={
-                message.startsWith("Could") ? "flash-error" : "flash-success"
-              }
-            >
-              {message}
-            </p>
-          ) : null}
-          <section className="settings-section">
-            <h2>Repository name</h2>
-            <label>
-              <span className="sr-only">Repository name</span>
-              <input disabled value={repository.data.name} />
-            </label>
-            <p className="muted">
-              Renaming repositories is not currently supported by the emulator
-              API.
-            </p>
-          </section>
-          <section className="settings-section">
-            <h2>Repository details</h2>
-            <label>
-              Description
-              <input
-                name="description"
-                defaultValue={repository.data.description ?? ""}
-              />
-            </label>
-            <label>
-              Homepage
-              <input
-                name="homepage"
-                defaultValue={repository.data.homepage ?? ""}
-              />
-            </label>
-          </section>
-          <section className="settings-section">
-            <h2>Visibility</h2>
-            <label className="check-label">
-              <input
-                name="private"
-                type="checkbox"
-                defaultChecked={repository.data.private}
-              />{" "}
-              Private repository
-            </label>
-            <p className="muted">
-              Public repositories are visible to everyone. Private repositories
-              limit access to collaborators.
-            </p>
-          </section>
-          <section className="settings-section settings-feature-box">
-            <h2>Features</h2>
-            <label className="check-label">
-              <input
-                name="has_wiki"
-                type="checkbox"
-                defaultChecked={repository.data.has_wiki}
-              />{" "}
-              <span>
-                <strong>Wikis</strong>
-                <small>Host documentation for this repository.</small>
-              </span>
-            </label>
-            <label className="check-label">
-              <input
-                name="has_issues"
-                type="checkbox"
-                defaultChecked={repository.data.has_issues}
-              />{" "}
-              <span>
-                <strong>Issues</strong>
-                <small>Track bugs, ideas, and work.</small>
-              </span>
-            </label>
-            <label className="check-label settings-unavailable">
-              <input disabled type="checkbox" />{" "}
-              <span>
-                <strong>Projects</strong>
-                <small>Not yet available in the emulator API.</small>
-              </span>
-            </label>
-            <label className="check-label settings-unavailable">
-              <input disabled type="checkbox" />{" "}
-              <span>
-                <strong>Discussions</strong>
-                <small>Not yet available in the emulator API.</small>
-              </span>
-            </label>
-          </section>
-          <button className="button" type="submit">
-            Save changes
-          </button>
-        </form>
+          {message}
+        </p>
       ) : null}
-    </Loadable>
+      <section className="settings-section">
+        <h2>Repository name</h2>
+        <label>
+          <span className="sr-only">Repository name</span>
+          <input disabled value={repository.name} />
+        </label>
+        <p className="muted">
+          Renaming repositories is not currently supported by the emulator API.
+        </p>
+      </section>
+      <section className="settings-section">
+        <h2>Repository details</h2>
+        <label>
+          Description
+          <input
+            name="description"
+            defaultValue={repository.description ?? ""}
+          />
+        </label>
+        <label>
+          Homepage
+          <input name="homepage" defaultValue={repository.homepage ?? ""} />
+        </label>
+      </section>
+      <section className="settings-section">
+        <h2>Visibility</h2>
+        <label className="check-label">
+          <input
+            name="private"
+            type="checkbox"
+            defaultChecked={repository.private}
+          />{" "}
+          Private repository
+        </label>
+        <p className="muted">
+          Public repositories are visible to everyone. Private repositories
+          limit access to collaborators.
+        </p>
+      </section>
+      <section className="settings-section settings-feature-box">
+        <h2>Features</h2>
+        <label className="check-label">
+          <input
+            name="has_wiki"
+            type="checkbox"
+            defaultChecked={repository.has_wiki}
+          />{" "}
+          <span>
+            <strong>Wikis</strong>
+            <small>Host documentation for this repository.</small>
+          </span>
+        </label>
+        <label className="check-label">
+          <input
+            name="has_issues"
+            type="checkbox"
+            defaultChecked={repository.has_issues}
+          />{" "}
+          <span>
+            <strong>Issues</strong>
+            <small>Track bugs, ideas, and work.</small>
+          </span>
+        </label>
+        <label className="check-label settings-unavailable">
+          <input disabled type="checkbox" />{" "}
+          <span>
+            <strong>Projects</strong>
+            <small>Not yet available in the emulator API.</small>
+          </span>
+        </label>
+        <label className="check-label settings-unavailable">
+          <input disabled type="checkbox" />{" "}
+          <span>
+            <strong>Discussions</strong>
+            <small>Not yet available in the emulator API.</small>
+          </span>
+        </label>
+      </section>
+      <button className="button" type="submit">
+        Save changes
+      </button>
+    </form>
   );
 }
 
@@ -382,15 +365,7 @@ function BranchSettings({owner, repo}: {owner: string; repo: string}) {
 }
 
 function AccessSettings({owner, repo}: {owner: string; repo: string}) {
-  const repository = useApiData<Repository>(
-    `access-repo:${owner}/${repo}`,
-    async () => {
-      const {data, response} = await api.GET("/api/v3/repos/{owner}/{repo}", {
-        params: {path: {owner, repo}},
-      });
-      return requireApiData(data, response, "Could not load repository.");
-    },
-  );
+  const repository = useRepository();
   const collaborators = useApiData<Collaborator[]>(
     `access:${owner}/${repo}`,
     async () => {
@@ -425,12 +400,10 @@ function AccessSettings({owner, repo}: {owner: string; repo: string}) {
         <Octicon name="book" />
         <div>
           <strong>
-            {repository.data?.private
-              ? "Private repository"
-              : "Public repository"}
+            {repository.private ? "Private repository" : "Public repository"}
           </strong>
           <p className="muted">
-            {repository.data?.private
+            {repository.private
               ? "Only collaborators can view this repository."
               : "This repository is public and visible to anyone."}
           </p>
@@ -545,7 +518,6 @@ export function SettingsPage() {
   const root = `/${owner}/${repo}/settings`;
   return (
     <>
-      <RepositoryHeader owner={owner} repo={repo} />
       <div className="settings-layout">
         <nav className="settings-nav" aria-label="Repository settings">
           <Link className={current === "general" ? "active" : ""} to={root}>
@@ -563,6 +535,12 @@ export function SettingsPage() {
             Code, planning, and automation
           </span>
           <span className="settings-nav-disabled">Rulesets</span>
+          <Link
+            className={current === "labels" ? "active" : ""}
+            to={`${root}/labels`}
+          >
+            <Octicon name="tag" /> Labels
+          </Link>
           <Link
             className={current === "branches" ? "active" : ""}
             to={`${root}/branches`}
@@ -594,8 +572,10 @@ export function SettingsPage() {
             <AccessSettings owner={owner} repo={repo} />
           ) : current === "branches" ? (
             <BranchSettings owner={owner} repo={repo} />
+          ) : current === "labels" ? (
+            <LabelsPage />
           ) : current === "actions/runners" ? (
-            <RunnersPage embedded />
+            <RunnersPage />
           ) : current === "installations" ? (
             <AppSettings owner={owner} repo={repo} />
           ) : (

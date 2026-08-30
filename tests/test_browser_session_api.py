@@ -5,6 +5,9 @@ import pytest
 from app.services.auth_service import hash_password
 
 
+UI_API = "/api/_ui"
+
+
 @pytest.mark.asyncio
 async def test_browser_session_login_current_user_and_logout(
     client, test_user, db_session
@@ -13,7 +16,7 @@ async def test_browser_session_login_current_user_and_logout(
     await db_session.commit()
 
     login = await client.post(
-        "/api/v3/session",
+        f"{UI_API}/session",
         json={"username": "testuser", "password": "password"},
     )
     assert login.status_code == 200
@@ -23,7 +26,7 @@ async def test_browser_session_login_current_user_and_logout(
     assert "HttpOnly" in login.headers["set-cookie"]
     assert "Path=/" in login.headers["set-cookie"]
 
-    current = await client.get("/api/v3/session")
+    current = await client.get(f"{UI_API}/session")
     assert current.status_code == 200
     assert current.json()["user"]["login"] == "testuser"
 
@@ -42,19 +45,19 @@ async def test_browser_session_login_current_user_and_logout(
     assert updated.json()["bio"] == "allowed"
 
     logout = await client.delete(
-        "/api/v3/session",
+        f"{UI_API}/session",
         headers={"X-CSRF-Token": payload["csrf_token"]},
     )
     assert logout.status_code == 204
 
-    missing = await client.get("/api/v3/session")
+    missing = await client.get(f"{UI_API}/session")
     assert missing.status_code == 401
 
 
 @pytest.mark.asyncio
 async def test_browser_session_rejects_invalid_credentials(client):
     response = await client.post(
-        "/api/v3/session",
+        f"{UI_API}/session",
         json={"username": "missing", "password": "wrong"},
     )
     assert response.status_code == 401

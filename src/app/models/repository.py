@@ -12,6 +12,9 @@ class Repository(Base):
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     owner_id: Mapped[int] = mapped_column(Integer, ForeignKey("users.id"), nullable=False)
+    organization_id: Mapped[int | None] = mapped_column(
+        Integer, ForeignKey("organizations.id"), nullable=True
+    )
     owner_type: Mapped[str] = mapped_column(String, default="User")  # "User" or "Organization"
     name: Mapped[str] = mapped_column(String, nullable=False)
     full_name: Mapped[str] = mapped_column(String, unique=True, nullable=False, index=True)
@@ -59,6 +62,7 @@ class Repository(Base):
 
     # Relationships
     owner = relationship("User", back_populates="repositories", lazy="selectin")
+    organization = relationship("Organization", back_populates="repositories", lazy="selectin")
     parent = relationship("Repository", remote_side="Repository.id", lazy="selectin")
     collaborators = relationship(
         "Collaborator", back_populates="repository", lazy="selectin",

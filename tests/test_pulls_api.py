@@ -155,6 +155,51 @@ async def test_create_pull_request(client, test_user, test_token, repo_with_bran
 
 
 @pytest.mark.asyncio
+async def test_legacy_pull_page_manages_issue_labels(
+    client, test_user, test_token, repo_with_branch
+):
+    """The legacy pull sidebar provides the same label manager as issues."""
+    for name, color in (("bug", "d73a4a"), ("ready", "0e8a16")):
+        response = await client.post(
+            f"{API}/repos/testuser/pr-repo/labels",
+            json={"name": name, "color": color},
+            headers=auth_headers(test_token),
+        )
+        assert response.status_code == 201
+
+    response = await client.post(
+        f"{API}/repos/testuser/pr-repo/pulls",
+        json={"title": "Labeled PR", "head": "feature", "base": "main"},
+        headers=auth_headers(test_token),
+    )
+    assert response.status_code == 201
+    number = response.json()["number"]
+    client.cookies.set("ui_session", _sign_session("testuser"))
+
+    page = await client.get(f"/ui-legacy/testuser/pr-repo/pulls/{number}")
+    assert page.status_code == 200
+    assert 'aria-label="Manage labels"' in page.text
+    assert "Apply labels to this pull request" in page.text
+    assert 'name="labels" value="bug"' in page.text
+
+    update = await client.post(
+        f"/ui-legacy/testuser/pr-repo/pulls/{number}/labels",
+        data={"labels": ["bug"]},
+        follow_redirects=False,
+    )
+    assert update.status_code == 302
+    assert update.headers["location"] == (
+        f"/ui-legacy/testuser/pr-repo/pulls/{number}"
+    )
+
+    labels = await client.get(
+        f"{API}/repos/testuser/pr-repo/issues/{number}/labels",
+        headers=auth_headers(test_token),
+    )
+    assert [label["name"] for label in labels.json()] == ["bug"]
+
+
+@pytest.mark.asyncio
 async def test_create_pr_requires_auth(client, test_user, test_token, repo_with_branch):
     """POST /repos/{owner}/{repo}/pulls without auth returns 401."""
     resp = await client.post(

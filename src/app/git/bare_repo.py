@@ -484,6 +484,26 @@ async def get_tags(disk_path: str) -> list[dict]:
     return tags
 
 
+async def get_tag_count(disk_path: str) -> int:
+    """Return the number of tag refs without constructing tag API objects."""
+    env = os.environ.copy()
+    env["GIT_DIR"] = disk_path
+
+    proc = await asyncio.create_subprocess_exec(
+        "git",
+        "for-each-ref",
+        "--format=%(refname)",
+        "refs/tags/",
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+        env=env,
+    )
+    stdout, _ = await proc.communicate()
+    if proc.returncode != 0:
+        return 0
+    return sum(1 for line in stdout.decode().splitlines() if line.strip())
+
+
 async def get_commit_count(disk_path: str, ref: str) -> int:
     """Return total commit count on a branch (git rev-list --count)."""
     env = os.environ.copy()

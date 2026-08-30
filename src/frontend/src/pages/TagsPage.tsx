@@ -4,7 +4,6 @@ import {api} from "../api/client";
 import type {components} from "../api/schema";
 import {Loadable} from "../components/Loadable";
 import {Octicon} from "../components/Octicon";
-import {RepositoryHeader} from "../components/RepositoryHeader";
 import {requireApiData, useApiData} from "../hooks/useApiData";
 
 type Tag = components["schemas"]["TagResponse"];
@@ -22,7 +21,6 @@ export function TagsPage() {
   });
   return (
     <>
-      <RepositoryHeader owner={owner} repo={repo} />
       <div className="page-heading">
         <h1>Tags</h1>
       </div>

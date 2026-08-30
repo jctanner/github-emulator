@@ -4,7 +4,6 @@ import {useNavigate, useParams} from "react-router-dom";
 import {api} from "../api/client";
 import type {components} from "../api/schema";
 import {Loadable} from "../components/Loadable";
-import {RepositoryHeader} from "../components/RepositoryHeader";
 import {requireApiData, useApiData} from "../hooks/useApiData";
 
 type Content = components["schemas"]["ContentResponse"];
@@ -66,7 +65,6 @@ export function FileEditorPage({create = false}: {create?: boolean}) {
   }
   return (
     <>
-      <RepositoryHeader owner={owner} repo={repo} />
       <Loadable loading={existing.loading} error={existing.error}>
         <form className="editor-form" onSubmit={(event) => void submit(event)}>
           <h1>{create ? "Create new file" : `Edit ${routePath}`}</h1>

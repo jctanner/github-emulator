@@ -62,9 +62,12 @@ def _issue_url(owner: str, repo_name: str, number: int, error: str | None = None
     return url
 
 
-def _pull_url(owner: str, repo_name: str, number: int) -> str:
-    """Build a pull-request page URL."""
-    return f"{_URL_PREFIX}/{owner}/{repo_name}/pulls/{number}"
+def _pull_url(owner: str, repo_name: str, number: int, error: str | None = None) -> str:
+    """Build a pull-request page URL, optionally carrying a label error."""
+    url = f"{_URL_PREFIX}/{owner}/{repo_name}/pulls/{number}"
+    if error:
+        url += f"?label_error={quote(error)}"
+    return url
 
 
 def _labels_url(owner: str, repo_name: str, error: str | None = None) -> str:
@@ -1532,6 +1535,11 @@ async def pull_detail(
         c.user_login = c.user.login if c.user else "unknown"
         c.body_html = render_markdown(c.body)
 
+    labels_result = await db.execute(
+        select(Label).where(Label.repo_id == repo.id).order_by(Label.name)
+    )
+    repo_labels = list(labels_result.scalars().all())
+    issue_label_names = {label.name for label in issue.labels}
     open_issues_count, open_pulls_count = await _repo_nav_counts(db, repo)
 
     return templates.TemplateResponse(
@@ -1541,6 +1549,8 @@ async def pull_detail(
             request, owner=owner, repo=repo, repo_name=repo.name,
             pr=pr, comments=comments, active_pr_tab=active_pr_tab,
             labels=issue.labels,
+            repo_labels=repo_labels, issue_label_names=issue_label_names,
+            label_error=request.query_params.get("label_error"),
             diff_files=diff_files, commits=commits,
             commit_count=commit_count,
             open_issues_count=open_issues_count,
@@ -1550,6 +1560,55 @@ async def pull_detail(
             current_user=current_user,
         ),
     )
+
+
+@router.post("/{owner}/{repo_name}/pulls/{number:int}/labels")
+async def update_pull_labels(
+    request: Request,
+    owner: str,
+    repo_name: str,
+    number: int,
+    db: AsyncSession = Depends(get_db),
+):
+    """Replace a pull request's issue labels from its sidebar."""
+    current_user = await _get_current_user(request, db)
+    if not current_user:
+        return RedirectResponse(url="/ui/login", status_code=302)
+
+    repo = await _get_repo(db, owner, repo_name)
+    if repo is None:
+        return HTMLResponse(content="<h1>404 - Not Found</h1>", status_code=404)
+
+    result = await db.execute(
+        select(Issue).where(Issue.repo_id == repo.id, Issue.number == number)
+    )
+    issue = result.scalar_one_or_none()
+    if issue is None or issue.pull_request is None:
+        return HTMLResponse(content="<h1>404 - PR Not Found</h1>", status_code=404)
+
+    form = await request.form()
+    selected_names = {
+        str(value).strip()
+        for value in form.getlist("labels")
+        if str(value).strip()
+    }
+    selected_labels = []
+    if selected_names:
+        labels_result = await db.execute(
+            select(Label).where(
+                Label.repo_id == repo.id,
+                Label.name.in_(selected_names),
+            )
+        )
+        selected_labels = list(labels_result.scalars().all())
+
+    await db.execute(sa_delete(IssueLabel).where(IssueLabel.issue_id == issue.id))
+    db.add_all(
+        IssueLabel(issue_id=issue.id, label_id=label.id)
+        for label in selected_labels
+    )
+    await db.commit()
+    return RedirectResponse(url=_pull_url(owner, repo_name, number), status_code=302)
 
 
 @router.post("/{owner}/{repo_name}/pulls/{number:int}/comments")

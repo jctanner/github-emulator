@@ -4,7 +4,6 @@ import {api} from "../api/client";
 import type {components} from "../api/schema";
 import {Loadable} from "../components/Loadable";
 import {Octicon} from "../components/Octicon";
-import {RepositoryHeader} from "../components/RepositoryHeader";
 import {requireApiData, useApiData} from "../hooks/useApiData";
 
 type Run = components["schemas"]["WorkflowRunResponse"];
@@ -53,7 +52,6 @@ export function ActionRunPage() {
   }
   return (
     <>
-      <RepositoryHeader owner={owner} repo={repo} />
       <Loadable loading={page.loading} error={page.error}>
         {page.data ? (
           <>

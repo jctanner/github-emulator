@@ -16,7 +16,7 @@ from app.services.browser_session_service import (
 )
 
 
-router = APIRouter(tags=["browser-session"])
+router = APIRouter(prefix="/api/_ui", tags=["ui-session"])
 
 
 class BrowserLogin(BaseModel):

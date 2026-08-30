@@ -4,33 +4,21 @@ import {api} from "../api/client";
 import type {components} from "../api/schema";
 import {Loadable} from "../components/Loadable";
 import {Octicon} from "../components/Octicon";
-import {RepositoryHeader} from "../components/RepositoryHeader";
 import {requireApiData, useApiData} from "../hooks/useApiData";
 
-type Repository = components["schemas"]["RepoResponse"];
 type Pull = components["schemas"]["PRResponse"];
 
 export function PullsPage() {
   const {owner = "", repo = ""} = useParams();
   const [search] = useSearchParams();
   const state = search.get("state") ?? "open";
-  const page = useApiData<{repository: Repository; pulls: Pull[]}>(
+  const page = useApiData<{pulls: Pull[]}>(
     `pulls:${owner}/${repo}:${state}`,
     async () => {
-      const [repoResult, pullsResult] = await Promise.all([
-        api.GET("/api/v3/repos/{owner}/{repo}", {
-          params: {path: {owner, repo}},
-        }),
-        api.GET("/api/v3/repos/{owner}/{repo}/pulls", {
-          params: {path: {owner, repo}, query: {state}},
-        }),
-      ]);
+      const pullsResult = await api.GET("/api/v3/repos/{owner}/{repo}/pulls", {
+        params: {path: {owner, repo}, query: {state}},
+      });
       return {
-        repository: requireApiData(
-          repoResult.data,
-          repoResult.response,
-          "Could not load repository.",
-        ),
         pulls: requireApiData(
           pullsResult.data,
           pullsResult.response,
@@ -44,7 +32,6 @@ export function PullsPage() {
     <Loadable loading={page.loading} error={page.error}>
       {page.data ? (
         <>
-          <RepositoryHeader repository={page.data.repository} />
           <div className="page-heading work-list-heading">
             <nav className="state-filters" aria-label="Pull request state">
               <Link

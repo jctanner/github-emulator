@@ -43,7 +43,11 @@ export const parityRoutes: ParityRoute[] = [
   },
   {id: "tags", path: `/${owner}/${repository}/tags`, state: "candidate"},
   {id: "issues", path: `/${owner}/${repository}/issues`, state: "candidate"},
-  {id: "labels", path: `/${owner}/${repository}/labels`, state: "candidate"},
+  {
+    id: "settings-labels",
+    path: `/${owner}/${repository}/settings/labels`,
+    state: "candidate",
+  },
   {
     id: "issue-detail",
     path: `/${owner}/${repository}/issues/${issue}`,

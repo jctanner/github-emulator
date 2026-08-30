@@ -4,47 +4,37 @@ import {useParams} from "react-router-dom";
 import {api} from "../api/client";
 import type {components} from "../api/schema";
 import {IssueComments} from "../components/IssueComments";
-import {IssueLabelsEditor} from "../components/IssueLabelsEditor";
+import {LabelManager} from "../components/LabelManager";
 import {Loadable} from "../components/Loadable";
-import {RepositoryHeader} from "../components/RepositoryHeader";
+import {useRepositoryLayout} from "../components/RepositoryContext";
 import {requireApiData, useApiData} from "../hooks/useApiData";
 
-type Repository = components["schemas"]["RepoResponse"];
 type Issue = components["schemas"]["IssueResponse"];
 type Comment = components["schemas"]["IssueCommentResponse"];
 
 export function IssueDetailPage() {
   const {owner = "", repo = "", number = "0"} = useParams();
   const issueNumber = Number(number);
+  const {reloadNavigation} = useRepositoryLayout();
   const [mutationError, setMutationError] = useState<string | null>(null);
   const page = useApiData<{
-    repository: Repository;
     issue: Issue;
     comments: Comment[];
     labels: components["schemas"]["LabelResponse"][];
   }>(`issue:${owner}/${repo}:${issueNumber}`, async () => {
     const path = {owner, repo, issue_number: issueNumber};
-    const [repoResult, issueResult, commentsResult, labelsResult] =
-      await Promise.all([
-        api.GET("/api/v3/repos/{owner}/{repo}", {
-          params: {path: {owner, repo}},
-        }),
-        api.GET("/api/v3/repos/{owner}/{repo}/issues/{issue_number}", {
-          params: {path},
-        }),
-        api.GET("/api/v3/repos/{owner}/{repo}/issues/{issue_number}/comments", {
-          params: {path},
-        }),
-        api.GET("/api/v3/repos/{owner}/{repo}/labels", {
-          params: {path: {owner, repo}},
-        }),
-      ]);
+    const [issueResult, commentsResult, labelsResult] = await Promise.all([
+      api.GET("/api/v3/repos/{owner}/{repo}/issues/{issue_number}", {
+        params: {path},
+      }),
+      api.GET("/api/v3/repos/{owner}/{repo}/issues/{issue_number}/comments", {
+        params: {path},
+      }),
+      api.GET("/api/v3/repos/{owner}/{repo}/labels", {
+        params: {path: {owner, repo}},
+      }),
+    ]);
     return {
-      repository: requireApiData(
-        repoResult.data,
-        repoResult.response,
-        "Could not load repository.",
-      ),
       issue: requireApiData(
         issueResult.data,
         issueResult.response,
@@ -75,6 +65,7 @@ export function IssueDetailPage() {
         `Could not ${state === "open" ? "reopen" : "close"} issue.`,
       );
     setMutationError(null);
+    reloadNavigation();
     page.reload();
   }
 
@@ -103,7 +94,6 @@ export function IssueDetailPage() {
     <Loadable loading={page.loading} error={page.error}>
       {page.data ? (
         <>
-          <RepositoryHeader repository={page.data.repository} />
           <header className="conversation-heading">
             <h1>
               {page.data.issue.title}{" "}
@@ -149,11 +139,11 @@ export function IssueDetailPage() {
               </button>
             </main>
             <aside className="conversation-sidebar">
-              <h2>Labels</h2>
-              <IssueLabelsEditor
+              <LabelManager
                 owner={owner}
                 repo={repo}
                 issueNumber={issueNumber}
+                subject="issue"
                 assigned={page.data.issue.labels}
                 available={page.data.labels}
                 onChanged={page.reload}
