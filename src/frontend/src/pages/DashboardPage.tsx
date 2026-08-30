@@ -10,7 +10,13 @@ type Repository = components["schemas"]["RepoResponse"];
 export function DashboardPage() {
   const repositories = useApiData<Repository[]>("repositories", async () => {
     const {data, response} = await api.GET("/api/v3/repositories", {});
-    return requireApiData(data, response, "Could not load repositories.");
+    return [
+      ...requireApiData(data, response, "Could not load repositories."),
+    ].sort((left, right) =>
+      left.full_name.localeCompare(right.full_name, undefined, {
+        sensitivity: "base",
+      }),
+    );
   });
 
   return (
@@ -19,7 +25,9 @@ export function DashboardPage() {
         <div className="page-heading">
           <div>
             <h1>Repositories</h1>
-            <p className="muted">Recent repositories in the emulator</p>
+            <p className="muted">
+              Repositories in the emulator, sorted by name
+            </p>
           </div>
           <Link className="button" to="/new">
             New repository
