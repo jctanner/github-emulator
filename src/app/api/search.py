@@ -12,6 +12,7 @@ from app.models.search_index import FileContent, CommitMetadata
 from app.api.repos import _repo_json
 from app.api.issues import _issue_json
 from app.schemas.user import UserResponse, _make_node_id
+from app.schemas.browse import GenericSearchResponse, RepositorySearchResponse
 
 router = APIRouter(tags=["search"])
 
@@ -36,7 +37,7 @@ def _parse_qualifiers(q: str) -> tuple[str, dict[str, str]]:
     return " ".join(free_text_parts), qualifiers
 
 
-@router.get("/search/repositories")
+@router.get("/search/repositories", response_model=RepositorySearchResponse)
 async def search_repositories(
     db: DbSession,
     current_user: CurrentUser,
@@ -88,7 +89,7 @@ async def search_repositories(
     }
 
 
-@router.get("/search/issues")
+@router.get("/search/issues", response_model=GenericSearchResponse)
 async def search_issues(
     db: DbSession,
     current_user: CurrentUser,
@@ -134,7 +135,7 @@ async def search_issues(
     }
 
 
-@router.get("/search/users")
+@router.get("/search/users", response_model=GenericSearchResponse)
 async def search_users(
     db: DbSession,
     current_user: CurrentUser,
@@ -181,7 +182,7 @@ async def search_users(
     }
 
 
-@router.get("/search/code")
+@router.get("/search/code", response_model=GenericSearchResponse)
 async def search_code(
     db: DbSession,
     current_user: CurrentUser,
@@ -274,7 +275,7 @@ async def search_code(
     }
 
 
-@router.get("/search/commits")
+@router.get("/search/commits", response_model=GenericSearchResponse)
 async def search_commits(
     db: DbSession,
     current_user: CurrentUser,

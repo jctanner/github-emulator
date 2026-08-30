@@ -17,6 +17,23 @@ router = APIRouter(tags=["labels"])
 
 BASE = settings.BASE_URL
 
+LABEL_NAMES_OPENAPI = {
+    "requestBody": {
+        "required": True,
+        "content": {
+            "application/json": {
+                "schema": {
+                    "type": "object",
+                    "properties": {
+                        "labels": {"type": "array", "items": {"type": "string"}}
+                    },
+                    "required": ["labels"],
+                }
+            }
+        },
+    }
+}
+
 
 async def _read_label_names(request: Request) -> list[str]:
     """Read labels from GitHub JSON and gh-api form-style request bodies."""
@@ -77,7 +94,7 @@ async def _dispatch_label_event(db, repository, user, issue, action, label):
 # Repo-level label CRUD
 # ---------------------------------------------------------------------------
 
-@router.get("/repos/{owner}/{repo}/labels")
+@router.get("/repos/{owner}/{repo}/labels", response_model=list[LabelResponse])
 async def list_labels(
     owner: str,
     repo: str,
@@ -99,7 +116,9 @@ async def list_labels(
     return [LabelResponse.from_db(l, BASE, owner, repo) for l in labels]
 
 
-@router.post("/repos/{owner}/{repo}/labels", status_code=201)
+@router.post(
+    "/repos/{owner}/{repo}/labels", status_code=201, response_model=LabelResponse
+)
 async def create_label(
     owner: str, repo: str, body: LabelCreate, user: AuthUser, db: DbSession
 ):
@@ -126,7 +145,10 @@ async def create_label(
     return LabelResponse.from_db(label, BASE, owner, repo)
 
 
-@router.get("/repos/{owner}/{repo}/labels/{name}")
+@router.get(
+    "/repos/{owner}/{repo}/labels/{name}",
+    response_model=LabelResponse,
+)
 async def get_label(
     owner: str, repo: str, name: str, db: DbSession, current_user: CurrentUser
 ):
@@ -144,7 +166,9 @@ async def get_label(
     return LabelResponse.from_db(label, BASE, owner, repo)
 
 
-@router.patch("/repos/{owner}/{repo}/labels/{name}")
+@router.patch(
+    "/repos/{owner}/{repo}/labels/{name}", response_model=LabelResponse
+)
 async def update_label(
     owner: str, repo: str, name: str, body: LabelUpdate, user: AuthUser, db: DbSession
 ):
@@ -196,7 +220,10 @@ async def delete_label(
 # Issue-level label management
 # ---------------------------------------------------------------------------
 
-@router.get("/repos/{owner}/{repo}/issues/{issue_number}/labels")
+@router.get(
+    "/repos/{owner}/{repo}/issues/{issue_number}/labels",
+    response_model=list[LabelResponse],
+)
 async def list_issue_labels(
     owner: str, repo: str, issue_number: int, db: DbSession, current_user: CurrentUser
 ):
@@ -214,7 +241,12 @@ async def list_issue_labels(
     return [LabelResponse.from_db(l, BASE, owner, repo) for l in issue.labels]
 
 
-@router.post("/repos/{owner}/{repo}/issues/{issue_number}/labels", status_code=200)
+@router.post(
+    "/repos/{owner}/{repo}/issues/{issue_number}/labels",
+    status_code=200,
+    response_model=list[LabelResponse],
+    openapi_extra=LABEL_NAMES_OPENAPI,
+)
 async def add_issue_labels(
     owner: str,
     repo: str,
@@ -267,7 +299,11 @@ async def add_issue_labels(
     return [LabelResponse.from_db(l, BASE, owner, repo) for l in issue.labels]
 
 
-@router.put("/repos/{owner}/{repo}/issues/{issue_number}/labels")
+@router.put(
+    "/repos/{owner}/{repo}/issues/{issue_number}/labels",
+    response_model=list[LabelResponse],
+    openapi_extra=LABEL_NAMES_OPENAPI,
+)
 async def set_issue_labels(
     owner: str,
     repo: str,
@@ -319,7 +355,11 @@ async def set_issue_labels(
     return [LabelResponse.from_db(l, BASE, owner, repo) for l in issue.labels]
 
 
-@router.delete("/repos/{owner}/{repo}/issues/{issue_number}/labels/{name}", status_code=200)
+@router.delete(
+    "/repos/{owner}/{repo}/issues/{issue_number}/labels/{name}",
+    status_code=200,
+    response_model=list[LabelResponse],
+)
 async def remove_issue_label(
     owner: str,
     repo: str,

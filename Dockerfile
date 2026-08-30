@@ -1,3 +1,11 @@
+FROM node:22-slim AS frontend-build
+
+WORKDIR /frontend
+COPY src/frontend/package.json src/frontend/package-lock.json ./
+RUN npm ci
+COPY src/frontend/ ./
+RUN npm run build
+
 FROM python:3.12-slim
 
 # Install git, supervisor, and Caddy
@@ -16,6 +24,7 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 # Copy application code
 COPY . .
+COPY --from=frontend-build /frontend/dist /app/src/frontend/dist
 
 # Copy supervisor and Caddy configs
 COPY supervisord.conf /etc/supervisor/conf.d/github-emulator.conf

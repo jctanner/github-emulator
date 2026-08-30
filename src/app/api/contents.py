@@ -11,6 +11,7 @@ from sqlalchemy import select
 
 from app.api.deps import AuthUser, CurrentUser, DbSession, get_repo_or_404
 from app.config import settings
+from app.schemas.browse import ContentResponse
 from app.schemas.user import _make_node_id
 
 router = APIRouter(tags=["contents"])
@@ -87,7 +88,10 @@ def _file_response(
     }
 
 
-@router.get("/repos/{owner}/{repo}/contents/{path:path}")
+@router.get(
+    "/repos/{owner}/{repo}/contents/{path:path}",
+    response_model=ContentResponse | list[ContentResponse],
+)
 async def get_contents(
     owner: str, repo: str, path: str, db: DbSession, current_user: CurrentUser,
     ref: str | None = None,
@@ -289,7 +293,7 @@ async def delete_file(
     }
 
 
-@router.get("/repos/{owner}/{repo}/readme")
+@router.get("/repos/{owner}/{repo}/readme", response_model=ContentResponse)
 async def get_readme(
     owner: str, repo: str, db: DbSession, current_user: CurrentUser,
     ref: str | None = None,

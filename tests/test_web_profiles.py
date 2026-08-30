@@ -37,7 +37,7 @@ async def test_org_profile_lists_repos_by_org_namespace(client, db_session, admi
     ])
     await db_session.commit()
 
-    resp = await client.get("/ui/opendatahub-io")
+    resp = await client.get("/ui-legacy/opendatahub-io")
 
     assert resp.status_code == 200
     assert "agent-eval-harness" in resp.text

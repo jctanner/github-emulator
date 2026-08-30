@@ -1,0 +1,2 @@
+api: PYTHONPATH=src uv run uvicorn app.main:app --reload --host 127.0.0.1 --port 8000
+frontend: npm --prefix src/frontend run dev -- --host 127.0.0.1 --port 5173

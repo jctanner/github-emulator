@@ -11,10 +11,9 @@ def _routes(app) -> set[tuple[str, str]]:
 def test_ui_admin_api_and_actions_route_contracts(app):
     routes = _routes(app)
     expected = {
-        ("GET", "/ui/{owner}"),
-        ("GET", "/ui/_admin/login"),
-        ("GET", "/ui/{owner}/{repo_name}/settings"),
-        ("GET", "/ui/{owner}/{repo_name}/settings/installations"),
+        ("GET", "/api/v3/session"),
+        ("POST", "/api/v3/session"),
+        ("DELETE", "/api/v3/session"),
         ("POST", "/admin/api/apps"),
         ("GET", "/api/v3/repos/{owner}/{repo}/actions/runs"),
         ("GET", "/_apis/connectionData"),
@@ -23,5 +22,5 @@ def test_ui_admin_api_and_actions_route_contracts(app):
     assert expected <= routes
 
     mounts = {getattr(route, "path", None) for route in app.routes}
-    assert "/ui/_admin/static" in mounts
-    assert "/ui/static" in mounts
+    assert "/ui" in mounts
+    assert "/ui-legacy" in mounts

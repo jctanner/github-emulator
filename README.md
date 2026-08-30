@@ -10,8 +10,8 @@ scripts without touching real GitHub.
 - **GraphQL API** -- Strawberry-based implementation of common GitHub GraphQL queries and mutations
 - **Git Smart HTTP** -- clone, fetch, and push over HTTP/HTTPS against bare repositories
 - **Git SSH Transport** -- clone and push over SSH (port 2222 by default)
-- **Web UI** (`/ui/`) -- browse repositories, files, commits, issues, and pull requests in a GitHub-like interface
-- **Admin Panel** (`/admin/`) -- manage users, tokens, organisations, repositories, GitHub Apps/installations, inspect Actions runner registrations, and import repos from real GitHub
+- **Web UI** (`/ui/`) -- typed React API client for repositories, files, commits, issues, pull requests, Actions, and settings
+- **Admin Panel** (`/ui/_admin/`) -- API-client administration for users, tokens, organisations, repositories, GitHub Apps/installations, runners, and imports
 - **GitHub Import** -- clone a single repo by URL or bulk-import all repos from a GitHub user/org via the admin panel
 - **Webhooks** -- event delivery with recorded payloads
 - **`gh` CLI Compatible** -- works as a `GH_HOST` target for the GitHub CLI
@@ -34,7 +34,8 @@ The server will be available at:
 |---|---|
 | REST API | `http://localhost:8000/api/v3` |
 | Web UI | `http://localhost:8000/ui/` |
-| Admin Panel | `http://localhost:8000/admin/` |
+| Admin Panel | `http://localhost:8000/ui/_admin/` |
+| Legacy parity UI | `http://localhost:8000/ui-legacy/` |
 | GraphQL | `http://localhost:8000/api/graphql` |
 
 Default admin credentials: `admin` / `admin`. Fresh instances also seed a
@@ -70,6 +71,19 @@ uv run pytest tests/ -v
 # Start the server locally (without Docker)
 uv run uvicorn app.main:app --reload
 ```
+
+For coordinated API and frontend development, install the frontend once and
+run the Honcho process file:
+
+```bash
+make frontend-install
+make dev
+```
+
+Honcho starts the reloadable FastAPI backend on port 8000 and Vite on port
+5173. Open `http://127.0.0.1:5173/ui/`; Vite proxies API, avatar, admin API,
+and `/ui-legacy` parity requests to FastAPI. The production image builds the
+same React source and serves its static bundle directly from FastAPI.
 
 ## Configuration
 

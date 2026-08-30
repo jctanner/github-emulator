@@ -11,6 +11,29 @@ API = "/api/v3"
 
 
 @pytest.mark.asyncio
+async def test_list_public_repositories(client, test_user, test_token):
+    public = await client.post(
+        f"{API}/user/repos",
+        json={"name": "public-listing"},
+        headers=auth_headers(test_token),
+    )
+    private = await client.post(
+        f"{API}/user/repos",
+        json={"name": "private-listing", "private": True},
+        headers=auth_headers(test_token),
+    )
+    assert public.status_code == 201
+    assert private.status_code == 201
+
+    response = await client.get(f"{API}/repositories")
+
+    assert response.status_code == 200
+    assert [repository["name"] for repository in response.json()] == [
+        "public-listing"
+    ]
+
+
+@pytest.mark.asyncio
 async def test_create_repo(client, test_user, test_token):
     """POST /user/repos creates a repository."""
     resp = await client.post(

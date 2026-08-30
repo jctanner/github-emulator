@@ -11,6 +11,13 @@ from app.config import settings
 from app.models.actions import Workflow, WorkflowRun, WorkflowJob, Secret, Variable
 from app.models.artifact import WorkflowArtifact
 from app.schemas.user import SimpleUser, _fmt_dt, _make_node_id
+from app.schemas.actions import (
+    WorkflowJobListResponse,
+    WorkflowJobResponse,
+    WorkflowListResponse,
+    WorkflowRunListResponse,
+    WorkflowRunResponse,
+)
 
 router = APIRouter(tags=["actions"])
 
@@ -152,7 +159,9 @@ def _check_read_access(repository, current_user) -> None:
 
 # --- Workflows ---
 
-@router.get("/repos/{owner}/{repo}/actions/workflows")
+@router.get(
+    "/repos/{owner}/{repo}/actions/workflows", response_model=WorkflowListResponse
+)
 async def list_workflows(
     owner: str, repo: str, db: DbSession, current_user: CurrentUser,
     page: int = Query(1, ge=1),
@@ -271,7 +280,9 @@ async def dispatch_workflow(
 
 # --- Workflow runs ---
 
-@router.get("/repos/{owner}/{repo}/actions/runs")
+@router.get(
+    "/repos/{owner}/{repo}/actions/runs", response_model=WorkflowRunListResponse
+)
 async def list_workflow_runs(
     owner: str, repo: str, db: DbSession, current_user: CurrentUser,
     page: int = Query(1, ge=1),
@@ -292,7 +303,9 @@ async def list_workflow_runs(
     return {"total_count": len(items), "workflow_runs": items}
 
 
-@router.get("/repos/{owner}/{repo}/actions/runs/{run_id}")
+@router.get(
+    "/repos/{owner}/{repo}/actions/runs/{run_id}", response_model=WorkflowRunResponse
+)
 async def get_workflow_run(
     owner: str, repo: str, run_id: int, db: DbSession, current_user: CurrentUser,
 ):
@@ -391,7 +404,10 @@ async def rerun_workflow(
 
 # --- Workflow jobs ---
 
-@router.get("/repos/{owner}/{repo}/actions/runs/{run_id}/jobs")
+@router.get(
+    "/repos/{owner}/{repo}/actions/runs/{run_id}/jobs",
+    response_model=WorkflowJobListResponse,
+)
 async def list_jobs(
     owner: str, repo: str, run_id: int, db: DbSession, current_user: CurrentUser,
 ):
@@ -413,7 +429,9 @@ async def list_jobs(
     return {"total_count": len(items), "jobs": items}
 
 
-@router.get("/repos/{owner}/{repo}/actions/jobs/{job_id}")
+@router.get(
+    "/repos/{owner}/{repo}/actions/jobs/{job_id}", response_model=WorkflowJobResponse
+)
 async def get_job(
     owner: str, repo: str, job_id: int, db: DbSession, current_user: CurrentUser,
 ):

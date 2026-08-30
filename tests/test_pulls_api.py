@@ -106,7 +106,7 @@ async def test_repo_navigation_shows_issue_and_pull_request_counts(
         "pulls/" + str(pr_number),
         "issues/1",
     ):
-        page = await client.get(f"/ui/testuser/pr-repo/{path}")
+        page = await client.get(f"/ui-legacy/testuser/pr-repo/{path}")
         assert page.status_code == 200
         assert re.search(
             r'<span>Issues</span>\s*<span class="Counter">1</span>', page.text
@@ -431,7 +431,7 @@ async def test_pr_owner_prefixed_head_ref_resolves_commits_and_diff(
     assert len(files) == 1
     assert files[0]["filename"] == "feature.txt"
 
-    page = await client.get(f"/ui/testuser/{repo_name}/pulls/1")
+    page = await client.get(f"/ui-legacy/testuser/{repo_name}/pulls/1")
     assert page.status_code == 200
     assert "testuser:testuser:feature" not in page.text
     assert "testuser:feature" in page.text
@@ -444,13 +444,13 @@ async def test_pr_web_files_tab_renders_diff(client, db_session, test_user, test
         client, db_session, test_token, repo_name="pr-web-diff-repo"
     )
 
-    conversation = await client.get(f"/ui/testuser/{repo_name}/pulls/1")
+    conversation = await client.get(f"/ui-legacy/testuser/{repo_name}/pulls/1")
     assert conversation.status_code == 200
     assert "Conversation" in conversation.text
     assert re.search(r"Commits\s*<span class=\"Counter\">1</span>", conversation.text)
     assert "Files changed" in conversation.text
 
-    files = await client.get(f"/ui/testuser/{repo_name}/pulls/1?tab=files")
+    files = await client.get(f"/ui-legacy/testuser/{repo_name}/pulls/1?tab=files")
     assert files.status_code == 200
     assert 'class="pr-files-main px-3 px-md-4 px-lg-5 mt-4"' in files.text
     assert "Showing 1 changed file" in files.text
@@ -501,7 +501,7 @@ async def test_pr_web_renders_markdown_body_and_comments(
     )
     assert resp.status_code == 201
 
-    page = await client.get("/ui/testuser/pr-repo/pulls/1")
+    page = await client.get("/ui-legacy/testuser/pr-repo/pulls/1")
 
     assert page.status_code == 200
     assert "<h2>Pull request checklist</h2>" in page.text
@@ -537,12 +537,12 @@ async def test_pr_web_renders_labels_on_list_and_detail(
     )
     assert response.status_code == 200
 
-    list_page = await client.get(f"/ui/testuser/{repo_name}/pulls")
+    list_page = await client.get(f"/ui-legacy/testuser/{repo_name}/pulls")
     assert list_page.status_code == 200
     assert 'aria-label="Pull request labels"' in list_page.text
     assert "ready-for-review" in list_page.text
 
-    detail_page = await client.get(f"/ui/testuser/{repo_name}/pulls/1")
+    detail_page = await client.get(f"/ui-legacy/testuser/{repo_name}/pulls/1")
     assert detail_page.status_code == 200
     assert 'aria-label="Pull request labels"' in detail_page.text
     assert 'class="issue-detail-sidebar"' in detail_page.text
@@ -559,14 +559,14 @@ async def test_pr_web_can_add_edit_and_close_pull_request(
     )
     client.cookies.set("ui_session", _sign_session("testuser"))
 
-    page = await client.get(f"/ui/testuser/{repo_name}/pulls/1")
+    page = await client.get(f"/ui-legacy/testuser/{repo_name}/pulls/1")
     assert page.status_code == 200
     assert "Add a comment" in page.text
     assert "Comment" in page.text
     assert "Close pull request" in page.text
 
     create_response = await client.post(
-        f"/ui/testuser/{repo_name}/pulls/1/comments",
+        f"/ui-legacy/testuser/{repo_name}/pulls/1/comments",
         data={"body": "A PR conversation comment"},
         follow_redirects=False,
     )
@@ -580,22 +580,22 @@ async def test_pr_web_can_add_edit_and_close_pull_request(
     comment = comments_response.json()[0]
     assert comment["body"] == "A PR conversation comment"
 
-    page = await client.get(f"/ui/testuser/{repo_name}/pulls/1")
+    page = await client.get(f"/ui-legacy/testuser/{repo_name}/pulls/1")
     assert "A PR conversation comment" in page.text
     assert f"/pulls/1/comments/{comment['id']}" in page.text
 
     edit_response = await client.post(
-        f"/ui/testuser/{repo_name}/pulls/1/comments/{comment['id']}",
+        f"/ui-legacy/testuser/{repo_name}/pulls/1/comments/{comment['id']}",
         data={"body": "An edited PR comment"},
         follow_redirects=False,
     )
     assert edit_response.status_code == 302
-    page = await client.get(f"/ui/testuser/{repo_name}/pulls/1")
+    page = await client.get(f"/ui-legacy/testuser/{repo_name}/pulls/1")
     assert "An edited PR comment" in page.text
     assert "A PR conversation comment" not in page.text
 
     close_response = await client.post(
-        f"/ui/testuser/{repo_name}/pulls/1/state",
+        f"/ui-legacy/testuser/{repo_name}/pulls/1/state",
         data={"state": "closed"},
         follow_redirects=False,
     )
@@ -605,12 +605,12 @@ async def test_pr_web_can_add_edit_and_close_pull_request(
         headers=auth_headers(test_token),
     )
     assert pr_response.json()["state"] == "closed"
-    page = await client.get(f"/ui/testuser/{repo_name}/pulls/1")
+    page = await client.get(f"/ui-legacy/testuser/{repo_name}/pulls/1")
     assert "Reopen pull request" in page.text
     assert "Close pull request" not in page.text
 
     reopen_response = await client.post(
-        f"/ui/testuser/{repo_name}/pulls/1/state",
+        f"/ui-legacy/testuser/{repo_name}/pulls/1/state",
         data={"state": "open"},
         follow_redirects=False,
     )
@@ -640,24 +640,24 @@ async def test_pr_web_merge_button_merges_pull_request(
     )
     assert resp.status_code == 201
 
-    page = await client.get(f"/ui/testuser/{repo_name}/pulls/1")
+    page = await client.get(f"/ui-legacy/testuser/{repo_name}/pulls/1")
     assert page.status_code == 200
     assert "Merge pull request" not in page.text
     assert "Sign in to merge" in page.text
 
     client.cookies.set("ui_session", _sign_session("testuser"))
-    page = await client.get(f"/ui/testuser/{repo_name}/pulls/1")
+    page = await client.get(f"/ui-legacy/testuser/{repo_name}/pulls/1")
     assert page.status_code == 200
     assert "Merge pull request" in page.text
     assert page.text.index("Reviewer comment before merge controls.") < page.text.index(
         "Merge pull request"
     )
 
-    resp = await client.post(f"/ui/testuser/{repo_name}/pulls/1/merge")
+    resp = await client.post(f"/ui-legacy/testuser/{repo_name}/pulls/1/merge")
     assert resp.status_code == 302
-    assert resp.headers["location"] == f"/ui/testuser/{repo_name}/pulls/1"
+    assert resp.headers["location"] == f"/ui-legacy/testuser/{repo_name}/pulls/1"
 
-    page = await client.get(f"/ui/testuser/{repo_name}/pulls/1")
+    page = await client.get(f"/ui-legacy/testuser/{repo_name}/pulls/1")
     assert page.status_code == 200
     assert "Pull request successfully merged" in page.text
     assert "Merge pull request" not in page.text
@@ -676,7 +676,7 @@ async def test_pr_web_merge_button_merges_pull_request(
     assert branch.json()["commit"]["sha"] == pr_data["merge_commit_sha"]
 
     commit_page = await client.get(
-        f"/ui/testuser/{repo_name}/commit/{pr_data['merge_commit_sha']}"
+        f"/ui-legacy/testuser/{repo_name}/commit/{pr_data['merge_commit_sha']}"
     )
     assert commit_page.status_code == 200
     assert "Showing 1 changed file" in commit_page.text

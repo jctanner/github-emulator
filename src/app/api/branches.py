@@ -8,6 +8,8 @@ from app.config import settings
 from app.middleware.error_handler import ValidationError
 from app.models.branch import Branch, BranchProtection
 from app.models.repository import Collaborator, Repository
+from app.schemas.browse import BranchResponse
+from app.schemas.settings import BranchProtectionResponse
 
 router = APIRouter(tags=["branches"])
 
@@ -247,7 +249,7 @@ async def _reevaluate(repository: Repository, db) -> None:
     await reevaluate_auto_merges(db, repository.id)
 
 
-@router.get("/repos/{owner}/{repo}/branches")
+@router.get("/repos/{owner}/{repo}/branches", response_model=list[BranchResponse])
 async def list_branches(
     owner: str,
     repo: str,
@@ -266,7 +268,10 @@ async def list_branches(
     return [_branch_json(branch, owner, repo, BASE) for branch in branches]
 
 
-@router.get("/repos/{owner}/{repo}/branches/{branch:path}/protection")
+@router.get(
+    "/repos/{owner}/{repo}/branches/{branch:path}/protection",
+    response_model=BranchProtectionResponse,
+)
 async def get_branch_protection(
     owner: str, repo: str, branch: str, db: DbSession, current_user: CurrentUser
 ):
@@ -277,7 +282,10 @@ async def get_branch_protection(
     return _protection_json(value.protection, owner, repo, branch)
 
 
-@router.put("/repos/{owner}/{repo}/branches/{branch:path}/protection")
+@router.put(
+    "/repos/{owner}/{repo}/branches/{branch:path}/protection",
+    response_model=BranchProtectionResponse,
+)
 async def update_branch_protection(
     owner: str,
     repo: str,
@@ -468,7 +476,7 @@ async def disable_admin_enforcement(
     return Response(status_code=204)
 
 
-@router.get("/repos/{owner}/{repo}/branches/{branch:path}")
+@router.get("/repos/{owner}/{repo}/branches/{branch:path}", response_model=BranchResponse)
 async def get_branch(
     owner: str, repo: str, branch: str, db: DbSession, current_user: CurrentUser
 ):

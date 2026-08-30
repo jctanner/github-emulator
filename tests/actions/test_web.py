@@ -77,15 +77,15 @@ async def web_actions_repo(client, db_session, test_user, test_token):
 
 @pytest.mark.asyncio
 async def test_actions_tab_on_repo_page(client, web_actions_repo):
-    resp = await client.get("/ui/testuser/web-actions-repo")
+    resp = await client.get("/ui-legacy/testuser/web-actions-repo")
     assert resp.status_code == 200
     assert "Actions" in resp.text
-    assert "/ui/testuser/web-actions-repo/actions" in resp.text
+    assert "/ui-legacy/testuser/web-actions-repo/actions" in resp.text
 
 
 @pytest.mark.asyncio
 async def test_actions_list_page(client, web_actions_repo):
-    resp = await client.get("/ui/testuser/web-actions-repo/actions")
+    resp = await client.get("/ui-legacy/testuser/web-actions-repo/actions")
     assert resp.status_code == 200
     assert "Workflows" in resp.text
     assert "Recent Runs" in resp.text
@@ -96,7 +96,7 @@ async def test_actions_list_page(client, web_actions_repo):
 @pytest.mark.asyncio
 async def test_actions_run_detail_page(client, web_actions_repo):
     _repo, _workflow, run, _job, _runner = web_actions_repo
-    resp = await client.get(f"/ui/testuser/web-actions-repo/actions/runs/{run.id}")
+    resp = await client.get(f"/ui-legacy/testuser/web-actions-repo/actions/runs/{run.id}")
     assert resp.status_code == 200
     assert "Run metadata" in resp.text
     assert "def456" in resp.text
@@ -107,7 +107,7 @@ async def test_actions_run_detail_page(client, web_actions_repo):
 @pytest.mark.asyncio
 async def test_actions_job_detail_page(client, web_actions_repo):
     _repo, _workflow, _run, job, _runner = web_actions_repo
-    resp = await client.get(f"/ui/testuser/web-actions-repo/actions/jobs/{job.id}")
+    resp = await client.get(f"/ui-legacy/testuser/web-actions-repo/actions/jobs/{job.id}")
     assert resp.status_code == 200
     assert "Job metadata" in resp.text
     assert "Checkout" in resp.text
@@ -118,7 +118,7 @@ async def test_actions_job_detail_page(client, web_actions_repo):
 @pytest.mark.asyncio
 async def test_actions_job_live_endpoint_returns_state_and_logs(client, web_actions_repo):
     _repo, _workflow, _run, job, _runner = web_actions_repo
-    resp = await client.get(f"/ui/testuser/web-actions-repo/actions/jobs/{job.id}/live")
+    resp = await client.get(f"/ui-legacy/testuser/web-actions-repo/actions/jobs/{job.id}/live")
     assert resp.status_code == 200
     data = resp.json()
     assert data["status"] == "in_progress"
@@ -128,7 +128,7 @@ async def test_actions_job_live_endpoint_returns_state_and_logs(client, web_acti
 
 @pytest.mark.asyncio
 async def test_actions_runners_page(client, web_actions_repo):
-    resp = await client.get("/ui/testuser/web-actions-repo/actions/runners")
+    resp = await client.get("/ui-legacy/testuser/web-actions-repo/actions/runners")
     assert resp.status_code == 200
     assert "Repository runners" in resp.text
     assert "web-runner" in resp.text
@@ -145,12 +145,12 @@ async def test_actions_empty_states(client, test_token):
     )
     assert resp.status_code == 201
 
-    resp = await client.get("/ui/testuser/empty-actions-repo/actions")
+    resp = await client.get("/ui-legacy/testuser/empty-actions-repo/actions")
     assert resp.status_code == 200
     assert "No workflows have been detected" in resp.text
     assert "No workflow runs yet" in resp.text
 
-    resp = await client.get("/ui/testuser/empty-actions-repo/actions/runners")
+    resp = await client.get("/ui-legacy/testuser/empty-actions-repo/actions/runners")
     assert resp.status_code == 200
     assert "No runners registered" in resp.text
 
@@ -164,5 +164,5 @@ async def test_private_actions_page_hidden_without_session(client, test_token):
     )
     assert resp.status_code == 201
 
-    resp = await client.get("/ui/testuser/private-web-actions-repo/actions")
+    resp = await client.get("/ui-legacy/testuser/private-web-actions-repo/actions")
     assert resp.status_code == 404

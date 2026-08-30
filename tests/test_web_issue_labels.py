@@ -34,13 +34,13 @@ async def test_issue_page_renders_and_updates_label_selector(
         )
         assert label_response.status_code == 201
 
-    page = await client.get(f"/ui/{owner}/{repo_name}/issues/1")
+    page = await client.get(f"/ui-legacy/{owner}/{repo_name}/issues/1")
     assert page.status_code == 200
     assert 'class="issue-detail-sidebar"' in page.text
     assert "to edit labels." in page.text
 
     client.cookies.set("ui_session", _sign_session(owner))
-    page = await client.get(f"/ui/{owner}/{repo_name}/issues/1")
+    page = await client.get(f"/ui-legacy/{owner}/{repo_name}/issues/1")
     assert page.status_code == 200
     assert 'name="labels" value="bug"' in page.text
     assert 'name="labels" value="enhancement"' in page.text
@@ -52,14 +52,14 @@ async def test_issue_page_renders_and_updates_label_selector(
     assert "Edit labels" in page.text
 
     update_response = await client.post(
-        f"/ui/{owner}/{repo_name}/issues/1",
+        f"/ui-legacy/{owner}/{repo_name}/issues/1",
         data={"labels": ["bug"]},
         follow_redirects=False,
     )
     assert update_response.status_code == 302
-    assert update_response.headers["location"] == f"/ui/{owner}/{repo_name}/issues/1"
+    assert update_response.headers["location"] == f"/ui-legacy/{owner}/{repo_name}/issues/1"
 
-    page = await client.get(f"/ui/{owner}/{repo_name}/issues/1")
+    page = await client.get(f"/ui-legacy/{owner}/{repo_name}/issues/1")
     assert re.search(r'name="labels" value="bug"\s+checked', page.text)
     assert not re.search(r'name="labels" value="enhancement"\s+checked', page.text)
 
@@ -85,12 +85,12 @@ async def test_issue_label_update_requires_ui_login(
     assert issue_response.status_code == 201
 
     response = await client.post(
-        f"/ui/{owner}/{repo_name}/issues/1",
+        f"/ui-legacy/{owner}/{repo_name}/issues/1",
         data={"labels": ["bug"]},
         follow_redirects=False,
     )
     assert response.status_code == 302
-    assert response.headers["location"] == "/ui/login"
+    assert response.headers["location"] == "/ui-legacy/login"
 
 
 @pytest.mark.asyncio
@@ -108,7 +108,7 @@ async def test_issue_page_can_create_and_delete_repository_labels(
 
     client.cookies.set("ui_session", _sign_session(owner))
     create_response = await client.post(
-        f"/ui/{owner}/{repo_name}/issues/1/labels/create",
+        f"/ui-legacy/{owner}/{repo_name}/issues/1/labels/create",
         data={
             "name": "needs-triage",
             "color": "#fbca04",
@@ -125,16 +125,16 @@ async def test_issue_page_can_create_and_delete_repository_labels(
     assert [label["name"] for label in labels_response.json()] == ["needs-triage"]
     label_id = labels_response.json()[0]["id"]
 
-    page = await client.get(f"/ui/{owner}/{repo_name}/issues/1")
+    page = await client.get(f"/ui-legacy/{owner}/{repo_name}/issues/1")
     assert "needs-triage" in page.text
-    labels_page = await client.get(f"/ui/{owner}/{repo_name}/labels")
+    labels_page = await client.get(f"/ui-legacy/{owner}/{repo_name}/labels")
     assert labels_page.status_code == 200
     assert "Labels" in labels_page.text
     assert "New label" in labels_page.text
     assert "needs-triage" in labels_page.text
 
     delete_response = await client.post(
-        f"/ui/{owner}/{repo_name}/issues/1/labels/delete",
+        f"/ui-legacy/{owner}/{repo_name}/issues/1/labels/delete",
         data={"label_id": str(label_id)},
         follow_redirects=False,
     )
@@ -177,17 +177,17 @@ async def test_issue_web_flow_creates_closes_and_reopens_issue(
     monkeypatch.setattr(workflow_service, "detect_workflows", fake_detect)
     monkeypatch.setattr(workflow_service, "get_ref_sha", fake_ref_sha)
 
-    new_page = await client.get(f"/ui/{owner}/{repo_name}/issues/new")
+    new_page = await client.get(f"/ui-legacy/{owner}/{repo_name}/issues/new")
     assert new_page.status_code == 200
     assert "Submit new issue" in new_page.text
 
     create_response = await client.post(
-        f"/ui/{owner}/{repo_name}/issues/new",
+        f"/ui-legacy/{owner}/{repo_name}/issues/new",
         data={"title": "Closeable issue", "body": "Issue body"},
         follow_redirects=False,
     )
     assert create_response.status_code == 302
-    assert create_response.headers["location"] == f"/ui/{owner}/{repo_name}/issues/1"
+    assert create_response.headers["location"] == f"/ui-legacy/{owner}/{repo_name}/issues/1"
 
     runs = (await db_session.execute(
         select(WorkflowRun).order_by(WorkflowRun.id)
@@ -197,7 +197,7 @@ async def test_issue_web_flow_creates_closes_and_reopens_issue(
     assert runs[0].trigger_payload["action"] == "opened"
     assert runs[0].trigger_payload["issue"]["number"] == 1
 
-    page = await client.get(f"/ui/{owner}/{repo_name}/issues/1")
+    page = await client.get(f"/ui-legacy/{owner}/{repo_name}/issues/1")
     assert page.status_code == 200
     assert "New issue" in page.text
     assert "opened this issue on" in page.text
@@ -208,12 +208,12 @@ async def test_issue_web_flow_creates_closes_and_reopens_issue(
     assert page.text.index("Add a comment") < page.text.index("Close issue")
 
     comment_response = await client.post(
-        f"/ui/{owner}/{repo_name}/issues/1/comments",
+        f"/ui-legacy/{owner}/{repo_name}/issues/1/comments",
         data={"body": "A web comment"},
         follow_redirects=False,
     )
     assert comment_response.status_code == 302
-    page = await client.get(f"/ui/{owner}/{repo_name}/issues/1")
+    page = await client.get(f"/ui-legacy/{owner}/{repo_name}/issues/1")
     assert "A web comment" in page.text
     assert "IssueComment" in page.text
     assert 'class="TimelineItem-avatar"' not in page.text
@@ -227,7 +227,7 @@ async def test_issue_web_flow_creates_closes_and_reopens_issue(
     assert runs[1].trigger_payload["comment"]["body"] == "A web comment"
 
     close_response = await client.post(
-        f"/ui/{owner}/{repo_name}/issues/1/state",
+        f"/ui-legacy/{owner}/{repo_name}/issues/1/state",
         data={"state": "closed"},
         follow_redirects=False,
     )
@@ -241,12 +241,12 @@ async def test_issue_web_flow_creates_closes_and_reopens_issue(
     assert issue["state"] == "closed"
     assert issue["closed_by"]["login"] == owner
 
-    page = await client.get(f"/ui/{owner}/{repo_name}/issues/1")
+    page = await client.get(f"/ui-legacy/{owner}/{repo_name}/issues/1")
     assert "Reopen issue" in page.text
     assert "Close issue" not in page.text
 
     reopen_response = await client.post(
-        f"/ui/{owner}/{repo_name}/issues/1/state",
+        f"/ui-legacy/{owner}/{repo_name}/issues/1/state",
         data={"state": "open"},
         follow_redirects=False,
     )
@@ -269,18 +269,18 @@ async def test_repository_label_editor_can_create_and_delete_labels(
     owner, repo_name, _ = test_repo_with_init
     client.cookies.set("ui_session", _sign_session(owner))
 
-    page = await client.get(f"/ui/{owner}/{repo_name}/labels")
+    page = await client.get(f"/ui-legacy/{owner}/{repo_name}/labels")
     assert page.status_code == 200
     assert "No labels found" in page.text
 
     create_response = await client.post(
-        f"/ui/{owner}/{repo_name}/labels/create",
+        f"/ui-legacy/{owner}/{repo_name}/labels/create",
         data={"name": "documentation", "color": "#0075ca", "description": "Docs"},
         follow_redirects=False,
     )
     assert create_response.status_code == 302
 
-    page = await client.get(f"/ui/{owner}/{repo_name}/labels?q=doc")
+    page = await client.get(f"/ui-legacy/{owner}/{repo_name}/labels?q=doc")
     assert page.status_code == 200
     assert "documentation" in page.text
     assert "1 label" in page.text
@@ -291,11 +291,11 @@ async def test_repository_label_editor_can_create_and_delete_labels(
     )
     label_id = labels_response.json()[0]["id"]
     delete_response = await client.post(
-        f"/ui/{owner}/{repo_name}/labels/delete",
+        f"/ui-legacy/{owner}/{repo_name}/labels/delete",
         data={"label_id": str(label_id)},
         follow_redirects=False,
     )
     assert delete_response.status_code == 302
 
-    page = await client.get(f"/ui/{owner}/{repo_name}/labels")
+    page = await client.get(f"/ui-legacy/{owner}/{repo_name}/labels")
     assert "No labels found" in page.text

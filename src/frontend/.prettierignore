@@ -1,0 +1,4 @@
+dist
+node_modules
+openapi.json
+src/api/schema.d.ts

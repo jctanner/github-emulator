@@ -102,13 +102,6 @@ def _labels_from_body(body: dict) -> list[str]:
     return ["self-hosted"]
 
 
-def _request_base(request: Request) -> str:
-    # The k3s proxy may replace Host with the internal service name. The
-    # configured base URL is the externally reachable emulator URL and is
-    # therefore the stable value to hand to runner clients.
-    return settings.BASE_URL or f"{request.url.scheme}://{request.headers.get('host', request.url.netloc)}"
-
-
 def _runner_reachable_base_url(base_url: str | None = None) -> str:
     """URL embedded in job messages, consumed from inside the runner container."""
     parsed = urlsplit(base_url or settings.BASE_URL)
@@ -120,7 +113,19 @@ def _runner_reachable_base_url(base_url: str | None = None) -> str:
                 auth = f"{auth}:{parsed.password}"
             netloc = f"{auth}@{netloc}"
         return urlunsplit((parsed.scheme, netloc, parsed.path, "", ""))
-    return settings.BASE_URL
+    return base_url or settings.BASE_URL
+
+
+def _request_base(request: Request) -> str:
+    # The k3s proxy may replace Host with the internal service name. The
+    # configured base URL is the externally reachable emulator URL and is
+    # therefore the stable value to hand to runner clients. The local
+    # upstream-runner harness proxies ghemu.local:80 to the host's :8000, so
+    # normalize that one development URL before embedding service locations.
+    configured = settings.BASE_URL or (
+        f"{request.url.scheme}://{request.headers.get('host', request.url.netloc)}"
+    )
+    return _runner_reachable_base_url(configured)
 
 
 from app.api.actions_runner_protocol import (

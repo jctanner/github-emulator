@@ -14,10 +14,10 @@ def admin_cookies() -> dict[str, str]:
 
 @pytest.mark.asyncio
 async def test_admin_runners_page_requires_admin_session(client):
-    response = await client.get("/ui/_admin/runners", follow_redirects=False)
+    response = await client.get("/ui-legacy/_admin/runners", follow_redirects=False)
 
     assert response.status_code == 302
-    assert response.headers["location"] == "/ui/_admin/login"
+    assert response.headers["location"] == "/ui-legacy/_admin/login"
 
 
 @pytest.mark.asyncio
@@ -80,7 +80,7 @@ async def test_admin_runners_page_shows_scope_health_labels_and_current_job(
     db_session.add(job)
     await db_session.commit()
 
-    response = await client.get("/ui/_admin/runners", cookies=admin_cookies())
+    response = await client.get("/ui-legacy/_admin/runners", cookies=admin_cookies())
 
     assert response.status_code == 200
     assert "fullsend-router" in response.text
@@ -91,7 +91,7 @@ async def test_admin_runners_page_shows_scope_health_labels_and_current_job(
     assert "site-router" in response.text
     assert "Site-wide" in response.text
     assert "All repositories" in response.text
-    assert f"/ui/{repository['full_name']}/actions/jobs/{job.id}" in response.text
+    assert f"/ui-legacy/{repository['full_name']}/actions/jobs/{job.id}" in response.text
     assert "must-not-render" not in response.text
     assert "site-token-must-not-render" not in response.text
-    assert 'href="/ui/_admin/runners"' in response.text
+    assert 'href="/ui-legacy/_admin/runners"' in response.text

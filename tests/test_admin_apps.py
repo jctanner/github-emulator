@@ -20,16 +20,16 @@ def admin_cookies() -> dict[str, str]:
 
 @pytest.mark.asyncio
 async def test_apps_and_auth_pages_require_admin_session(client):
-    for path in ("/ui/_admin/apps", "/ui/_admin/auth"):
+    for path in ("/ui-legacy/_admin/apps", "/ui-legacy/_admin/auth"):
         response = await client.get(path, follow_redirects=False)
         assert response.status_code == 302
-        assert response.headers["location"] == "/ui/_admin/login"
+        assert response.headers["location"] == "/ui-legacy/_admin/login"
 
 
 @pytest.mark.asyncio
 async def test_app_create_and_lookup_redact_private_key(client, admin_token):
     response = await client.post(
-        "/ui/_admin/apps/create",
+        "/ui-legacy/_admin/apps/create",
         cookies=admin_cookies(),
         data={
             "name": "Frontend Test App",
@@ -43,12 +43,12 @@ async def test_app_create_and_lookup_redact_private_key(client, admin_token):
     assert raw_private_key in response.text
     assert "Copy private key" in response.text
 
-    listing = await client.get("/ui/_admin/apps", cookies=admin_cookies())
+    listing = await client.get("/ui-legacy/_admin/apps", cookies=admin_cookies())
     assert listing.status_code == 200
     assert "Frontend Test App" in listing.text
     assert raw_private_key not in listing.text
 
-    detail = await client.get("/ui/_admin/apps/7001", cookies=admin_cookies())
+    detail = await client.get("/ui-legacy/_admin/apps/7001", cookies=admin_cookies())
     assert detail.status_code == 200
     assert "Present (value hidden)" in detail.text
     assert raw_private_key not in detail.text
@@ -81,7 +81,7 @@ async def test_admin_can_install_app_and_mint_one_time_token(
     private_key = created.json()["private_key"]
 
     installation_response = await client.post(
-        "/ui/_admin/apps/7002/installations/create",
+        "/ui-legacy/_admin/apps/7002/installations/create",
         cookies=admin_cookies(),
         data={
             "account_login": "testuser",
@@ -121,7 +121,7 @@ async def test_admin_can_install_app_and_mint_one_time_token(
     assert installation.permissions == reconciled.json()["permissions"]
 
     duplicate_response = await client.post(
-        "/ui/_admin/apps/7002/installations/create",
+        "/ui-legacy/_admin/apps/7002/installations/create",
         cookies=admin_cookies(),
         data={
             "account_login": "testuser",
@@ -134,14 +134,14 @@ async def test_admin_can_install_app_and_mint_one_time_token(
     assert repo["full_name"] in duplicate_response.text
 
     detail = await client.get(
-        f"/ui/_admin/installations/{installation_id}", cookies=admin_cookies()
+        f"/ui-legacy/_admin/installations/{installation_id}", cookies=admin_cookies()
     )
     assert detail.status_code == 200
     assert repo["full_name"] in detail.text
     assert private_key not in detail.text
 
     token_response = await client.post(
-        f"/ui/_admin/installations/{installation_id}/tokens/create",
+        f"/ui-legacy/_admin/installations/{installation_id}/tokens/create",
         cookies=admin_cookies(),
         data={"repositories": [repo["full_name"]]},
     )
@@ -157,18 +157,18 @@ async def test_admin_can_install_app_and_mint_one_time_token(
     token_hash = hashlib.sha256(raw_token.encode()).hexdigest()
 
     installation_detail = await client.get(
-        f"/ui/_admin/installations/{installation_id}", cookies=admin_cookies()
+        f"/ui-legacy/_admin/installations/{installation_id}", cookies=admin_cookies()
     )
     assert raw_token not in installation_detail.text
     assert token_hash not in installation_detail.text
     assert raw_token[:8] in installation_detail.text
 
-    app_detail = await client.get("/ui/_admin/apps/7002", cookies=admin_cookies())
+    app_detail = await client.get("/ui-legacy/_admin/apps/7002", cookies=admin_cookies())
     assert raw_token not in app_detail.text
     assert token_hash not in app_detail.text
     assert "Recent installation-token metadata" in app_detail.text
 
-    auth_page = await client.get("/ui/_admin/auth", cookies=admin_cookies())
+    auth_page = await client.get("/ui-legacy/_admin/auth", cookies=admin_cookies())
     assert auth_page.status_code == 200
     assert raw_token not in auth_page.text
     assert token_hash not in auth_page.text
@@ -197,18 +197,18 @@ async def test_admin_app_lifecycle_controls_rotate_remove_and_delete(
     client_id = created.json()["client_id"]
     assert client_id.startswith("Iv1.")
 
-    listing = await client.get("/ui/_admin/apps", cookies=admin_cookies())
+    listing = await client.get("/ui-legacy/_admin/apps", cookies=admin_cookies())
     assert client_id in listing.text
     assert "Delete" in listing.text
 
-    detail = await client.get("/ui/_admin/apps/7003", cookies=admin_cookies())
+    detail = await client.get("/ui-legacy/_admin/apps/7003", cookies=admin_cookies())
     assert "Client ID" in detail.text
     assert "Regenerate key" in detail.text
     assert "Delete App" in detail.text
     assert original_key not in detail.text
 
     rotated = await client.post(
-        "/ui/_admin/apps/7003/regenerate-key",
+        "/ui-legacy/_admin/apps/7003/regenerate-key",
         cookies=admin_cookies(),
     )
     assert rotated.status_code == 200
@@ -242,7 +242,7 @@ async def test_admin_app_lifecycle_controls_rotate_remove_and_delete(
     assert new_key_response.status_code == 200
 
     installation_response = await client.post(
-        "/ui/_admin/apps/7003/installations/create",
+        "/ui-legacy/_admin/apps/7003/installations/create",
         cookies=admin_cookies(),
         data={
             "account_login": "testuser",
@@ -254,7 +254,7 @@ async def test_admin_app_lifecycle_controls_rotate_remove_and_delete(
     installation = (await db_session.execute(select(AppInstallation))).scalar_one()
 
     token_response = await client.post(
-        f"/ui/_admin/installations/{installation.id}/tokens/create",
+        f"/ui-legacy/_admin/installations/{installation.id}/tokens/create",
         cookies=admin_cookies(),
         data={"repositories": [repo["full_name"]]},
     )
@@ -262,7 +262,7 @@ async def test_admin_app_lifecycle_controls_rotate_remove_and_delete(
     token = (await db_session.execute(select(AppInstallationToken))).scalar_one()
 
     removed = await client.post(
-        f"/ui/_admin/apps/7003/installations/{installation.id}/delete",
+        f"/ui-legacy/_admin/apps/7003/installations/{installation.id}/delete",
         cookies=admin_cookies(),
         follow_redirects=False,
     )
@@ -282,7 +282,7 @@ async def test_admin_app_lifecycle_controls_rotate_remove_and_delete(
     ).scalar_one_or_none() is None
 
     deleted = await client.post(
-        "/ui/_admin/apps/7003/delete",
+        "/ui-legacy/_admin/apps/7003/delete",
         cookies=admin_cookies(),
         follow_redirects=False,
     )

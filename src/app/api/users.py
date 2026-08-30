@@ -30,7 +30,7 @@ class AdminRepoImportRequest(BaseModel):
 
 # ---- authenticated user ---------------------------------------------------
 
-@router.get("/user")
+@router.get("/user", response_model=UserResponse)
 async def get_authenticated_user(user: AuthUser, db: DbSession):
     """Return the authenticated user's full profile."""
     return UserResponse.from_db(user, BASE)
@@ -49,7 +49,7 @@ async def update_authenticated_user(body: UserUpdate, user: AuthUser, db: DbSess
 
 # ---- public user profile --------------------------------------------------
 
-@router.get("/users/{username}")
+@router.get("/users/{username}", response_model=UserResponse)
 async def get_user(username: str, db: DbSession):
     """Return a public user profile."""
     result = await db.execute(select(User).where(User.login == username))
@@ -59,7 +59,7 @@ async def get_user(username: str, db: DbSession):
     return UserResponse.from_db(user, BASE)
 
 
-@router.get("/users")
+@router.get("/users", response_model=list[UserResponse])
 async def list_users(
     db: DbSession,
     current_user: CurrentUser,

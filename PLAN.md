@@ -11,12 +11,17 @@ Actions visibility and runner evaluation.
 
 - `docs/plans/000-overview.md`
 - `docs/plans/actions-visibility-roadmap.md`
+- `docs/plans/api-client-frontend-migration.md`
 
 ## Pending Tasks
 
 - `docs/tasks/pending/actions-runner-compose-bootstrap.md`
 - `docs/tasks/pending/actions-job-execution-loop.md`
 - `docs/tasks/pending/actions-hosted-runner-feasibility.md`
+
+## Active Tasks
+
+- `docs/tasks/current/api-client-frontend-migration.md`
 
 ## Completed Tasks
 

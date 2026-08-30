@@ -10,6 +10,7 @@ from app.api.deps import AuthUser, DbSession, get_repo_or_404
 from app.config import settings
 from app.models.actions import EnterpriseRunnerRegistrationToken, Runner, RegistrationToken
 from app.schemas.user import _fmt_dt
+from app.schemas.actions import RunnerListResponse, RunnerResponse
 
 router = APIRouter(tags=["actions-runners"])
 
@@ -148,7 +149,9 @@ async def create_remove_token(
     return {"token": token, "expires_at": _fmt_dt(expires)}
 
 
-@router.get("/repos/{owner}/{repo}/actions/runners")
+@router.get(
+    "/repos/{owner}/{repo}/actions/runners", response_model=RunnerListResponse
+)
 async def list_runners(
     owner: str, repo: str, db: DbSession, user: AuthUser,
 ):
@@ -187,7 +190,10 @@ async def list_runner_downloads(
     ]
 
 
-@router.get("/repos/{owner}/{repo}/actions/runners/{runner_id}")
+@router.get(
+    "/repos/{owner}/{repo}/actions/runners/{runner_id}",
+    response_model=RunnerResponse,
+)
 async def get_runner(
     owner: str, repo: str, runner_id: int, db: DbSession, user: AuthUser,
 ):

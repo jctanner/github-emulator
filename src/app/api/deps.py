@@ -17,6 +17,12 @@ from app.services.auth_service import (
     validate_token,
 )
 from app.services.job_token_service import validate_job_token
+from app.services.browser_session_service import (
+    COOKIE_NAME,
+    CSRF_HEADER,
+    csrf_token_matches,
+    verify_browser_session,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -38,7 +44,22 @@ async def get_current_user(
     """
     auth_header = request.headers.get("Authorization")
     if not auth_header:
-        return None
+        session_token = request.cookies.get(COOKIE_NAME)
+        if not session_token:
+            return None
+        username = verify_browser_session(session_token)
+        if not username:
+            return None
+        if request.method not in {"GET", "HEAD", "OPTIONS"} and not csrf_token_matches(
+            session_token,
+            request.headers.get(CSRF_HEADER),
+        ):
+            raise HTTPException(status_code=403, detail="Invalid or missing CSRF token")
+        result = await db.execute(select(User).where(User.login == username))
+        user = result.scalar_one_or_none()
+        if user is not None:
+            request.state.browser_session = True
+        return user
 
     parts = auth_header.split(" ", 1)
 

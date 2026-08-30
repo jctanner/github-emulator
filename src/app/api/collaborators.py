@@ -8,6 +8,7 @@ from app.config import settings
 from app.models.repository import Collaborator, Repository
 from app.models.user import User
 from app.schemas.user import SimpleUser, _make_node_id
+from app.schemas.settings import CollaboratorResponse
 
 router = APIRouter(tags=["collaborators"])
 
@@ -48,7 +49,10 @@ def _collab_json(user_obj: User, permission: str, base_url: str) -> dict:
     return simple
 
 
-@router.get("/repos/{owner}/{repo}/collaborators")
+@router.get(
+    "/repos/{owner}/{repo}/collaborators",
+    response_model=list[CollaboratorResponse],
+)
 async def list_collaborators(
     owner: str, repo: str, db: DbSession, user: AuthUser,
 ):

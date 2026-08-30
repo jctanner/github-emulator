@@ -23,6 +23,7 @@ from app.models.issue import Issue
 from app.models.pull_request import PullRequest
 from app.models.repository import Repository
 from app.schemas.user import SimpleUser, _fmt_dt, _make_node_id
+from app.schemas.pull_request import PRMergeResponse, PRResponse
 
 router = APIRouter(tags=["pulls"])
 
@@ -483,7 +484,7 @@ async def _perform_git_merge(
 # Routes
 # ---------------------------------------------------------------------------
 
-@router.get("/repos/{owner}/{repo}/pulls")
+@router.get("/repos/{owner}/{repo}/pulls", response_model=list[PRResponse])
 async def list_pulls(
     owner: str,
     repo: str,
@@ -557,7 +558,9 @@ async def list_pulls(
     )
 
 
-@router.post("/repos/{owner}/{repo}/pulls", status_code=201)
+@router.post(
+    "/repos/{owner}/{repo}/pulls", status_code=201, response_model=PRResponse
+)
 async def create_pull(
     owner: str, repo: str, body: dict, user: AuthUser, db: DbSession
 ):
@@ -646,7 +649,10 @@ async def create_pull(
     return _pr_json(pr, BASE)
 
 
-@router.get("/repos/{owner}/{repo}/pulls/{pull_number}")
+@router.get(
+    "/repos/{owner}/{repo}/pulls/{pull_number}",
+    response_model=PRResponse,
+)
 async def get_pull(
     owner: str, repo: str, pull_number: int, db: DbSession, current_user: CurrentUser
 ):
@@ -666,7 +672,9 @@ async def get_pull(
     return _pr_json(pr, BASE)
 
 
-@router.patch("/repos/{owner}/{repo}/pulls/{pull_number}")
+@router.patch(
+    "/repos/{owner}/{repo}/pulls/{pull_number}", response_model=PRResponse
+)
 async def update_pull(
     owner: str,
     repo: str,
@@ -755,7 +763,10 @@ async def update_pull(
     return _pr_json(pr, BASE)
 
 
-@router.put("/repos/{owner}/{repo}/pulls/{pull_number}/merge")
+@router.put(
+    "/repos/{owner}/{repo}/pulls/{pull_number}/merge",
+    response_model=PRMergeResponse,
+)
 async def merge_pull(
     owner: str,
     repo: str,

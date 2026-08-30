@@ -4,15 +4,16 @@ from datetime import timezone
 import secrets
 
 from fastapi import APIRouter, HTTPException
-from sqlalchemy import select
+from sqlalchemy import delete as sa_delete, select
 
 from app.api.apps import _client_id, _private_key
 from app.api.deps import AuthUser, DbSession
 from app.config import settings
-from app.models.apps import AppInstallation, GitHubApp
+from app.models.apps import AppInstallation, AppInstallationToken, GitHubApp
 from app.models.organization import Organization
 from app.models.user import User
 from app.services.auth_service import ensure_app_bot
+from app.schemas.admin import AdminAppResponse, AdminInstallationResponse
 
 router = APIRouter(prefix="/admin/api/apps", tags=["admin-apps"])
 
@@ -60,7 +61,10 @@ def _installation_admin_json(installation: AppInstallation) -> dict:
     }
 
 
-@router.post("", status_code=201)
+@router.post(
+    "", status_code=201, response_model=AdminAppResponse,
+    response_model_exclude_none=True,
+)
 async def create_app(body: dict, user: AuthUser, db: DbSession):
     _admin_required(user)
     name = str(body.get("name", "")).strip()
@@ -91,14 +95,18 @@ async def create_app(body: dict, user: AuthUser, db: DbSession):
     return result
 
 
-@router.get("")
+@router.get(
+    "", response_model=list[AdminAppResponse], response_model_exclude_none=True
+)
 async def list_apps(user: AuthUser, db: DbSession):
     _admin_required(user)
     apps = (await db.execute(select(GitHubApp).order_by(GitHubApp.id))).scalars().all()
     return [_app_admin_json(app) for app in apps]
 
 
-@router.get("/{app_id}")
+@router.get(
+    "/{app_id}", response_model=AdminAppResponse, response_model_exclude_none=True
+)
 async def get_app(app_id: str, user: AuthUser, db: DbSession):
     _admin_required(user)
     app = (await db.execute(select(GitHubApp).where(GitHubApp.app_id == app_id))).scalar_one_or_none()
@@ -132,7 +140,11 @@ async def regenerate_private_key(app_id: str, user: AuthUser, db: DbSession):
     return {"app_id": app.app_id, "private_key": app.private_key_pem}
 
 
-@router.post("/{app_id}/installations", status_code=201)
+@router.post(
+    "/{app_id}/installations",
+    status_code=201,
+    response_model=AdminInstallationResponse,
+)
 async def create_installation(app_id: str, body: dict, user: AuthUser, db: DbSession):
     _admin_required(user)
     app = (await db.execute(select(GitHubApp).where(GitHubApp.app_id == app_id))).scalar_one_or_none()
@@ -163,3 +175,46 @@ async def create_installation(app_id: str, body: dict, user: AuthUser, db: DbSes
     await db.commit()
     await db.refresh(installation)
     return _installation_admin_json(installation)
+
+
+@router.patch(
+    "/{app_id}", response_model=AdminAppResponse, response_model_exclude_none=True
+)
+async def update_app(app_id: str, body: dict, user: AuthUser, db: DbSession):
+    _admin_required(user)
+    app = (await db.execute(select(GitHubApp).where(GitHubApp.app_id == app_id))).scalar_one_or_none()
+    if app is None:
+        raise HTTPException(status_code=404, detail="Not Found")
+    for name in ("name", "slug"):
+        if name in body and str(body[name]).strip():
+            setattr(app, name, str(body[name]).strip())
+    if "permissions" in body:
+        if not isinstance(body["permissions"], dict):
+            raise HTTPException(status_code=422, detail="permissions must be an object")
+        app.permissions = body["permissions"]
+    await db.commit(); await db.refresh(app)
+    return _app_admin_json(app)
+
+
+@router.delete("/{app_id}", status_code=204)
+async def delete_app(app_id: str, user: AuthUser, db: DbSession):
+    _admin_required(user)
+    app = (await db.execute(select(GitHubApp).where(GitHubApp.app_id == app_id))).scalar_one_or_none()
+    if app is None:
+        raise HTTPException(status_code=404, detail="Not Found")
+    installations = (await db.execute(select(AppInstallation).where(AppInstallation.app_id == app.id))).scalars().all()
+    for installation in installations:
+        await db.execute(sa_delete(AppInstallationToken).where(AppInstallationToken.installation_id == installation.id))
+        await db.delete(installation)
+    await db.delete(app); await db.commit()
+
+
+@router.delete("/{app_id}/installations/{installation_id}", status_code=204)
+async def delete_installation(app_id: str, installation_id: int, user: AuthUser, db: DbSession):
+    _admin_required(user)
+    app = (await db.execute(select(GitHubApp).where(GitHubApp.app_id == app_id))).scalar_one_or_none()
+    value = None if app is None else (await db.execute(select(AppInstallation).where(AppInstallation.id == installation_id, AppInstallation.app_id == app.id))).scalar_one_or_none()
+    if value is None:
+        raise HTTPException(status_code=404, detail="Not Found")
+    await db.execute(sa_delete(AppInstallationToken).where(AppInstallationToken.installation_id == value.id))
+    await db.delete(value); await db.commit()

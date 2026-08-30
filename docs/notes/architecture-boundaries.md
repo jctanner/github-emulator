@@ -1,17 +1,27 @@
 # Architecture Boundaries
 
 The GitHub emulator is a single-replica integration-test service. FastAPI owns
-the REST, GraphQL, Jinja2, Git transport, and Actions coordinator surfaces;
-SQLite and bare repositories share one persistent data volume.
+REST, GraphQL, Git transport, Actions coordination, browser sessions, and the
+static production frontend host. React owns the canonical browser UI; SQLite
+and bare repositories share one persistent data volume.
 
 ## Web and Administration
 
-- `app.web.routes` is the compatibility facade for the `/ui` frontend.
-- `app.web.settings_routes` owns repository Settings pages.
-- `app.admin.routes` is the compatibility facade for `/ui/_admin`.
-- `app.admin.apps_routes` owns GitHub App and authentication administration.
+- `src/frontend` is the canonical `/ui` and `/ui/_admin` React application.
+- Versioned REST/GraphQL schemas are its business-operation boundary; generated
+  OpenAPI types live in `src/frontend/src/api/schema.d.ts`.
+- `app.frontend` serves the production bundle and SPA history fallback.
+- `app.api.browser_session` supplies same-origin cookie authentication and
+  CSRF tokens; admin APIs authorize the same user with `site_admin`.
+- `app.web.routes`, `app.web.settings_routes`, `app.admin.routes`, and
+  `app.admin.apps_routes` are frozen Jinja parity implementations mounted only
+  under `/ui-legacy` until explicit retirement approval.
 - `/admin` browser GETs are compatibility redirects. `/admin/api` remains a
   machine-facing administration namespace.
+
+Local development uses `Procfile.dev`: Honcho runs FastAPI on port 8000 and
+Vite on port 5173, while Vite proxies backend-owned paths. Production builds
+the frontend in the container image and serves it from FastAPI under `/ui`.
 
 ## Actions
 

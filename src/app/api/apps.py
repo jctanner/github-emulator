@@ -17,6 +17,7 @@ from app.models.apps import AppInstallation, AppInstallationToken, GitHubApp
 from app.models.repository import Repository
 from app.models.user import User
 from app.schemas.user import _fmt_dt
+from app.schemas.settings import InstallationResponse
 from app.services.auth_service import ensure_app_bot
 
 router = APIRouter(tags=["apps"])
@@ -286,3 +287,17 @@ async def repo_installation(owner: str, repo: str, db: DbSession, current_user: 
     if item is None:
         raise HTTPException(status_code=404, detail="No installation found")
     return {"id": item.id, "account": {"login": item.account_login, "type": item.account_type}, "repository_selection": "selected"}
+
+
+@router.get(
+    "/repos/{owner}/{repo}/installations",
+    response_model=list[InstallationResponse],
+)
+async def repo_installations(
+    owner: str, repo: str, db: DbSession, current_user: CurrentUser
+):
+    """List every GitHub App installation granted access to a repository."""
+    full_name = f"{owner}/{repo}"
+    items = (await db.execute(select(AppInstallation))).scalars().all()
+    matches = [item for item in items if full_name in (item.repositories or [])]
+    return [_installation_json(item.app, item) for item in matches]

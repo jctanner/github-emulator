@@ -19,18 +19,18 @@ async def test_repository_owner_can_open_general_settings(
     owner, repo_name, _repo_data = test_repo_with_init
     client.cookies.set("ui_session", _sign_session(test_user.login))
 
-    page = await client.get(f"/ui/{owner}/{repo_name}/settings")
+    page = await client.get(f"/ui-legacy/{owner}/{repo_name}/settings")
 
     assert page.status_code == 200
     assert "General" in page.text
     assert "Repository name" in page.text
     assert "Default branch" in page.text
     assert "Features" in page.text
-    assert f'/ui/{owner}/{repo_name}/settings/general' in page.text
-    assert f'/ui/{owner}/{repo_name}/settings/branches' in page.text
-    assert f'/ui/{owner}/{repo_name}/settings/actions/runners' in page.text
-    assert f'/ui/{owner}/{repo_name}/settings/access' in page.text
-    assert f'/ui/{owner}/{repo_name}/settings/installations' in page.text
+    assert f'/ui-legacy/{owner}/{repo_name}/settings/general' in page.text
+    assert f'/ui-legacy/{owner}/{repo_name}/settings/branches' in page.text
+    assert f'/ui-legacy/{owner}/{repo_name}/settings/actions/runners' in page.text
+    assert f'/ui-legacy/{owner}/{repo_name}/settings/access' in page.text
+    assert f'/ui-legacy/{owner}/{repo_name}/settings/installations' in page.text
 
 
 @pytest.mark.asyncio
@@ -39,7 +39,7 @@ async def test_repository_settings_require_admin_access(
 ):
     owner, repo_name, _repo_data = test_repo_with_init
 
-    response = await client.get(f"/ui/{owner}/{repo_name}/settings")
+    response = await client.get(f"/ui-legacy/{owner}/{repo_name}/settings")
 
     assert response.status_code == 403
 
@@ -52,7 +52,7 @@ async def test_general_settings_persist_metadata_visibility_and_features(
     client.cookies.set("ui_session", _sign_session(test_user.login))
 
     response = await client.post(
-        f"/ui/{owner}/{repo_name}/settings/general",
+        f"/ui-legacy/{owner}/{repo_name}/settings/general",
         data={
             "description": "Updated through repository settings",
             "homepage": "https://example.test/project",
@@ -95,7 +95,7 @@ async def test_default_branch_setting_updates_database_and_bare_head(
     ).scalar_one()
 
     response = await client.post(
-        f"/ui/{owner}/{repo_name}/settings/default-branch",
+        f"/ui-legacy/{owner}/{repo_name}/settings/default-branch",
         data={"default_branch": "main"},
     )
 
@@ -122,13 +122,13 @@ async def test_rename_setting_moves_repository_and_redirects(
     old_disk_path = repository.disk_path
 
     response = await client.post(
-        f"/ui/{owner}/{repo_name}/settings/rename",
+        f"/ui-legacy/{owner}/{repo_name}/settings/rename",
         data={"name": "renamed-repository"},
     )
 
     assert response.status_code == 302
     assert response.headers["location"] == (
-        f"/ui/{owner}/renamed-repository/settings?saved=rename"
+        f"/ui-legacy/{owner}/renamed-repository/settings?saved=rename"
     )
     await db_session.refresh(repository)
     assert repository.full_name == f"{owner}/renamed-repository"
@@ -144,7 +144,7 @@ async def test_branch_settings_page_lists_protection_rules(
     owner, repo_name, _repo_data = test_repo_with_init
     client.cookies.set("ui_session", _sign_session(test_user.login))
 
-    page = await client.get(f"/ui/{owner}/{repo_name}/settings/branches")
+    page = await client.get(f"/ui-legacy/{owner}/{repo_name}/settings/branches")
 
     assert page.status_code == 200
     assert "Branch protection rules" in page.text
@@ -157,7 +157,7 @@ async def test_branch_settings_page_lists_protection_rules(
 async def test_branch_settings_require_admin_access(client, test_repo_with_init):
     owner, repo_name, _repo_data = test_repo_with_init
 
-    response = await client.get(f"/ui/{owner}/{repo_name}/settings/branches")
+    response = await client.get(f"/ui-legacy/{owner}/{repo_name}/settings/branches")
 
     assert response.status_code == 403
 
@@ -170,15 +170,15 @@ async def test_actions_runner_settings_keep_settings_navigation(
     client.cookies.set("ui_session", _sign_session(test_user.login))
 
     page = await client.get(
-        f"/ui/{owner}/{repo_name}/settings/actions/runners"
+        f"/ui-legacy/{owner}/{repo_name}/settings/actions/runners"
     )
 
     assert page.status_code == 200
     assert "Repository runners" in page.text
     assert "No runners registered" in page.text
     assert 'aria-label="Repository settings"' in page.text
-    assert f'/ui/{owner}/{repo_name}/settings/branches' in page.text
-    assert f'/ui/{owner}/{repo_name}/settings/actions/runners' in page.text
+    assert f'/ui-legacy/{owner}/{repo_name}/settings/branches' in page.text
+    assert f'/ui-legacy/{owner}/{repo_name}/settings/actions/runners' in page.text
 
 
 @pytest.mark.asyncio
@@ -188,7 +188,7 @@ async def test_actions_runner_settings_require_admin_access(
     owner, repo_name, _repo_data = test_repo_with_init
 
     response = await client.get(
-        f"/ui/{owner}/{repo_name}/settings/actions/runners"
+        f"/ui-legacy/{owner}/{repo_name}/settings/actions/runners"
     )
 
     assert response.status_code == 403
@@ -201,14 +201,14 @@ async def test_collaborator_settings_render_inside_settings_navigation(
     owner, repo_name, _repo_data = test_repo_with_init
     client.cookies.set("ui_session", _sign_session(test_user.login))
 
-    page = await client.get(f"/ui/{owner}/{repo_name}/settings/access")
+    page = await client.get(f"/ui-legacy/{owner}/{repo_name}/settings/access")
 
     assert page.status_code == 200
     assert "Collaborators and teams" in page.text
     assert "Direct access" in page.text
     assert "You haven't invited any collaborators yet" in page.text
     assert 'aria-label="Repository settings"' in page.text
-    assert f'/ui/{owner}/{repo_name}/settings/access' in page.text
+    assert f'/ui-legacy/{owner}/{repo_name}/settings/access' in page.text
 
 
 @pytest.mark.asyncio
@@ -217,7 +217,7 @@ async def test_collaborator_settings_add_update_and_remove_direct_access(
 ):
     owner, repo_name, _repo_data = test_repo_with_init
     client.cookies.set("ui_session", _sign_session(test_user.login))
-    base = f"/ui/{owner}/{repo_name}/settings/access"
+    base = f"/ui-legacy/{owner}/{repo_name}/settings/access"
 
     added = await client.post(
         f"{base}/collaborators",
@@ -260,7 +260,7 @@ async def test_collaborator_settings_reject_unknown_user(
     client.cookies.set("ui_session", _sign_session(test_user.login))
 
     response = await client.post(
-        f"/ui/{owner}/{repo_name}/settings/access/collaborators",
+        f"/ui-legacy/{owner}/{repo_name}/settings/access/collaborators",
         data={"username": "missing-user", "permission": "push"},
     )
 
@@ -276,9 +276,9 @@ async def test_collaborator_settings_require_admin_access(
 ):
     owner, repo_name, _repo_data = test_repo_with_init
 
-    page = await client.get(f"/ui/{owner}/{repo_name}/settings/access")
+    page = await client.get(f"/ui-legacy/{owner}/{repo_name}/settings/access")
     mutation = await client.post(
-        f"/ui/{owner}/{repo_name}/settings/access/collaborators",
+        f"/ui-legacy/{owner}/{repo_name}/settings/access/collaborators",
         data={"username": "admin", "permission": "push"},
     )
 
@@ -313,7 +313,7 @@ async def test_github_apps_settings_list_repository_installations(
     await db_session.commit()
     client.cookies.set("ui_session", _sign_session(test_user.login))
 
-    page = await client.get(f"/ui/{owner}/{repo_name}/settings/installations")
+    page = await client.get(f"/ui-legacy/{owner}/{repo_name}/settings/installations")
 
     assert page.status_code == 200
     assert "Installed GitHub Apps" in page.text
@@ -353,7 +353,7 @@ async def test_github_apps_settings_exclude_other_repository_installations(
     await db_session.commit()
     client.cookies.set("ui_session", _sign_session(test_user.login))
 
-    page = await client.get(f"/ui/{owner}/{repo_name}/settings/installations")
+    page = await client.get(f"/ui-legacy/{owner}/{repo_name}/settings/installations")
 
     assert page.status_code == 200
     assert "No GitHub Apps installed" in page.text
@@ -367,7 +367,7 @@ async def test_github_apps_settings_require_admin_access(
     owner, repo_name, _repo_data = test_repo_with_init
 
     response = await client.get(
-        f"/ui/{owner}/{repo_name}/settings/installations"
+        f"/ui-legacy/{owner}/{repo_name}/settings/installations"
     )
 
     assert response.status_code == 403
@@ -381,7 +381,7 @@ async def test_branch_settings_create_and_update_protection(
     client.cookies.set("ui_session", _sign_session(test_user.login))
 
     response = await client.post(
-        f"/ui/{owner}/{repo_name}/settings/branches/protection",
+        f"/ui-legacy/{owner}/{repo_name}/settings/branches/protection",
         data={
             "branch_name": "main",
             "protection_enabled": "true",
@@ -430,7 +430,7 @@ async def test_branch_settings_remove_protection(
 ):
     owner, repo_name, _repo_data = test_repo_with_init
     client.cookies.set("ui_session", _sign_session(test_user.login))
-    endpoint = f"/ui/{owner}/{repo_name}/settings/branches/protection"
+    endpoint = f"/ui-legacy/{owner}/{repo_name}/settings/branches/protection"
     enabled = await client.post(
         endpoint,
         data={"branch_name": "main", "protection_enabled": "true"},

@@ -35,6 +35,12 @@ class PRMerge(BaseModel):
     merge_method: str = "merge"  # "merge", "squash", or "rebase"
 
 
+class PRMergeResponse(BaseModel):
+    sha: Optional[str] = None
+    merged: bool
+    message: str
+
+
 class PRBranchRef(BaseModel):
     """Branch reference in a PR (head or base)."""
 

@@ -18,25 +18,25 @@ API = "/api/v3"
 
 @pytest.mark.asyncio
 async def test_admin_login_page(client):
-    """GET /ui/_admin/login returns the login page."""
-    resp = await client.get("/ui/_admin/login")
+    """GET /ui-legacy/_admin/login returns the login page."""
+    resp = await client.get("/ui-legacy/_admin/login")
     assert resp.status_code == 200
     assert "text/html" in resp.headers.get("content-type", "")
 
 
 @pytest.mark.asyncio
 async def test_admin_dashboard_requires_auth(client):
-    """GET /ui/_admin/ without login redirects to login page."""
-    resp = await client.get("/ui/_admin/", follow_redirects=False)
+    """GET /ui-legacy/_admin/ without login redirects to login page."""
+    resp = await client.get("/ui-legacy/_admin/", follow_redirects=False)
     # Should redirect or show login
     assert resp.status_code in (200, 302, 303, 307)
 
 
 @pytest.mark.asyncio
 async def test_admin_login_invalid(client):
-    """POST /ui/_admin/login with bad credentials fails."""
+    """POST /ui-legacy/_admin/login with bad credentials fails."""
     resp = await client.post(
-        "/ui/_admin/login",
+        "/ui-legacy/_admin/login",
         data={"username": "wrong", "password": "wrong"},
         follow_redirects=False,
     )
@@ -46,11 +46,11 @@ async def test_admin_login_invalid(client):
 
 @pytest.mark.asyncio
 async def test_admin_login_success(client, admin_user):
-    """POST /ui/_admin/login with correct credentials succeeds."""
+    """POST /ui-legacy/_admin/login with correct credentials succeeds."""
     # Note: admin_user fixture uses sha256 hash, but the admin login
     # might use bcrypt from auth_service. We test the flow at least.
     resp = await client.post(
-        "/ui/_admin/login",
+        "/ui-legacy/_admin/login",
         data={"username": "admin", "password": "admin"},
         follow_redirects=False,
     )
@@ -63,12 +63,12 @@ async def test_admin_users_page(client, admin_user):
     """Admin users page loads."""
     # Login first
     login_resp = await client.post(
-        "/ui/_admin/login",
+        "/ui-legacy/_admin/login",
         data={"username": "admin", "password": "admin"},
         follow_redirects=False,
     )
     cookies = login_resp.cookies
-    resp = await client.get("/ui/_admin/users", cookies=cookies)
+    resp = await client.get("/ui-legacy/_admin/users", cookies=cookies)
     # May need valid session cookie, so we accept various status codes
     assert resp.status_code in (200, 302, 303)
 
@@ -76,22 +76,22 @@ async def test_admin_users_page(client, admin_user):
 @pytest.mark.asyncio
 async def test_admin_static_files(client):
     """Static files are accessible."""
-    resp = await client.get("/ui/_admin/static/css/admin.css")
+    resp = await client.get("/ui-legacy/_admin/static/css/admin.css")
     # Static files should be available or return 404 if not found
     assert resp.status_code in (200, 404)
 
 
 @pytest.mark.asyncio
 async def test_admin_logout(client, admin_user):
-    """POST /ui/_admin/logout clears session."""
+    """POST /ui-legacy/_admin/logout clears session."""
     # Login first
     login_resp = await client.post(
-        "/ui/_admin/login",
+        "/ui-legacy/_admin/login",
         data={"username": "admin", "password": "admin"},
         follow_redirects=False,
     )
     cookies = login_resp.cookies
-    resp = await client.get("/ui/_admin/logout", cookies=cookies, follow_redirects=False)
+    resp = await client.get("/ui-legacy/_admin/logout", cookies=cookies, follow_redirects=False)
     assert resp.status_code in (200, 302, 303)
 
 
@@ -104,12 +104,12 @@ async def test_admin_repos_page(client, admin_user, test_user, test_token):
         headers=auth_headers(test_token),
     )
     login_resp = await client.post(
-        "/ui/_admin/login",
+        "/ui-legacy/_admin/login",
         data={"username": "admin", "password": "admin"},
         follow_redirects=False,
     )
     cookies = login_resp.cookies
-    resp = await client.get("/ui/_admin/repos", cookies=cookies)
+    resp = await client.get("/ui-legacy/_admin/repos", cookies=cookies)
     assert resp.status_code in (200, 302, 303)
 
 
@@ -117,7 +117,7 @@ async def test_admin_repos_page(client, admin_user, test_user, test_token):
 async def test_admin_repo_delete_removes_bare_repo(
     client, admin_user, test_user, test_token, db_session
 ):
-    """POST /ui/_admin/repos/{id}/delete removes the database row and bare repo."""
+    """POST /ui-legacy/_admin/repos/{id}/delete removes the database row and bare repo."""
     await client.post(
         f"{API}/user/repos",
         json={"name": "admin-delete-test"},
@@ -134,7 +134,7 @@ async def test_admin_repo_delete_removes_bare_repo(
     assert os.path.isdir(disk_path)
 
     resp = await client.post(
-        f"/ui/_admin/repos/{repo.id}/delete",
+        f"/ui-legacy/_admin/repos/{repo.id}/delete",
         cookies={"admin_session": _sign_session("admin")},
         follow_redirects=False,
     )

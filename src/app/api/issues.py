@@ -15,6 +15,7 @@ from app.models.repository import Repository
 from app.models.user import User
 from app.schemas.user import SimpleUser, _fmt_dt, _make_node_id
 from app.schemas.label import LabelResponse
+from app.schemas.issue import IssueResponse
 
 router = APIRouter(tags=["issues"])
 
@@ -132,7 +133,7 @@ def _pagination_links(request: Request, page: int, per_page: int, total: int) ->
 # Routes
 # ---------------------------------------------------------------------------
 
-@router.get("/repos/{owner}/{repo}/issues")
+@router.get("/repos/{owner}/{repo}/issues", response_model=list[IssueResponse])
 async def list_issues(
     owner: str,
     repo: str,
@@ -197,7 +198,9 @@ async def list_issues(
     )
 
 
-@router.post("/repos/{owner}/{repo}/issues", status_code=201)
+@router.post(
+    "/repos/{owner}/{repo}/issues", status_code=201, response_model=IssueResponse
+)
 async def create_issue(
     owner: str, repo: str, body: dict, user: AuthUser, db: DbSession
 ):
@@ -269,7 +272,10 @@ async def create_issue(
     return _issue_json(issue, BASE)
 
 
-@router.get("/repos/{owner}/{repo}/issues/{issue_number}")
+@router.get(
+    "/repos/{owner}/{repo}/issues/{issue_number}",
+    response_model=IssueResponse,
+)
 async def get_issue(
     owner: str, repo: str, issue_number: int, db: DbSession, current_user: CurrentUser
 ):
@@ -288,7 +294,9 @@ async def get_issue(
     return _issue_json(issue, BASE)
 
 
-@router.patch("/repos/{owner}/{repo}/issues/{issue_number}")
+@router.patch(
+    "/repos/{owner}/{repo}/issues/{issue_number}", response_model=IssueResponse
+)
 async def update_issue(
     owner: str,
     repo: str,

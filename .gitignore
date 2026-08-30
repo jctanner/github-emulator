@@ -6,6 +6,11 @@ __pycache__/
 dist/
 build/
 .venv/
+node_modules/
+src/frontend/openapi.json
+*.tsbuildinfo
+playwright-report/
+test-results/
 
 # Data (runtime-generated)
 data/

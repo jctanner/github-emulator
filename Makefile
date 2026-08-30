@@ -1,4 +1,4 @@
-.PHONY: help build up down restart logs test smoke actions-runner-env actions-real-runner actions-ui-smoke clean
+.PHONY: help build up down restart logs dev test smoke frontend-install frontend-api frontend-check frontend-build actions-runner-env actions-real-runner actions-ui-smoke clean
 
 .DEFAULT_GOAL := help
 
@@ -50,6 +50,30 @@ logs:
 ## Run the pytest suite (local, not in container)
 test:
 	uv run pytest tests/ -v
+
+## Start the reloadable API and Vite frontend with Honcho
+dev:
+	uv run --extra dev honcho -f Procfile.dev start
+
+## Install the locked API-client frontend dependencies
+frontend-install:
+	cd src/frontend && npm ci
+
+## Regenerate the typed frontend API contract from FastAPI OpenAPI
+frontend-api:
+	PYTHONPATH=src uv run python scripts/export-openapi.py src/frontend/openapi.json
+	cd src/frontend && npm run generate:api
+
+## Run frontend type, lint, formatting, and component checks
+frontend-check: frontend-api
+	cd src/frontend && npm run typecheck
+	cd src/frontend && npm run lint
+	cd src/frontend && npm run format
+	cd src/frontend && npm test
+
+## Build the API-client frontend
+frontend-build: frontend-api
+	cd src/frontend && npm run build
 
 ## Quick smoke test against the running container
 smoke:

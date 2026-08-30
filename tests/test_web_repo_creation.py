@@ -21,7 +21,7 @@ async def test_new_repository_page_lists_personal_and_organization_owners(
     assert response.status_code == 201
     client.cookies.set("ui_session", _sign_session(test_user.login))
 
-    page = await client.get("/ui/new")
+    page = await client.get("/ui-legacy/new")
 
     assert page.status_code == 200
     assert 'name="owner"' in page.text
@@ -42,7 +42,7 @@ async def test_new_repository_page_creates_under_selected_organization(
     client.cookies.set("ui_session", _sign_session(test_user.login))
 
     response = await client.post(
-        "/ui/new",
+        "/ui-legacy/new",
         data={
             "owner": "create-org",
             "name": "web-created",
@@ -52,7 +52,7 @@ async def test_new_repository_page_creates_under_selected_organization(
     )
 
     assert response.status_code == 302
-    assert response.headers["location"] == "/ui/create-org/web-created"
+    assert response.headers["location"] == "/ui-legacy/create-org/web-created"
     repository = (
         await db_session.execute(
             select(Repository).where(
@@ -73,7 +73,7 @@ async def test_repository_creation_rejects_unavailable_organization(
     client.cookies.set("ui_session", _sign_session(test_user.login))
 
     web_response = await client.post(
-        "/ui/new",
+        "/ui-legacy/new",
         data={"owner": "unavailable-org", "name": "not-allowed"},
     )
     api_response = await client.post(

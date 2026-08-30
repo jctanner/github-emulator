@@ -59,7 +59,10 @@ class ProxyHandler(BaseHTTPRequestHandler):
         conn.close()
 
     def log_message(self, fmt, *args):
-        return
+        # Registration failures otherwise surface only as an opaque response
+        # body from config.sh. Keep the method/path/status visible in runner
+        # logs without recording request headers or tokens.
+        super().log_message(fmt, *args)
 
 
 if __name__ == "__main__":

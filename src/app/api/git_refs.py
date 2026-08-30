@@ -12,6 +12,8 @@ from app.models.branch import Branch
 from app.models.issue import Issue
 from app.models.pull_request import PullRequest
 from app.middleware.error_handler import ValidationError
+from app.schemas.browse import TagResponse
+from app.schemas.user import _make_node_id
 
 router = APIRouter(tags=["git-refs"])
 
@@ -51,6 +53,43 @@ def _branch_name(ref: str) -> str | None:
     if normalized.startswith("refs/heads/"):
         return normalized.removeprefix("refs/heads/")
     return None
+
+
+@router.get("/repos/{owner}/{repo}/tags", response_model=list[TagResponse])
+async def list_tags(
+    owner: str, repo: str, db: DbSession, current_user: CurrentUser
+):
+    """List annotated and lightweight tags in GitHub's repository shape."""
+    repository = await get_repo_or_404(owner, repo, db)
+    if not repository.disk_path or not os.path.isdir(repository.disk_path):
+        return []
+    try:
+        out = await _git(
+            repository.disk_path,
+            "for-each-ref",
+            "--format=%(refname:strip=2)%00%(*objectname)%00%(objectname)",
+            "refs/tags",
+        )
+    except RuntimeError:
+        return []
+
+    api = f"{BASE}/api/v3/repos/{owner}/{repo}"
+    values = []
+    for line in out.splitlines():
+        name, peeled_sha, object_sha = (line.split("\x00") + ["", ""])[:3]
+        sha = peeled_sha or object_sha
+        if not name or not sha:
+            continue
+        values.append(
+            {
+                "name": name,
+                "commit": {"sha": sha, "url": f"{api}/commits/{sha}"},
+                "zipball_url": f"{api}/zipball/{name}",
+                "tarball_url": f"{api}/tarball/{name}",
+                "node_id": _make_node_id("Tag", hash(f"{repository.id}:{name}") % 10**8),
+            }
+        )
+    return values
 
 
 async def _get_branch_record(db, repository, ref: str) -> Branch | None:

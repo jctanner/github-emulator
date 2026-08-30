@@ -15,6 +15,7 @@ from app.models.repository import Repository
 from app.models.user import User
 from app.models.organization import Organization, OrgMembership
 from app.schemas.user import SimpleUser, _fmt_dt, _make_node_id
+from app.schemas.repository import RepoResponse
 from app.services import repo_service
 from app.services.repo_service import delete_repo as delete_repository
 
@@ -157,7 +158,27 @@ async def _init_bare_repo(disk_path: str, default_branch: str = "main") -> None:
 # Routes
 # ---------------------------------------------------------------------------
 
-@router.post("/user/repos", status_code=201)
+@router.get("/repositories", response_model=list[RepoResponse])
+async def list_public_repositories(
+    db: DbSession,
+    current_user: CurrentUser,
+    since: int = Query(0, ge=0),
+    per_page: int = Query(30, ge=1, le=100),
+):
+    """List public repositories using GitHub's global repository endpoint."""
+    query = (
+        select(Repository)
+        .where(Repository.id > since)
+        .order_by(Repository.id)
+        .limit(per_page)
+    )
+    if current_user is None or not current_user.site_admin:
+        query = query.where(Repository.private == False)
+    repositories = (await db.execute(query)).scalars().all()
+    return [_repo_json(repository, BASE) for repository in repositories]
+
+
+@router.post("/user/repos", status_code=201, response_model=RepoResponse)
 async def create_repo_for_user(body: dict, user: AuthUser, db: DbSession):
     """Create a new repository for the authenticated user."""
     name = body.get("name")
@@ -223,7 +244,7 @@ async def create_repo_for_user(body: dict, user: AuthUser, db: DbSession):
     return _repo_json(repo, BASE)
 
 
-@router.get("/repos/{owner}/{repo}")
+@router.get("/repos/{owner}/{repo}", response_model=RepoResponse)
 async def get_repo(owner: str, repo: str, db: DbSession, current_user: CurrentUser):
     """Get a single repository."""
     full_name = f"{owner}/{repo}"
@@ -244,7 +265,7 @@ async def get_repo(owner: str, repo: str, db: DbSession, current_user: CurrentUs
     return _repo_json(repository, BASE)
 
 
-@router.patch("/repos/{owner}/{repo}")
+@router.patch("/repos/{owner}/{repo}", response_model=RepoResponse)
 async def update_repo(
     owner: str, repo: str, body: dict, user: AuthUser, db: DbSession
 ):
@@ -302,7 +323,7 @@ async def delete_repo(owner: str, repo: str, user: AuthUser, db: DbSession):
     return Response(status_code=204)
 
 
-@router.get("/users/{username}/repos")
+@router.get("/users/{username}/repos", response_model=list[RepoResponse])
 async def list_user_repos(
     username: str,
     request: Request,
@@ -361,7 +382,7 @@ async def list_user_repos(
     )
 
 
-@router.get("/user/repos")
+@router.get("/user/repos", response_model=list[RepoResponse])
 async def list_authenticated_user_repos(
     request: Request,
     user: AuthUser,

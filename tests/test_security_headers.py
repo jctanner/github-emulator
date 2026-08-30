@@ -74,3 +74,16 @@ async def test_legacy_redirect_preserves_path_and_query_without_moving_api(clien
     api_response = await client.get("/admin/api/does-not-exist")
     assert api_response.status_code == 404
     assert "location" not in api_response.headers
+
+
+@pytest.mark.asyncio
+async def test_admin_owner_runner_protocol_is_not_captured_by_admin_redirect(client):
+    response = await client.get(
+        "/admin/test-repo/_apis/connectionData",
+        params={"connectOptions": 1, "lastChangeId": -1},
+        follow_redirects=False,
+    )
+
+    assert response.status_code == 200
+    assert "location" not in response.headers
+    assert response.json()["deploymentType"] == "Hosted"

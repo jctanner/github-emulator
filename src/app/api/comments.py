@@ -11,6 +11,7 @@ from app.config import settings
 from app.models.comment import IssueComment
 from app.models.issue import Issue
 from app.schemas.user import SimpleUser, _fmt_dt, _make_node_id
+from app.schemas.comment import IssueCommentResponse
 
 router = APIRouter(tags=["comments"])
 
@@ -43,7 +44,10 @@ def _comment_json(comment: IssueComment, owner: str, repo_name: str, issue_numbe
     }
 
 
-@router.get("/repos/{owner}/{repo}/issues/{issue_number}/comments")
+@router.get(
+    "/repos/{owner}/{repo}/issues/{issue_number}/comments",
+    response_model=list[IssueCommentResponse],
+)
 async def list_comments(
     owner: str,
     repo: str,
@@ -145,7 +149,10 @@ async def create_comment(
     return _comment_json(comment, owner, repo, issue_number, BASE)
 
 
-@router.get("/repos/{owner}/{repo}/issues/comments/{comment_id}")
+@router.get(
+    "/repos/{owner}/{repo}/issues/comments/{comment_id}",
+    response_model=IssueCommentResponse,
+)
 async def get_comment(
     owner: str, repo: str, comment_id: int, db: DbSession, current_user: CurrentUser
 ):

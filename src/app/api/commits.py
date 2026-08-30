@@ -8,6 +8,7 @@ from sqlalchemy import select
 
 from app.api.deps import CurrentUser, DbSession, get_repo_or_404
 from app.config import settings
+from app.schemas.browse import CommitResponse
 from app.schemas.user import _fmt_dt, _make_node_id
 
 router = APIRouter(tags=["commits"])
@@ -79,7 +80,7 @@ def _parse_commit_line(
     }
 
 
-@router.get("/repos/{owner}/{repo}/commits")
+@router.get("/repos/{owner}/{repo}/commits", response_model=list[CommitResponse])
 async def list_commits(
     owner: str,
     repo: str,
@@ -124,7 +125,7 @@ async def list_commits(
     return commits
 
 
-@router.get("/repos/{owner}/{repo}/commits/{sha}")
+@router.get("/repos/{owner}/{repo}/commits/{sha}", response_model=CommitResponse)
 async def get_commit(
     owner: str,
     repo: str,

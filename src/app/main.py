@@ -193,7 +193,9 @@ def create_app() -> FastAPI:
     from app.api.review_comments import router as review_comments_router
     from app.api.apps import router as apps_router
     from app.api.admin_apps import router as admin_apps_router
+    from app.api.admin_frontend import router as admin_frontend_router
     from app.api.oidc import router as oidc_router
+    from app.api.browser_session import router as browser_session_router
 
     # -- REST API routers (under /api/v3/ prefix) ----------------------------
     api_routers = [
@@ -210,6 +212,7 @@ def create_app() -> FastAPI:
         licenses_router, user_keys_router, deploy_keys_router,
         review_comments_router,
         apps_router,
+        browser_session_router,
     ]
     for router in api_routers:
         app.include_router(router, prefix="/api/v3")
@@ -218,6 +221,7 @@ def create_app() -> FastAPI:
     app.include_router(root_router)
     app.include_router(oidc_router)
     app.include_router(admin_apps_router)
+    app.include_router(admin_frontend_router)
 
     # OAuth routes stay at root (web-facing, not API paths)
     app.include_router(oauth_router)
@@ -259,19 +263,17 @@ def create_app() -> FastAPI:
     from app.admin.routes import get_static_files_app
     from app.admin.legacy import router as legacy_admin_router
 
-    app.include_router(admin_router)
-    app.mount(
-        "/ui/_admin/static",
-        get_static_files_app(),
-        name="admin-static",
-    )
-    app.include_router(legacy_admin_router)
-
     # -- GHES-internal Actions endpoints (root-level, not under /api/v3/) -----
     from app.api.actions_pipelines import router as pipelines_router
     from app.api.actions_distributed_task import router as dt_router
     app.include_router(pipelines_router)
     app.include_router(dt_router)
+
+    # Keep the broad /admin/{path} browser compatibility redirect behind the
+    # repository-scoped runner protocol. The seeded ``admin`` account is also
+    # a valid repository owner, and upstream runners call paths such as
+    # /admin/test-repo/_apis/connectionData during registration.
+    app.include_router(legacy_admin_router)
 
     # -- Git Smart HTTP protocol handler --------------------------------------
     from app.git.smart_http import router as git_router
@@ -283,8 +285,50 @@ def create_app() -> FastAPI:
     _WEB_STATIC = os.path.join(
         os.path.dirname(os.path.abspath(__file__)), "web", "static"
     )
-    app.mount("/ui/static", StaticFiles(directory=_WEB_STATIC), name="web-static")
-    app.include_router(web_router)
+    # Temporary server-rendered mirror used for frontend migration parity.
+    # It has a private source app so /ui can move to the API-client frontend
+    # without changing or recursively invoking the retained Jinja application.
+    from app.legacy_ui import LegacyUiMirror
+
+    legacy_source = FastAPI(
+        title="GitHub Emulator Legacy UI",
+        docs_url=None,
+        redoc_url=None,
+        openapi_url=None,
+    )
+    legacy_source.include_router(admin_router)
+    legacy_source.mount(
+        "/ui/_admin/static",
+        get_static_files_app(),
+        name="legacy-admin-static",
+    )
+    legacy_source.mount(
+        "/ui/static",
+        StaticFiles(directory=_WEB_STATIC),
+        name="legacy-web-static",
+    )
+    legacy_source.include_router(web_router)
+    app.mount(
+        "/ui-legacy",
+        LegacyUiMirror(legacy_source, dependency_overrides_from=app),
+        name="legacy-ui",
+    )
+
+    # API-client frontend. Deep links are handled by the SPA history fallback;
+    # the retained server-rendered implementation remains under /ui-legacy.
+    from app.frontend import FrontendStaticFiles
+
+    _FRONTEND_DIST = os.path.join(
+        os.path.dirname(os.path.abspath(__file__)),
+        "..",
+        "frontend",
+        "dist",
+    )
+    app.mount(
+        "/ui",
+        FrontendStaticFiles(_FRONTEND_DIST),
+        name="frontend",
+    )
 
     return app
 
