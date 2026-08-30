@@ -63,8 +63,8 @@ runs post-push side effects asynchronously in a fresh DB session.
 
 - Token authenticates correctly via API (`GET /api/v3/user` returns opendatahub-io, id 3)
 - Repos exist and are owned by opendatahub-io (owner_id 3)
-- Auth handler at `app/api/deps.py:get_current_user` correctly parses Basic auth (`x-access-token:TOKEN`)
-- Write access check at `app/git/smart_http.py:67-79` should pass (user.id == repository.owner_id)
+- Auth handler at `src/app/api/deps.py:get_current_user` correctly parses Basic auth (`x-access-token:TOKEN`)
+- Write access check at `src/app/git/smart_http.py:67-79` should pass (user.id == repository.owner_id)
 - The 401 occurs on `GET /info/refs?service=git-receive-pack`, before any pack data is sent
 - After the 401, git retries and the proxy returns 502
 

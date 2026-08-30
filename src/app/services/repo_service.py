@@ -29,6 +29,8 @@ async def create_repo(
     private: bool = False,
     auto_init: bool = False,
     default_branch: str = "main",
+    namespace_login: str | None = None,
+    owner_type: str | None = None,
     **kwargs,
 ) -> Repository:
     """Create a new repository.
@@ -39,12 +41,14 @@ async def create_repo(
 
     Args:
         db: Async database session.
-        owner: The User who owns the repository.
+        owner: The user creating or personally owning the repository.
         name: Repository name.
         description: Optional description.
         private: Whether the repository is private.
         auto_init: If True, create an initial commit with README.md.
         default_branch: Name of the default branch.
+        namespace_login: Personal or organization namespace for the repository.
+        owner_type: GitHub owner type, either ``User`` or ``Organization``.
         **kwargs: Additional repository fields.
 
     Returns:
@@ -61,7 +65,9 @@ async def create_repo(
         )
 
     # Check uniqueness under owner
-    full_name = f"{owner.login}/{name}"
+    namespace = namespace_login or owner.login
+    repository_owner_type = owner_type or owner.type
+    full_name = f"{namespace}/{name}"
     result = await db.execute(
         select(Repository).where(Repository.full_name == full_name)
     )
@@ -70,12 +76,15 @@ async def create_repo(
         raise ValueError(f"Repository '{full_name}' already exists.")
 
     # Determine disk path
-    disk_path = os.path.join(settings.DATA_DIR, owner.login, f"{name}.git")
+    if repository_owner_type == "Organization":
+        disk_path = os.path.join(settings.DATA_DIR, "repos", namespace, f"{name}.git")
+    else:
+        disk_path = os.path.join(settings.DATA_DIR, namespace, f"{name}.git")
 
     # Build repository record
     repo = Repository(
         owner_id=owner.id,
-        owner_type=owner.type,
+        owner_type=repository_owner_type,
         name=name,
         full_name=full_name,
         description=description,
@@ -109,6 +118,59 @@ async def create_repo(
     await db.refresh(repo)
 
     return repo
+
+
+async def rename_repo(
+    db: AsyncSession,
+    repository: Repository,
+    new_name: str,
+) -> Repository:
+    """Rename a repository record and its bare repository directory."""
+    if not REPO_NAME_PATTERN.match(new_name):
+        raise ValueError(
+            f"Invalid repository name '{new_name}'. "
+            "Only alphanumeric characters, hyphens, underscores, and dots are allowed."
+        )
+    if new_name == repository.name:
+        return repository
+
+    namespace = repository.full_name.split("/", 1)[0]
+    new_full_name = f"{namespace}/{new_name}"
+    result = await db.execute(
+        select(Repository).where(Repository.full_name == new_full_name)
+    )
+    if result.scalar_one_or_none() is not None:
+        raise ValueError(f"Repository '{new_full_name}' already exists.")
+
+    old_disk_path = repository.disk_path
+    new_disk_path = None
+    if old_disk_path:
+        new_disk_path = os.path.join(
+            os.path.dirname(old_disk_path), f"{new_name}.git"
+        )
+        if os.path.exists(new_disk_path):
+            raise ValueError(f"Repository storage for '{new_full_name}' already exists.")
+        if os.path.exists(old_disk_path):
+            os.rename(old_disk_path, new_disk_path)
+
+    repository.name = new_name
+    repository.full_name = new_full_name
+    if new_disk_path:
+        repository.disk_path = new_disk_path
+    try:
+        await db.commit()
+    except Exception:
+        await db.rollback()
+        if (
+            old_disk_path
+            and new_disk_path
+            and os.path.exists(new_disk_path)
+            and not os.path.exists(old_disk_path)
+        ):
+            os.rename(new_disk_path, old_disk_path)
+        raise
+    await db.refresh(repository)
+    return repository
 
 
 async def get_repo(

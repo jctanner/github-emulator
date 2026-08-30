@@ -297,6 +297,35 @@ async def get_default_branch(disk_path: str) -> str:
     return stdout.decode().strip() or "main"
 
 
+async def set_default_branch(disk_path: str, branch: str) -> bool:
+    """Point the bare repository's HEAD at an existing branch."""
+    env = os.environ.copy()
+    env["GIT_DIR"] = disk_path
+    verify = await asyncio.create_subprocess_exec(
+        "git",
+        "show-ref",
+        "--verify",
+        f"refs/heads/{branch}",
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+        env=env,
+    )
+    await verify.communicate()
+    if verify.returncode != 0:
+        return False
+    update = await asyncio.create_subprocess_exec(
+        "git",
+        "symbolic-ref",
+        "HEAD",
+        f"refs/heads/{branch}",
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+        env=env,
+    )
+    await update.communicate()
+    return update.returncode == 0
+
+
 async def get_commit_info(disk_path: str, sha: str) -> Optional[dict]:
     """Get commit information for a given SHA."""
     env = os.environ.copy()

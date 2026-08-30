@@ -1,0 +1,134 @@
+{% extends "base.html" %}
+{% block title %}Branches · {{ owner }}/{{ repo.name }} settings - GitHub Emulator{% endblock %}
+
+{% block subnav %}
+<div class="color-bg-default border-bottom">
+    <div class="container-xl px-3 px-md-4 px-lg-5 pt-3">
+        {% set active_tab = "settings" %}
+        {% include "_repo_nav.html" %}
+    </div>
+</div>
+{% endblock %}
+
+{% block content %}
+<div class="repo-settings-layout">
+    {% set settings_section = "branches" %}
+    {% include "_repo_settings_sidebar.html" %}
+
+    <div class="repo-settings-main">
+        <h1 class="f2-light mb-3">Branches</h1>
+
+        {% if saved %}
+        <div class="flash flash-success mb-3">Branch protection rule {{ saved }}.</div>
+        {% endif %}
+        {% if error %}
+        <div class="flash flash-error mb-3">{{ error }}</div>
+        {% endif %}
+
+        <section class="repo-settings-section">
+            <h2 class="f3-light mb-2">Branch protection rules</h2>
+            <p class="color-fg-muted">Protect important branches by requiring reviews and status checks before merging.</p>
+
+            {% if branches %}
+            <div class="Box mt-3">
+                {% for branch in branches %}
+                <div class="Box-row branch-protection-rule-row">
+                    <div>
+                        <div class="text-bold">
+                            {{ branch.name }}
+                            {% if branch.name == repo.default_branch %}<span class="Label ml-1">default</span>{% endif %}
+                        </div>
+                        <div class="f6 color-fg-muted">
+                            {% if branch.protected %}Protected branch{% else %}No protection rule{% endif %}
+                        </div>
+                    </div>
+                    <a class="btn btn-sm" href="{{ url_prefix }}/{{ owner }}/{{ repo.name }}/settings/branches?branch={{ branch.name|urlencode }}">
+                        {% if branch.protected %}Edit{% else %}Add rule{% endif %}
+                    </a>
+                </div>
+                {% endfor %}
+            </div>
+            {% else %}
+            <div class="blankslate mt-3">
+                <h3 class="blankslate-heading">No branches</h3>
+                <p>Push a branch before configuring branch protection.</p>
+            </div>
+            {% endif %}
+        </section>
+
+        {% if selected_branch %}
+        {% set protection = selected_branch.protection %}
+        {% set status_checks = protection.required_status_checks if protection else none %}
+        {% set reviews = protection.required_pull_request_reviews if protection else none %}
+        <form method="post" action="{{ url_prefix }}/{{ owner }}/{{ repo.name }}/settings/branches/protection">
+            <input type="hidden" name="branch_name" value="{{ selected_branch.name }}">
+            <section class="repo-settings-section">
+                <h2 class="f3-light mb-3">Protect {{ selected_branch.name }}</h2>
+
+                <label class="form-checkbox branch-protection-master-toggle">
+                    <input type="checkbox" name="protection_enabled" value="true"{% if selected_branch.protected %} checked{% endif %}>
+                    <span class="text-bold">Enable branch protection</span>
+                    <span class="note d-block">Apply the selected requirements to this exact branch.</span>
+                </label>
+
+                <div class="branch-protection-option">
+                    <label class="form-checkbox">
+                        <input type="checkbox" name="require_reviews" value="true"{% if reviews %} checked{% endif %}>
+                        <span class="text-bold">Require a pull request before merging</span>
+                    </label>
+                    <div class="branch-protection-nested">
+                        <label for="required-approvals">Required approvals</label>
+                        <select class="form-select" id="required-approvals" name="required_approving_review_count">
+                            {% for count in range(0, 7) %}
+                            <option value="{{ count }}"{% if (reviews.required_approving_review_count if reviews else 1) == count %} selected{% endif %}>{{ count }}</option>
+                            {% endfor %}
+                        </select>
+                        <label class="form-checkbox mt-2">
+                            <input type="checkbox" name="dismiss_stale_reviews" value="true"{% if reviews and reviews.dismiss_stale_reviews %} checked{% endif %}>
+                            Dismiss stale approvals when new commits are pushed
+                        </label>
+                        <label class="form-checkbox">
+                            <input type="checkbox" name="require_last_push_approval" value="true"{% if reviews and reviews.require_last_push_approval %} checked{% endif %}>
+                            Require approval of the most recent push
+                        </label>
+                    </div>
+                </div>
+
+                <div class="branch-protection-option">
+                    <label class="form-checkbox">
+                        <input type="checkbox" name="require_status_checks" value="true"{% if status_checks %} checked{% endif %}>
+                        <span class="text-bold">Require status checks to pass before merging</span>
+                    </label>
+                    <div class="branch-protection-nested">
+                        <label for="status-contexts">Required check names</label>
+                        <textarea class="form-control input-block" id="status-contexts" name="status_contexts" rows="3" placeholder="ci/test, lint">{{ (status_checks.contexts if status_checks else [])|join(', ') }}</textarea>
+                        <span class="note">Enter check names separated by commas or new lines.</span>
+                        <label class="form-checkbox mt-2">
+                            <input type="checkbox" name="strict_status_checks" value="true"{% if status_checks and status_checks.strict %} checked{% endif %}>
+                            Require branches to be up to date before merging
+                        </label>
+                    </div>
+                </div>
+
+                {% for field, label, note, enabled in [
+                    ('enforce_admins', 'Do not allow bypassing these settings', 'Apply these protections to repository administrators.', protection.enforce_admins if protection else false),
+                    ('required_linear_history', 'Require linear history', 'Prevent merge commits from being pushed to this branch.', protection.required_linear_history if protection else false),
+                    ('allow_force_pushes', 'Allow force pushes', 'Permit users with push access to force push.', protection.allow_force_pushes if protection else false),
+                    ('allow_deletions', 'Allow deletions', 'Permit users with push access to delete this branch.', protection.allow_deletions if protection else false)
+                ] %}
+                <div class="branch-protection-option">
+                    <label class="form-checkbox">
+                        <input type="checkbox" name="{{ field }}" value="true"{% if enabled %} checked{% endif %}>
+                        <span class="text-bold">{{ label }}</span>
+                        <span class="note d-block">{{ note }}</span>
+                    </label>
+                </div>
+                {% endfor %}
+
+                <button class="btn btn-primary mt-3" type="submit">Save changes</button>
+            </section>
+        </form>
+        {% endif %}
+    </div>
+</div>
+{% endblock %}

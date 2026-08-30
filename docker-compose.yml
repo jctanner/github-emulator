@@ -27,7 +27,7 @@ services:
 
   actions-runner:
     build:
-      context: ./runner
+      context: ./src/runners/emulator
       dockerfile: Dockerfile
     environment:
       - GITHUB_EMULATOR_URL=https://github-emulator
@@ -45,7 +45,7 @@ services:
       - real-runner
     container_name: ${ACTIONS_REAL_RUNNER_CONTAINER_NAME:-ghemu-actions-real-runner-test}
     build:
-      context: ./runner-real
+      context: ./src/runners/upstream
       dockerfile: Dockerfile
       args:
         RUNNER_VERSION: ${ACTIONS_RUNNER_VERSION:-2.317.0}

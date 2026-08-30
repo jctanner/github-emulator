@@ -158,7 +158,7 @@ curl -s -X POST http://localhost:8000/admin/api/apps \
 # App JWT-authenticated metadata and installations use the GitHub-style API.
 curl -s http://localhost:8000/api/v3/app \
   -H "Authorization: Bearer $APP_JWT" | python3 -m json.tool
-curl -s http://localhost:8000/api/v3/app/installations \
+curl -s http://localhost:8000/api/v3/src/app/installations \
   -H "Authorization: Bearer $APP_JWT" | python3 -m json.tool
 ```
 
@@ -264,10 +264,11 @@ make actions-real-runner
 docker compose --profile real-runner up --build actions-real-runner
 ```
 
-This real-runner path is the intended compatibility target. The current
-emulator still needs protocol validation for real runner registration, session
-message polling, timeline updates, log upload, and completion before it can
-replace the Python fallback.
+This real-runner path is the intended compatibility target. Repository- and
+enterprise-scoped registration, session polling, timeline updates, log upload,
+and completion have been validated against the emulator. The Python runner
+remains the deterministic fallback and currently powers the tool-enriched
+Fullsend worker image used by Breadboard.
 
 Desktop Playwright validation can be run against the compose-served UI after a
 workflow run exists:
@@ -317,21 +318,25 @@ make actions-ui-smoke
 ## Project Structure
 
 ```
-app/
-  api/            # REST API route handlers
-  admin/          # Admin panel (Jinja2 templates, static assets, routes)
-  git/            # Git Smart HTTP and SSH transport
-  graphql/        # Strawberry GraphQL schema, queries, mutations, types
-  middleware/     # FastAPI middleware (auth, rate limiting, ETag, error handling)
-  models/         # SQLAlchemy ORM models
-  schemas/        # Pydantic request/response schemas
-  services/       # Business-logic layer (import, webhooks, search, etc.)
-  web/            # Web UI (Jinja2 templates with Primer CSS)
-  config.py       # Settings (env-driven via pydantic-settings)
-  database.py     # Async engine, session factory, Base
-  main.py         # Application entrypoint
+src/
+  app/
+    api/            # REST API route handlers
+    admin/          # Admin panel (Jinja2 templates, static assets, routes)
+    git/            # Git Smart HTTP and SSH transport
+    graphql/        # Strawberry GraphQL schema, queries, mutations, types
+    middleware/     # FastAPI middleware (auth, rate limiting, ETag, error handling)
+    models/         # SQLAlchemy ORM models
+    schemas/        # Pydantic request/response schemas
+    services/       # Business-logic layer (import, webhooks, search, etc.)
+    web/            # Web UI (Jinja2 templates with Primer CSS)
+    config.py       # Settings (env-driven via pydantic-settings)
+    database.py     # Async engine, session factory, Base
+    main.py         # Application entrypoint
+  runners/
+    emulator/       # Deterministic Python Actions runner
+    upstream/       # Official actions/runner container wrapper
 alembic/          # Database migration scripts
-tests/            # Pytest test suite (219 tests)
+tests/            # Pytest test suite (357 tests)
 scripts/          # Integration test scripts for gh/git CLI
 Dockerfile
 docker-compose.yml

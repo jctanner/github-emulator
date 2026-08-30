@@ -13,8 +13,9 @@ from app.config import settings
 from app.models.branch import Branch
 from app.models.repository import Repository
 from app.models.user import User
-from app.models.organization import Organization
+from app.models.organization import Organization, OrgMembership
 from app.schemas.user import SimpleUser, _fmt_dt, _make_node_id
+from app.services import repo_service
 from app.services.repo_service import delete_repo as delete_repository
 
 router = APIRouter(tags=["repos"])
@@ -271,9 +272,12 @@ async def update_repo(
 
     # Handle name change
     if "name" in body and body["name"] != repository.name:
-        new_name = body["name"]
-        repository.name = new_name
-        repository.full_name = f"{owner}/{new_name}"
+        try:
+            repository = await repo_service.rename_repo(
+                db, repository, body["name"]
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
 
     await db.commit()
     await db.refresh(repository)
@@ -415,34 +419,33 @@ async def create_org_repo(
     if organisation is None:
         raise HTTPException(status_code=404, detail="Organization not found")
 
+    membership_result = await db.execute(
+        select(OrgMembership).where(
+            OrgMembership.org_id == organisation.id,
+            OrgMembership.user_id == user.id,
+            OrgMembership.state == "active",
+        )
+    )
+    if membership_result.scalar_one_or_none() is None:
+        raise HTTPException(status_code=403, detail="Must be an organization member")
+
     name = body.get("name")
     if not name:
         raise HTTPException(status_code=422, detail="name is required")
 
-    full_name = f"{org}/{name}"
-    existing = await db.execute(
-        select(Repository).where(Repository.full_name == full_name)
-    )
-    if existing.scalar_one_or_none() is not None:
-        raise HTTPException(status_code=422, detail="Repository already exists")
-
-    disk_path = os.path.join(settings.DATA_DIR, "repos", org, f"{name}.git")
-
-    repo = Repository(
-        owner_id=user.id,
-        owner_type="Organization",
-        name=name,
-        full_name=full_name,
-        description=body.get("description"),
-        private=body.get("private", False),
-        default_branch=body.get("default_branch", "main"),
-        disk_path=disk_path,
-        visibility="private" if body.get("private") else "public",
-    )
-    db.add(repo)
-    await db.commit()
-    await db.refresh(repo)
-
-    await _init_bare_repo(disk_path, repo.default_branch)
+    try:
+        repo = await repo_service.create_repo(
+            db,
+            owner=user,
+            name=name,
+            description=body.get("description"),
+            private=body.get("private", False),
+            auto_init=body.get("auto_init", False),
+            default_branch=body.get("default_branch", "main"),
+            namespace_login=organisation.login,
+            owner_type="Organization",
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
 
     return _repo_json(repo, BASE)

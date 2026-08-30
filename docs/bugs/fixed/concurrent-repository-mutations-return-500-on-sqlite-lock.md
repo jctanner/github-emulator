@@ -90,8 +90,8 @@ POST /api/v3/admin/repos/import
 ```
 
 The emulator log recorded the exception at
-`app/api/users.py:admin_import_repo` ->
-`app/services/import_service.py:start_single_import` -> `await db.commit()`:
+`src/app/api/users.py:admin_import_repo` ->
+`src/app/services/import_service.py:start_single_import` -> `await db.commit()`:
 
 ```text
 sqlalchemy.exc.OperationalError: (sqlite3.OperationalError) database is locked
@@ -111,7 +111,7 @@ failing SQL statement remains to be confirmed.
 
 ## Implementation Context
 
-- `app/database.py` enables `PRAGMA journal_mode=WAL` during initialization.
+- `src/app/database.py` enables `PRAGMA journal_mode=WAL` during initialization.
 - The async engine's SQLite `connect_args` only set
   `check_same_thread: False`; no connection `timeout` or `PRAGMA busy_timeout`
   is configured.

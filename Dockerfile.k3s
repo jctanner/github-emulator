@@ -30,7 +30,7 @@ ENV GITHUB_EMULATOR_BASE_URL=https://github-emulator.ai-pipeline.svc.cluster.loc
 ENV GITHUB_EMULATOR_HOSTNAME=github-emulator.ai-pipeline.svc.cluster.local
 ENV TLS_CERT_FILE=/etc/tls/tls.crt
 ENV TLS_KEY_FILE=/etc/tls/tls.key
-ENV PYTHONPATH=/app
+ENV PYTHONPATH=/app/src
 
 # Expose ports (HTTPS + HTTP + direct API + SSH)
 EXPOSE 443

@@ -109,7 +109,7 @@ Vagrant.configure("2") do |config|
       lv.memory = 2048
     end
 
-    runner.vm.provision "file", source: "runner/runner.py", destination: "/tmp/runner.py"
+    runner.vm.provision "file", source: "src/runners/emulator/runner.py", destination: "/tmp/runner.py"
 
     runner.vm.provision "shell", env: {
       "RUNNER_TYPE" => ENV.fetch("RUNNER_TYPE", "custom"),

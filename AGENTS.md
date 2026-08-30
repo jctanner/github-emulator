@@ -31,12 +31,12 @@ When you need detailed status, follow links from `PLAN.md` into:
 ## Project Notes
 
 - This is a FastAPI GitHub API emulator for integration testing.
-- Main app wiring lives in `app/main.py`.
-- API routes live in `app/api/`.
-- ORM models live in `app/models/`.
-- Business logic lives in `app/services/`.
-- Git transport code lives in `app/git/`.
-- Admin and web UI routes/templates live in `app/admin/` and `app/web/`.
+- Main app wiring lives in `src/app/main.py`.
+- API routes live in `src/app/api/`.
+- ORM models live in `src/app/models/`.
+- Business logic lives in `src/app/services/`.
+- Git transport code lives in `src/app/git/`.
+- Admin and web UI routes/templates live in `src/app/admin/` and `src/app/web/`.
 - Tests live in `tests/`.
 
 ## Development Commands

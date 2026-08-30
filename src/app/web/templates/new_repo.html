@@ -21,7 +21,14 @@
             </div>
             <div class="form-group-body">
                 <div class="d-flex flex-items-center">
-                    <span class="mr-2 f4 color-fg-muted">{{ current_user.login }} /</span>
+                    <select id="owner" name="owner" class="form-select mr-2" aria-label="Owner">
+                        {% for owner in owner_choices %}
+                        <option value="{{ owner.login }}"{% if owner.login == selected_owner %} selected{% endif %}>
+                            {{ owner.login }}{% if owner.type == "Organization" %} (organization){% endif %}
+                        </option>
+                        {% endfor %}
+                    </select>
+                    <span class="mr-2 f4 color-fg-muted">/</span>
                     <input type="text" id="name" name="name" class="form-control" required
                            pattern="[a-zA-Z0-9._-]+" title="Only alphanumeric characters, hyphens, underscores, and dots are allowed.">
                 </div>

@@ -1,0 +1,96 @@
+{% extends "base.html" %}
+{% block title %}Settings · {{ owner }}/{{ repo.name }} - GitHub Emulator{% endblock %}
+
+{% block subnav %}
+<div class="color-bg-default border-bottom">
+    <div class="container-xl px-3 px-md-4 px-lg-5 pt-3">
+        {% set active_tab = "settings" %}
+        {% include "_repo_nav.html" %}
+    </div>
+</div>
+{% endblock %}
+
+{% block content %}
+<div class="repo-settings-layout">
+    {% set settings_section = "general" %}
+    {% include "_repo_settings_sidebar.html" %}
+
+    <div class="repo-settings-main">
+        <h1 class="f2-light mb-3">General</h1>
+
+        {% if saved %}
+        <div class="flash flash-success mb-3">Repository settings saved.</div>
+        {% endif %}
+        {% if error %}
+        <div class="flash flash-error mb-3">{{ error }}</div>
+        {% endif %}
+
+        <section class="repo-settings-section">
+            <h2 class="f3-light mb-3">Repository name</h2>
+            <form method="post" action="{{ url_prefix }}/{{ owner }}/{{ repo.name }}/settings/rename" class="d-flex flex-items-center" style="gap:8px;">
+                <input class="form-control" type="text" name="name" value="{{ repo.name }}" required pattern="[a-zA-Z0-9._-]+" aria-label="Repository name">
+                <button class="btn" type="submit">Rename</button>
+            </form>
+        </section>
+
+        <section class="repo-settings-section">
+            <h2 class="f3-light mb-2">Default branch</h2>
+            <p class="color-fg-muted">The default branch is the base branch for pull requests and code commits.</p>
+            <form method="post" action="{{ url_prefix }}/{{ owner }}/{{ repo.name }}/settings/default-branch" class="d-flex flex-items-center" style="gap:8px;">
+                <select class="form-select" name="default_branch" aria-label="Default branch">
+                    {% for branch in branches %}
+                    <option value="{{ branch }}"{% if branch == repo.default_branch %} selected{% endif %}>{{ branch }}</option>
+                    {% endfor %}
+                </select>
+                <button class="btn" type="submit">Update</button>
+            </form>
+        </section>
+
+        <form method="post" action="{{ url_prefix }}/{{ owner }}/{{ repo.name }}/settings/general">
+            <section class="repo-settings-section" id="visibility">
+                <h2 class="f3-light mb-3">Repository details</h2>
+                <label class="text-bold d-block mb-1" for="description">Description</label>
+                <input class="form-control input-block mb-3" id="description" name="description" value="{{ repo.description or '' }}">
+                <label class="text-bold d-block mb-1" for="homepage">Website</label>
+                <input class="form-control input-block" id="homepage" name="homepage" type="url" value="{{ repo.homepage or '' }}" placeholder="https://example.com">
+                <label class="form-checkbox mt-3">
+                    <input type="checkbox" name="is_template" value="true"{% if repo.is_template %} checked{% endif %}>
+                    <span class="text-bold">Template repository</span>
+                    <span class="note d-block">Allow users to generate repositories with the same directory structure and files.</span>
+                </label>
+            </section>
+
+            <section class="repo-settings-section">
+                <h2 class="f3-light mb-3">Visibility</h2>
+                <div class="form-checkbox">
+                    <label><input type="radio" name="visibility" value="public"{% if not repo.private %} checked{% endif %}> <span class="text-bold">Public</span></label>
+                    <span class="note">Anyone can see this repository.</span>
+                </div>
+                <div class="form-checkbox">
+                    <label><input type="radio" name="visibility" value="private"{% if repo.private %} checked{% endif %}> <span class="text-bold">Private</span></label>
+                    <span class="note">Only authorized users can see this repository.</span>
+                </div>
+            </section>
+
+            <section class="repo-settings-section">
+                <h2 class="f3-light mb-3">Features</h2>
+                {% for field, label, note in [
+                    ('has_wiki', 'Wikis', 'Host documentation for your repository.'),
+                    ('has_issues', 'Issues', 'Track ideas, feedback, tasks, and bugs.'),
+                    ('has_projects', 'Projects', 'Organize and prioritize repository work.'),
+                    ('has_discussions', 'Discussions', 'Host conversations for the community.')
+                ] %}
+                <div class="repo-settings-feature">
+                    <label class="form-checkbox">
+                        <input type="checkbox" name="{{ field }}" value="true"{% if repo|attr(field) %} checked{% endif %}>
+                        <span class="text-bold">{{ label }}</span>
+                        <span class="note d-block">{{ note }}</span>
+                    </label>
+                </div>
+                {% endfor %}
+                <button class="btn btn-primary mt-3" type="submit">Save changes</button>
+            </section>
+        </form>
+    </div>
+</div>
+{% endblock %}

@@ -5,7 +5,13 @@ import time
 from pathlib import Path
 
 
-RUNNER_PATH = Path(__file__).parents[1] / "runner" / "runner.py"
+RUNNER_PATH = (
+    Path(__file__).parents[1]
+    / "src"
+    / "runners"
+    / "emulator"
+    / "runner.py"
+)
 _SPEC = importlib.util.spec_from_file_location("github_emulator_runner", RUNNER_PATH)
 assert _SPEC and _SPEC.loader
 runner_module = importlib.util.module_from_spec(_SPEC)

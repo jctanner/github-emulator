@@ -8,7 +8,7 @@ guesswork.
 ## Context
 
 `docker-compose.yml` already contains an `actions-runner` service. It uses the
-custom Python runner in `runner/runner.py` and expects:
+custom Python runner in `src/runners/emulator/runner.py` and expects:
 
 - `GITHUB_EMULATOR_URL=https://github-emulator`
 - `GITHUB_EMULATOR_TOKEN=${GITHUB_EMULATOR_RUNNER_TOKEN:-}`
@@ -36,7 +36,7 @@ The runner cannot register unless a valid admin PAT is supplied through
 
 - `docker-compose.yml`
 - `Makefile`
-- `runner/runner.py`
+- `src/runners/emulator/runner.py`
 - `README.md`
 - `scripts/`
 - Playwright smoke script or pytest integration once the project chooses the

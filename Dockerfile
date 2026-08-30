@@ -29,7 +29,7 @@ ENV GITHUB_EMULATOR_DATA_DIR=/data
 ENV GITHUB_EMULATOR_DATABASE_URL=sqlite+aiosqlite:///data/github_emulator.db
 ENV GITHUB_EMULATOR_BASE_URL=https://ghemu.local
 ENV GITHUB_EMULATOR_HOSTNAME=ghemu.local
-ENV PYTHONPATH=/app
+ENV PYTHONPATH=/app/src
 
 # Expose ports (HTTPS + HTTP + direct API + SSH)
 EXPOSE 443

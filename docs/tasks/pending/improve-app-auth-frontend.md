@@ -17,9 +17,9 @@ Read these before changing code:
 - `README.md`
 - `PLAN.md`
 - `docs/agentic_work_ledger.md`
-- `app/admin/routes.py` and `app/admin/templates/`
-- `app/api/apps.py`
-- `app/models/apps.py` and `app/models/token.py`
+- `src/app/admin/routes.py` and `src/app/admin/templates/`
+- `src/app/api/apps.py`
+- `src/app/models/apps.py` and `src/app/models/token.py`
 - `tests/test_apps_oidc.py` and the existing admin/frontend tests
 
 The emulator currently has JSON endpoints for development-only App creation,
@@ -37,7 +37,7 @@ states, and explanatory text:
 - [Registering a GitHub App](https://docs.github.com/en/apps/creating-github-apps/registering-a-github-app)
 - [Installing your own GitHub App](https://docs.github.com/en/apps/using-github-apps/installing-your-own-github-app)
 - [Authenticating with a GitHub App](https://docs.github.com/en/apps/creating-github-apps/authenticating-with-a-github-app)
-- [Generating an installation access token](https://docs.github.com/en/apps/creating-github-apps/authenticating-with-a-github-app/generating-an-installation-access-token-for-a-github-app)
+- [Generating an installation access token](https://docs.github.com/en/apps/creating-github-apps/authenticating-with-a-github-src/app/generating-an-installation-access-token-for-a-github-app)
 - [REST API endpoints for GitHub Apps](https://docs.github.com/en/rest/apps)
 - [Authorizing OAuth apps](https://docs.github.com/en/apps/oauth-apps/using-oauth-apps/authorizing-oauth-apps)
 - [Reviewing authorized OAuth apps](https://docs.github.com/en/apps/oauth-apps/using-oauth-apps/reviewing-your-authorized-oauth-apps)

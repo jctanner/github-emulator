@@ -35,13 +35,13 @@ expand it.
 
 ## Files Likely Involved
 
-- `app/services/workflow_service.py`
-- `app/models/actions.py`
-- `app/api/actions_dispatch.py`
-- `app/api/actions_pipelines.py`
-- `app/api/actions_distributed_task.py`
-- `runner/runner.py`
-- `runner/Dockerfile`
+- `src/app/services/workflow_service.py`
+- `src/app/models/actions.py`
+- `src/app/api/actions_dispatch.py`
+- `src/app/api/actions_pipelines.py`
+- `src/app/api/actions_distributed_task.py`
+- `src/runners/emulator/runner.py`
+- `src/runners/emulator/Dockerfile`
 - `docker-compose.yml`
 - `tests/test_actions_execution.py`
 
@@ -61,7 +61,7 @@ Pending
   environments only.
 - Do not grow the Python runner into a full Actions runtime unless the real
   runner path is proven infeasible or too expensive for the project's needs.
-- Added `runner-real/Dockerfile`, `runner-real/entrypoint.sh`, and the
+- Added `src/runners/upstream/Dockerfile`, `src/runners/upstream/entrypoint.sh`, and the
   `actions-real-runner` compose profile as the concrete real-runner spike
   artifact.
 - Workflow job step JSON now preserves `run`, `shell`, `env`,

@@ -51,5 +51,14 @@
             <span class="UnderlineNav-octicon">{{ history(16) }}</span>
             <span>Actions</span>
         </a>
+        {% if current_user and (current_user.site_admin or current_user.id == repo.owner_id) %}
+        <a class="UnderlineNav-item{% if active_tab == 'settings' %} selected{% endif %}"
+           href="{{ url_prefix }}/{{ owner }}/{{ repo.name }}/settings">
+            <span class="UnderlineNav-octicon">
+                <svg aria-hidden="true" height="16" viewBox="0 0 16 16" width="16" fill="currentColor"><path d="M8 0a1.75 1.75 0 0 1 1.59 1.018l.353.766c.31.13.61.303.876.506l.836-.09a1.75 1.75 0 0 1 1.684.857l.69 1.194a1.75 1.75 0 0 1-.094 1.886l-.482.69c.042.386.042.773 0 1.159l.482.69a1.75 1.75 0 0 1 .094 1.886l-.69 1.194a1.75 1.75 0 0 1-1.684.857l-.836-.09a5.72 5.72 0 0 1-.876.506l-.353.766A1.75 1.75 0 0 1 8 16H6.62a1.75 1.75 0 0 1-1.59-1.018l-.353-.766a5.688 5.688 0 0 1-.876-.506l-.836.09a1.75 1.75 0 0 1-1.684-.857l-.69-1.194a1.75 1.75 0 0 1 .094-1.886l.482-.69a5.51 5.51 0 0 1 0-1.159l-.482-.69A1.75 1.75 0 0 1 .59 4.251l.69-1.194A1.75 1.75 0 0 1 2.965 2.2l.836.09c.267-.203.566-.376.876-.506l.353-.766A1.75 1.75 0 0 1 6.62 0H8Zm-.69 5.25a2.75 2.75 0 1 0 0 5.5 2.75 2.75 0 0 0 0-5.5Z"></path></svg>
+            </span>
+            <span>Settings</span>
+        </a>
+        {% endif %}
     </div>
 </nav>

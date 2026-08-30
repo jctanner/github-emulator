@@ -30,9 +30,9 @@ not have file menu or jump navigation.
 
 ## Files Changed
 
-- `app/web/templates/pull_detail.html`
-- `app/web/templates/base.html`
-- `app/web/static/css/web.css`
+- `src/app/web/templates/pull_detail.html`
+- `src/app/web/templates/base.html`
+- `src/app/web/static/css/web.css`
 - `tests/test_pulls_api.py`
 
 ## Status

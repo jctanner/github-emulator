@@ -5,13 +5,33 @@ from sqlalchemy import select
 
 from app.api.deps import AuthUser, CurrentUser, DbSession, get_repo_or_404
 from app.config import settings
-from app.models.repository import Collaborator
+from app.models.repository import Collaborator, Repository
 from app.models.user import User
 from app.schemas.user import SimpleUser, _make_node_id
 
 router = APIRouter(tags=["collaborators"])
 
 BASE = settings.BASE_URL
+VALID_PERMISSIONS = {"pull", "triage", "push", "maintain", "admin"}
+
+
+async def _require_repository_admin(
+    repository: Repository, user: User, db
+) -> None:
+    if user.site_admin or repository.owner_id == user.id:
+        return
+    result = await db.execute(
+        select(Collaborator).where(
+            Collaborator.repo_id == repository.id,
+            Collaborator.user_id == user.id,
+            Collaborator.permission == "admin",
+        )
+    )
+    if result.scalar_one_or_none() is None:
+        raise HTTPException(
+            status_code=403,
+            detail="Must have admin rights to Repository.",
+        )
 
 
 def _collab_json(user_obj: User, permission: str, base_url: str) -> dict:
@@ -77,7 +97,10 @@ async def add_collaborator(
 ):
     """Add a collaborator to a repository."""
     repository = await get_repo_or_404(owner, repo, db)
+    await _require_repository_admin(repository, user, db)
     permission = body.get("permission", "push")
+    if permission not in VALID_PERMISSIONS:
+        raise HTTPException(status_code=422, detail="Invalid collaborator permission")
 
     result = await db.execute(select(User).where(User.login == username))
     target_user = result.scalar_one_or_none()
@@ -112,6 +135,7 @@ async def remove_collaborator(
 ):
     """Remove a collaborator."""
     repository = await get_repo_or_404(owner, repo, db)
+    await _require_repository_admin(repository, user, db)
 
     result = await db.execute(
         select(Collaborator)

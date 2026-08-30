@@ -129,3 +129,42 @@ async def test_add_nonexistent_user_as_collaborator(client, test_user, test_toke
         headers=auth_headers(test_token),
     )
     assert resp.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_non_admin_cannot_mutate_another_repository_collaborators(
+    client, test_user, test_token, admin_user, admin_token
+):
+    created = await client.post(
+        f"{API}/user/repos",
+        json={"name": "admin-collab-repo"},
+        headers=auth_headers(admin_token),
+    )
+    assert created.status_code == 201
+
+    response = await client.put(
+        f"{API}/repos/admin/admin-collab-repo/collaborators/testuser",
+        json={"permission": "push"},
+        headers=auth_headers(test_token),
+    )
+
+    assert response.status_code == 403
+
+
+@pytest.mark.asyncio
+async def test_collaborator_api_rejects_invalid_permission(
+    client, test_user, test_token, admin_user
+):
+    await client.post(
+        f"{API}/user/repos",
+        json={"name": "collab-invalid-permission"},
+        headers=auth_headers(test_token),
+    )
+
+    response = await client.put(
+        f"{API}/repos/testuser/collab-invalid-permission/collaborators/admin",
+        json={"permission": "owner"},
+        headers=auth_headers(test_token),
+    )
+
+    assert response.status_code == 422

@@ -16,20 +16,20 @@ simulation.
 ## Current State
 
 - `docker-compose.yml` defines an `actions-runner` service that builds
-  `runner/Dockerfile` and an opt-in `actions-real-runner` profile that builds
-  the upstream `actions/runner` binary from `runner-real/Dockerfile`.
-- `runner/runner.py` can register with the emulator, heartbeat, poll for jobs,
+  `src/runners/emulator/Dockerfile` and an opt-in `actions-real-runner` profile that builds
+  the upstream `actions/runner` binary from `src/runners/upstream/Dockerfile`.
+- `src/runners/emulator/runner.py` can register with the emulator, heartbeat, poll for jobs,
   report progress, complete jobs, and upload logs.
-- `runner/runner.py` executes local shell `run:` steps from the stored job
+- `src/runners/emulator/runner.py` executes local shell `run:` steps from the stored job
   payload and remains the deterministic fallback runner.
-- `app/services/workflow_service.py` detects `.github/workflows/*.yml`, creates
+- `src/app/services/workflow_service.py` detects `.github/workflows/*.yml`, creates
   `Workflow`, `WorkflowRun`, and `WorkflowJob` rows, supports basic trigger
   matching, dependency ordering, and matrix expansion.
-- `app/api/actions.py`, `app/api/actions_runners.py`, and
-  `app/api/actions_dispatch.py` expose a repository-scoped API surface for
+- `src/app/api/actions.py`, `src/app/api/actions_runners.py`, and
+  `src/app/api/actions_dispatch.py` expose a repository-scoped API surface for
   workflows, runs, jobs, variables, secrets, runners, and custom runner
   dispatch.
-- `app/api/actions_pipelines.py` and `app/api/actions_distributed_task.py`
+- `src/app/api/actions_pipelines.py` and `src/app/api/actions_distributed_task.py`
   provide partial GHES/Azure Pipelines-style compatibility endpoints for the
   real `actions/runner` binary, including pool-scoped session, message,
   timeline, log, and job request endpoints.

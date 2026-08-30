@@ -1,0 +1,109 @@
+{% extends "base.html" %}
+{% block title %}Collaborators · {{ owner }}/{{ repo.name }} settings - GitHub Emulator{% endblock %}
+
+{% block subnav %}
+<div class="color-bg-default border-bottom">
+    <div class="container-xl px-3 px-md-4 px-lg-5 pt-3">
+        {% set active_tab = "settings" %}
+        {% include "_repo_nav.html" %}
+    </div>
+</div>
+{% endblock %}
+
+{% block content %}
+<div class="repo-settings-layout">
+    {% set settings_section = "collaborators" %}
+    {% include "_repo_settings_sidebar.html" %}
+
+    <div class="repo-settings-main">
+        <h1 class="f2-light mb-3">Collaborators and teams</h1>
+
+        {% if saved %}
+        <div class="flash flash-success mb-3">
+            {% if saved == 'removed' %}Collaborator removed.
+            {% elif saved == 'permission' %}Collaborator permission updated.
+            {% else %}Collaborator access saved.{% endif %}
+        </div>
+        {% endif %}
+        {% if error %}
+        <div class="flash flash-error mb-3">{{ error }}</div>
+        {% endif %}
+
+        <section class="collaborator-visibility-summary mb-3">
+            <div>
+                <div class="text-bold">{{ 'Private' if repo.private else 'Public' }} repository</div>
+                <div class="color-fg-muted f6">
+                    {% if repo.private %}Only authorized users can see this repository.
+                    {% else %}This repository is public and visible to anyone.{% endif %}
+                </div>
+            </div>
+            <a class="btn btn-sm" href="{{ url_prefix }}/{{ owner }}/{{ repo.name }}/settings#visibility">Manage visibility</a>
+        </section>
+
+        <section class="Box mb-4">
+            <div class="Box-header d-flex flex-items-center flex-justify-between">
+                <h2 class="Box-title f5">Direct access</h2>
+                <span class="Counter">{{ collaborators|length }}</span>
+            </div>
+            <div class="Box-row color-fg-muted f6">
+                {{ collaborators|length }} collaborator{{ '' if collaborators|length == 1 else 's' }} {{ 'has' if collaborators|length == 1 else 'have' }} direct access to this repository.
+            </div>
+        </section>
+
+        <section>
+            <h2 class="f3 mb-3">Manage access</h2>
+            <div class="Box">
+                <div class="Box-header">
+                    <form method="post" action="{{ url_prefix }}/{{ owner }}/{{ repo.name }}/settings/access/collaborators" class="collaborator-add-form">
+                        <div class="flex-auto">
+                            <label class="text-bold d-block mb-1" for="collaborator-username">Add a collaborator</label>
+                            <input class="form-control input-block" id="collaborator-username" name="username" required placeholder="Username" autocomplete="off">
+                        </div>
+                        <div>
+                            <label class="text-bold d-block mb-1" for="collaborator-permission">Permission</label>
+                            <select class="form-select" id="collaborator-permission" name="permission">
+                                {% for permission in permissions %}
+                                <option value="{{ permission }}"{% if permission == 'push' %} selected{% endif %}>{{ permission|capitalize }}</option>
+                                {% endfor %}
+                            </select>
+                        </div>
+                        <button class="btn btn-primary" type="submit">Add people</button>
+                    </form>
+                </div>
+
+                {% if collaborators %}
+                {% for collaborator in collaborators %}
+                <div class="Box-row collaborator-row">
+                    <div class="collaborator-identity">
+                        <div class="avatar avatar-small">{{ collaborator.user.login[0]|upper }}</div>
+                        <div>
+                            <a class="text-bold Link--primary" href="{{ url_prefix }}/{{ collaborator.user.login }}">{{ collaborator.user.login }}</a>
+                            {% if collaborator.user.name %}<div class="f6 color-fg-muted">{{ collaborator.user.name }}</div>{% endif %}
+                        </div>
+                    </div>
+                    <div class="collaborator-actions">
+                        <form method="post" action="{{ url_prefix }}/{{ owner }}/{{ repo.name }}/settings/access/collaborators/{{ collaborator.user.login }}/permission" class="d-flex flex-items-center" style="gap:8px;">
+                            <select class="form-select" name="permission" aria-label="Permission for {{ collaborator.user.login }}">
+                                {% for permission in permissions %}
+                                <option value="{{ permission }}"{% if collaborator.permission == permission %} selected{% endif %}>{{ permission|capitalize }}</option>
+                                {% endfor %}
+                            </select>
+                            <button class="btn btn-sm" type="submit">Update</button>
+                        </form>
+                        <form method="post" action="{{ url_prefix }}/{{ owner }}/{{ repo.name }}/settings/access/collaborators/{{ collaborator.user.login }}/remove">
+                            <button class="btn btn-sm btn-danger" type="submit">Remove</button>
+                        </form>
+                    </div>
+                </div>
+                {% endfor %}
+                {% else %}
+                <div class="blankslate collaborator-blankslate">
+                    <h3 class="blankslate-heading">You haven't invited any collaborators yet</h3>
+                    <p>Add a user above to grant direct repository access.</p>
+                </div>
+                {% endif %}
+            </div>
+        </section>
+    </div>
+</div>
+{% endblock %}

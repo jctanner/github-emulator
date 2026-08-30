@@ -7,11 +7,11 @@ Add a `POST /api/v3/admin/repos/import` bootstrap endpoint that wraps the existi
 ## Context
 
 The emulator already has a full import system:
-- `app/services/import_service.py` — `start_single_import()` and `start_bulk_import()` clone bare repos from GitHub server-side, create DB records, and sync branches
-- `app/admin/routes.py` lines 807-906 — admin web UI form at `POST /admin/import` that calls the import service
-- `app/models/import_job.py` — `ImportJob` model tracking import status
+- `src/app/services/import_service.py` — `start_single_import()` and `start_bulk_import()` clone bare repos from GitHub server-side, create DB records, and sync branches
+- `src/app/admin/routes.py` lines 807-906 — admin web UI form at `POST /admin/import` that calls the import service
+- `src/app/models/import_job.py` — `ImportJob` model tracking import status
 
-But there's no API equivalent — only the web form. The existing admin bootstrap endpoints in `app/api/users.py` (`/admin/users`, `/admin/tokens`) are unauthenticated and follow a consistent pattern.
+But there's no API equivalent — only the web form. The existing admin bootstrap endpoints in `src/app/api/users.py` (`/admin/users`, `/admin/tokens`) are unauthenticated and follow a consistent pattern.
 
 ## Desired API
 
@@ -70,9 +70,9 @@ Status values: `pending`, `running`, `completed`, `failed`.
 
 ## Implementation notes
 
-- Add the routes in `app/api/users.py` alongside the existing admin helpers (or a new `app/api/admin.py` — either is fine)
+- Add the routes in `src/app/api/users.py` alongside the existing admin helpers (or a new `src/app/api/admin.py` — either is fine)
 - Look up the owner by login via `User.login`, resolve `owner_id`
-- Call `start_single_import(db, url, owner_id, github_token)` from `app/services/import_service.py`
+- Call `start_single_import(db, url, owner_id, github_token)` from `src/app/services/import_service.py`
 - The import runs async in the background (the service already uses `asyncio.create_task`), so the POST returns immediately with the job ID
 - The status endpoint reads the `ImportJob` model
 
@@ -101,10 +101,10 @@ Done
 
 ## Evidence
 
-- Added `POST /api/v3/admin/repos/import` in `app/api/users.py`.
-- Added `GET /api/v3/admin/repos/import/{job_id}` in `app/api/users.py`.
+- Added `POST /api/v3/admin/repos/import` in `src/app/api/users.py`.
+- Added `GET /api/v3/admin/repos/import/{job_id}` in `src/app/api/users.py`.
 - Added focused API coverage in `tests/test_admin.py`.
-- Verified changed files compile: `uv run python -m py_compile app/api/users.py tests/test_admin.py`.
+- Verified changed files compile: `uv run python -m py_compile src/app/api/users.py tests/test_admin.py`.
 - Ran a temporary ASGI smoke check for the new POST and GET endpoints; POST returned `202` and GET returned `200`.
 - Installed dev dependencies with `uv pip install -e ".[dev]"` after `pytest` was missing.
 - Verified focused coverage passes: `uv run pytest tests/test_admin.py -v` completed with 13 passed.

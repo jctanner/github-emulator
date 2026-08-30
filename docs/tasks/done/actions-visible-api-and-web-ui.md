@@ -36,15 +36,15 @@ navigation only includes Code, Issues, and Pull requests.
 
 ## Files Likely Involved
 
-- `app/web/routes.py`
-- `app/web/templates/_repo_nav.html`
-- `app/web/templates/actions.html`
-- `app/web/templates/action_run_detail.html`
-- `app/web/templates/action_job_detail.html`
-- `app/web/templates/action_runners.html`
-- `app/web/static/css/web.css`
-- `app/api/actions.py`
-- `app/api/actions_runners.py`
+- `src/app/web/routes.py`
+- `src/app/web/templates/_repo_nav.html`
+- `src/app/web/templates/actions.html`
+- `src/app/web/templates/action_run_detail.html`
+- `src/app/web/templates/action_job_detail.html`
+- `src/app/web/templates/action_runners.html`
+- `src/app/web/static/css/web.css`
+- `src/app/api/actions.py`
+- `src/app/api/actions_runners.py`
 - `tests/test_actions_api.py`
 - `tests/test_web_actions.py`
 - `tests/test_web_actions_playwright.py` or `scripts/actions-ui-smoke.*`

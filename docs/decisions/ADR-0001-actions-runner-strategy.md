@@ -10,7 +10,7 @@ The emulator has a partial GitHub Actions implementation:
 
 - workflow discovery and run/job creation
 - REST endpoints for workflows, runs, jobs, secrets, variables, and runners
-- a custom Docker Compose runner service using `runner/runner.py`
+- a custom Docker Compose runner service using `src/runners/emulator/runner.py`
 - partial GHES/Azure Pipelines-style endpoints for possible real
   `actions/runner` compatibility
 
@@ -78,9 +78,9 @@ the preferred compatibility target:
   - `docker-compose.yml` already defines an `actions-runner` service.
   - `docker-compose.yml` now has an opt-in `actions-real-runner` service
     profile that builds the upstream `actions/runner` binary.
-  - `runner/runner.py` already implements a custom runner loop.
-  - `app/api/actions_pipelines.py` and
-    `app/api/actions_distributed_task.py` already begin a real-runner
+  - `src/runners/emulator/runner.py` already implements a custom runner loop.
+  - `src/app/api/actions_pipelines.py` and
+    `src/app/api/actions_distributed_task.py` already begin a real-runner
     compatibility path.
 
 ## Remaining Validation

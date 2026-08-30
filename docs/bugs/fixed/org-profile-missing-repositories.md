@@ -20,7 +20,7 @@ organization landing page under-reported the available repositories.
 
 ## Root Cause
 
-`app/web/routes.py` used one repository query for both users and organizations:
+`src/app/web/routes.py` used one repository query for both users and organizations:
 `Repository.owner_id == profile.id`. Repository records are keyed to users for
 database ownership, while organization imports store the display namespace in
 `Repository.full_name` and set `owner_type` to `Organization`.

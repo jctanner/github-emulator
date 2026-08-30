@@ -87,11 +87,11 @@ documentation as the compatibility reference.
 
 ## Likely Files/Areas
 
-- `app/models/`
-- `app/api/`
-- `app/graphql/`
-- `app/services/`
-- `app/admin/` and `app/web/`
+- `src/app/models/`
+- `src/app/api/`
+- `src/app/graphql/`
+- `src/app/services/`
+- `src/app/admin/` and `src/app/web/`
 - `alembic/`
 - `tests/`
 - Existing auto-merge implementation and GitHub CLI compatibility helpers

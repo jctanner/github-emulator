@@ -23,9 +23,9 @@ single page that makes this distinction and current job assignment obvious.
 
 ## Files Likely Involved
 
-- `app/admin/routes.py`
-- `app/admin/templates/base.html`
-- `app/admin/templates/runners.html`
+- `src/app/admin/routes.py`
+- `src/app/admin/templates/base.html`
+- `src/app/admin/templates/runners.html`
 - `tests/test_admin_runners.py`
 
 ## Status

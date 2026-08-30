@@ -15,9 +15,9 @@ and update the repository job page without a manual reload.
 
 ## Implementation
 
-- `runner/runner.py` streams shell subprocess output and uploads chunks.
-- `app/web/routes.py` adds the repository-scoped `/actions/jobs/{id}/live` endpoint.
-- `app/web/templates/action_job_detail.html` polls that endpoint once per second.
+- `src/runners/emulator/runner.py` streams shell subprocess output and uploads chunks.
+- `src/app/web/routes.py` adds the repository-scoped `/actions/jobs/{id}/live` endpoint.
+- `src/app/web/templates/action_job_detail.html` polls that endpoint once per second.
 
 ## Evidence
 

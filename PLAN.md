@@ -24,6 +24,12 @@ Actions visibility and runner evaluation.
 
 ## Completed Tasks
 
+- `docs/tasks/done/src-layout-reorganization.md`
+- `docs/tasks/done/repository-github-apps-settings-page.md`
+- `docs/tasks/done/repository-collaborator-settings-page.md`
+- `docs/tasks/done/repository-branch-protection-settings-page.md`
+- `docs/tasks/done/repository-general-settings-page.md`
+- `docs/tasks/done/repository-owner-selector.md`
 - `docs/tasks/done/enterprise-real-actions-runner.md`
 - `docs/tasks/done/site-wide-actions-runner.md`
 - `docs/tasks/done/admin-runner-management-page.md`
