@@ -1,4 +1,4 @@
-import {FormEvent, useState} from "react";
+import {FormEvent, useEffect, useState} from "react";
 import {Link, useNavigate, useSearchParams} from "react-router-dom";
 
 import {api} from "../api/client";
@@ -13,6 +13,7 @@ export function SearchPage() {
   const navigate = useNavigate();
   const query = params.get("q") ?? "";
   const [value, setValue] = useState(query);
+  useEffect(() => setValue(query), [query]);
   const result = useApiData<Results>(`search:${query}`, async () => {
     if (!query) return {total_count: 0, incomplete_results: false, items: []};
     const {data, response} = await api.GET("/api/v3/search/repositories", {

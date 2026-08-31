@@ -17,14 +17,19 @@ export function BranchesPage() {
     const {data, response} = await api.GET(
       "/api/v3/repos/{owner}/{repo}/branches",
       {
-        params: {path: {owner, repo}},
+        params: {path: {owner, repo}, query: {per_page: 100}},
       },
     );
     return requireApiData(data, response, "Could not load branches.");
   });
   const [name, setName] = useState("");
   const [source, setSource] = useState("");
+  const [query, setQuery] = useState("");
   const [error, setError] = useState<string | null>(null);
+  const normalizedQuery = query.trim().toLocaleLowerCase();
+  const visibleBranches = result.data?.filter((branch) =>
+    branch.name.toLocaleLowerCase().includes(normalizedQuery),
+  );
 
   async function create(event: FormEvent) {
     event.preventDefault();
@@ -54,40 +59,51 @@ export function BranchesPage() {
       <div className="page-heading">
         <h1>Branches</h1>
       </div>
-      <details className="new-branch-disclosure">
-        <summary className="button">New branch</summary>
-        <form
-          className="inline-editor"
-          onSubmit={(event) => void create(event)}
-        >
-          <input
-            required
-            placeholder="New branch name"
-            value={name}
-            onChange={(event) => setName(event.target.value)}
-          />
-          <select
-            value={source || result.data?.[0]?.name || ""}
-            onChange={(event) => setSource(event.target.value)}
+      <div className="branches-toolbar">
+        <input
+          aria-label="Search branches"
+          placeholder="Find a branch..."
+          type="search"
+          value={query}
+          onChange={(event) => setQuery(event.target.value)}
+        />
+        <details className="new-branch-disclosure">
+          <summary className="button">New branch</summary>
+          <form
+            className="inline-editor"
+            onSubmit={(event) => void create(event)}
           >
-            {result.data?.map((branch) => (
-              <option key={branch.name}>{branch.name}</option>
-            ))}
-          </select>
-          <button className="button" type="submit">
-            Create branch
-          </button>
-        </form>
-      </details>
+            <input
+              required
+              placeholder="New branch name"
+              value={name}
+              onChange={(event) => setName(event.target.value)}
+            />
+            <select
+              value={source || result.data?.[0]?.name || ""}
+              onChange={(event) => setSource(event.target.value)}
+            >
+              {result.data?.map((branch) => (
+                <option key={branch.name}>{branch.name}</option>
+              ))}
+            </select>
+            <button className="button" type="submit">
+              Create branch
+            </button>
+          </form>
+        </details>
+      </div>
       {error ? <p className="flash-error">{error}</p> : null}
       <Loadable loading={result.loading} error={result.error}>
         <div className="list-box">
-          {result.data?.map((branch) => (
+          {visibleBranches?.map((branch) => (
             <div className="list-row branch-row" key={branch.name}>
               <Octicon name="branch" />
               <div>
                 <h2>
-                  <Link to={`/${owner}/${repo}/tree/${branch.name}`}>
+                  <Link
+                    to={`/${owner}/${repo}/tree/${encodeURIComponent(branch.name)}`}
+                  >
                     {branch.name}
                   </Link>
                   {branch.name === repository.default_branch ? (
@@ -107,6 +123,12 @@ export function BranchesPage() {
               ) : null}
             </div>
           ))}
+          {!result.loading && visibleBranches?.length === 0 ? (
+            <div className="empty-state">
+              <h2>No branches found</h2>
+              <p>Try a different branch name.</p>
+            </div>
+          ) : null}
         </div>
       </Loadable>
     </>

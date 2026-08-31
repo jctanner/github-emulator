@@ -70,6 +70,15 @@ a:hover {
   color: #8c959f;
 }
 
+.global-search-submit {
+  display: flex;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+}
+
 .global-nav {
   display: flex;
   justify-content: flex-end;
@@ -346,11 +355,84 @@ a:hover {
 }
 
 .branch-selector {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
   padding: 6px 12px;
   border: 1px solid #d0d7de;
   border-radius: 6px;
   background: #f6f8fa;
   color: #24292f;
+  font-weight: 600;
+  cursor: pointer;
+  list-style: none;
+}
+
+.branch-selector::-webkit-details-marker {
+  display: none;
+}
+
+.branch-selector-menu {
+  position: relative;
+}
+
+.dropdown-caret {
+  width: 0;
+  height: 0;
+  margin-left: 2px;
+  border-top: 4px solid currentColor;
+  border-right: 4px solid transparent;
+  border-left: 4px solid transparent;
+}
+
+.branch-selector-popover {
+  position: absolute;
+  z-index: 20;
+  top: calc(100% + 6px);
+  left: 0;
+  display: grid;
+  width: min(300px, calc(100vw - 32px));
+  padding-top: 12px;
+  border: 1px solid #d0d7de;
+  border-radius: 6px;
+  background: #ffffff;
+  box-shadow: 0 8px 24px rgb(140 149 159 / 20%);
+}
+
+.branch-selector-popover > strong {
+  padding: 0 12px 10px;
+}
+
+.branch-selector-popover input {
+  margin: 0 12px 8px;
+  padding: 6px 10px;
+  border: 1px solid #d0d7de;
+  border-radius: 6px;
+  font: inherit;
+}
+
+.branch-selector-list {
+  display: grid;
+  max-height: 300px;
+  overflow-y: auto;
+  border-top: 1px solid #d8dee4;
+}
+
+.branch-selector-list a,
+.branch-selector-list > span {
+  display: grid;
+  grid-template-columns: 16px 1fr;
+  gap: 8px;
+  padding: 8px 12px;
+  color: #1f2328;
+}
+
+.branch-selector-list a:hover {
+  background: #f6f8fa;
+  text-decoration: none;
+}
+
+.branch-selector-list a.selected {
   font-weight: 600;
 }
 
@@ -520,8 +602,24 @@ a:hover {
   flex: 1;
 }
 
-.new-branch-disclosure {
+.branches-toolbar {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
   margin: 16px 0;
+}
+
+.branches-toolbar > input {
+  width: min(420px, 100%);
+  padding: 7px 12px;
+  border: 1px solid #d0d7de;
+  border-radius: 6px;
+  font: inherit;
+}
+
+.new-branch-disclosure {
+  margin: 0;
   text-align: right;
 }
 
@@ -1706,6 +1804,15 @@ footer {
   .code-browser-heading {
     align-items: flex-start;
     flex-direction: column;
+  }
+
+  .branches-toolbar {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .branches-toolbar > input {
+    width: 100%;
   }
 
   .new-branch-disclosure .inline-editor {

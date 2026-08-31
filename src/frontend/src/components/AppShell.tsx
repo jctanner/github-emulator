@@ -1,5 +1,5 @@
-import {type PropsWithChildren, useState} from "react";
-import {Link, useNavigate} from "react-router-dom";
+import {type FormEvent, type PropsWithChildren, useEffect, useState} from "react";
+import {Link, useLocation, useNavigate} from "react-router-dom";
 
 import {useSession} from "../auth/SessionContext";
 import {Octicon} from "./Octicon";
@@ -7,7 +7,21 @@ import {Octicon} from "./Octicon";
 export function AppShell({children}: PropsWithChildren) {
   const {user, logout} = useSession();
   const navigate = useNavigate();
+  const location = useLocation();
   const [menuOpen, setMenuOpen] = useState(false);
+  const routeQuery =
+    location.pathname === "/search"
+      ? new URLSearchParams(location.search).get("q") ?? ""
+      : "";
+  const [search, setSearch] = useState(routeQuery);
+
+  useEffect(() => setSearch(routeQuery), [routeQuery]);
+
+  function submitSearch(event: FormEvent) {
+    event.preventDefault();
+    const query = search.trim();
+    void navigate(query ? `/search?q=${encodeURIComponent(query)}` : "/search");
+  }
 
   async function signOut() {
     await logout();
@@ -30,10 +44,27 @@ export function AppShell({children}: PropsWithChildren) {
           <Octicon name="mark-github" size={32} />
           <span>GitHub Emulator</span>
         </Link>
-        <label className="global-search">
-          <Octicon name="search" />
-          <input aria-label="Search" placeholder="Search..." />
-        </label>
+        <form
+          aria-label="Global search"
+          className="global-search"
+          role="search"
+          onSubmit={submitSearch}
+        >
+          <button
+            aria-label="Submit search"
+            className="global-search-submit"
+            type="submit"
+          >
+            <Octicon name="search" />
+          </button>
+          <input
+            aria-label="Search"
+            placeholder="Search repositories..."
+            type="search"
+            value={search}
+            onChange={(event) => setSearch(event.target.value)}
+          />
+        </form>
         <nav className="global-nav" aria-label="Global navigation">
           <Link to="/">Dashboard</Link>
           <Link to="/search">Explore</Link>

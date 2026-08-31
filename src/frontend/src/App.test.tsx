@@ -1,9 +1,10 @@
-import {render, screen} from "@testing-library/react";
+import {cleanup, fireEvent, render, screen} from "@testing-library/react";
 import {afterEach, describe, expect, it, vi} from "vitest";
 
 import {App} from "./App";
 
 afterEach(() => {
+  cleanup();
   vi.unstubAllGlobals();
   window.history.replaceState({}, "", "/");
 });
@@ -67,5 +68,58 @@ describe("App", () => {
     expect(
       screen.getByRole("link", {name: "Return to repositories"}),
     ).toHaveAttribute("href", "/ui/");
+  });
+
+  it("submits the navbar search to repository search", async () => {
+    const requests: URL[] = [];
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockImplementation((request: Request) => {
+        const url = new URL(request.url);
+        requests.push(url);
+        if (url.pathname === "/api/_ui/session") {
+          return Promise.resolve(
+            Response.json({user: null, csrf_token: "test-csrf"}),
+          );
+        }
+        if (url.pathname === "/api/v3/search/repositories") {
+          return Promise.resolve(
+            Response.json({
+              total_count: 1,
+              incomplete_results: false,
+              items: [
+                {
+                  id: 1,
+                  full_name: "admin/ansible-agent-harness",
+                  description: "Harness",
+                },
+              ],
+            }),
+          );
+        }
+        return Promise.resolve(Response.json([]));
+      }),
+    );
+    window.history.replaceState({}, "", "/ui/");
+
+    render(<App />);
+
+    const search = await screen.findByRole("searchbox", {name: "Search"});
+    fireEvent.change(search, {target: {value: "ansible harness"}});
+    fireEvent.click(screen.getByRole("button", {name: "Submit search"}));
+
+    expect(await screen.findByRole("heading", {name: "Search"})).toBeVisible();
+    expect(
+      await screen.findByRole("link", {name: "admin/ansible-agent-harness"}),
+    ).toBeVisible();
+    expect(window.location.pathname).toBe("/ui/search");
+    expect(window.location.search).toBe("?q=ansible%20harness");
+    expect(
+      requests.some(
+        (url) =>
+          url.pathname === "/api/v3/search/repositories" &&
+          url.searchParams.get("q") === "ansible harness",
+      ),
+    ).toBe(true);
   });
 });

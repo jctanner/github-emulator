@@ -2,6 +2,7 @@ import {Link, useParams} from "react-router-dom";
 
 import {api} from "../api/client";
 import type {components} from "../api/schema";
+import {BranchSelector} from "../components/BranchSelector";
 import {FileTypeIcon} from "../components/FileTypeIcon";
 import {Loadable} from "../components/Loadable";
 import {Octicon} from "../components/Octicon";
@@ -10,26 +11,48 @@ import {requireApiData, useApiData} from "../hooks/useApiData";
 import {decodeBase64Content} from "../utils/content";
 
 type Content = components["schemas"]["ContentResponse"];
+interface BrowserData {
+  content: Content | Content[];
+  readme: Content | null;
+}
 
 export function CodeBrowserPage({blob = false}: {blob?: boolean}) {
   const {owner = "", repo = "", ref = "main", "*": path = ""} = useParams();
-  const result = useApiData<Content | Content[]>(
+  const result = useApiData<BrowserData>(
     `contents:${owner}/${repo}:${ref}:${path}`,
     async () => {
       const {data, response} = await api.GET(
         "/api/v3/repos/{owner}/{repo}/contents/{path}",
         {params: {path: {owner, repo, path}, query: {ref}}},
       );
-      return requireApiData(
+      const content = requireApiData(
         data,
         response,
         "Could not load repository content.",
       );
+      if (path || !Array.isArray(content)) return {content, readme: null};
+
+      const readmeResult = await api.GET(
+        "/api/v3/repos/{owner}/{repo}/readme",
+        {params: {path: {owner, repo}, query: {ref}}},
+      );
+      return {
+        content,
+        readme:
+          readmeResult.response.status === 404
+            ? null
+            : requireApiData(
+                readmeResult.data,
+                readmeResult.response,
+                "Could not load README.",
+              ),
+      };
     },
   );
 
-  const items = Array.isArray(result.data) ? result.data : null;
-  const file = result.data && !Array.isArray(result.data) ? result.data : null;
+  const loadedContent = result.data?.content;
+  const items = Array.isArray(loadedContent) ? loadedContent : null;
+  const file = loadedContent && !Array.isArray(loadedContent) ? loadedContent : null;
   const sortedItems = items
     ? [...items].sort((left, right) => {
         if (left.type !== right.type) return left.type === "dir" ? -1 : 1;
@@ -43,18 +66,18 @@ export function CodeBrowserPage({blob = false}: {blob?: boolean}) {
       <Loadable loading={result.loading} error={result.error}>
         <div className="code-browser-heading">
           <div className="breadcrumbs" aria-label="Path">
-            <Link to={`/${owner}/${repo}/tree/${ref}`}>{repo}</Link>
+            <Link to={`/${owner}/${repo}/tree/${encodeURIComponent(ref)}`}>
+              {repo}
+            </Link>
             {path ? <span>/</span> : null}
             {path ? <strong>{path}</strong> : null}
           </div>
           <div className="button-row">
-            <span className="badge ref-badge">
-              <Octicon name="branch" /> {ref}
-            </span>
+            <BranchSelector owner={owner} repo={repo} currentRef={ref} />
             {!file ? (
               <Link
                 className="button compact"
-                to={`/${owner}/${repo}/new/${ref}/${path}`}
+                to={`/${owner}/${repo}/new/${encodeURIComponent(ref)}/${path}`}
               >
                 <Octicon name="plus" /> Add file
               </Link>
@@ -64,7 +87,11 @@ export function CodeBrowserPage({blob = false}: {blob?: boolean}) {
                 {file.download_url ? (
                   <a href={file.download_url}>View raw</a>
                 ) : null}
-                <Link to={`/${owner}/${repo}/edit/${ref}/${path}`}>Edit</Link>
+                <Link
+                  to={`/${owner}/${repo}/edit/${encodeURIComponent(ref)}/${path}`}
+                >
+                  Edit
+                </Link>
               </>
             ) : null}
           </div>
@@ -78,7 +105,7 @@ export function CodeBrowserPage({blob = false}: {blob?: boolean}) {
               <div className="list-row file-row" key={item.path}>
                 <FileTypeIcon type={item.type} />
                 <Link
-                  to={`/${owner}/${repo}/${item.type === "dir" ? "tree" : "blob"}/${ref}/${item.path}`}
+                  to={`/${owner}/${repo}/${item.type === "dir" ? "tree" : "blob"}/${encodeURIComponent(ref)}/${item.path}`}
                 >
                   {item.name}
                 </Link>
@@ -96,6 +123,14 @@ export function CodeBrowserPage({blob = false}: {blob?: boolean}) {
                 </li>
               ))}
             </ol>
+          </section>
+        ) : null}
+        {result.data?.readme ? (
+          <section className="file-view readme-view">
+            <h2>
+              <Octicon name="book" /> README
+            </h2>
+            <pre>{decodeBase64Content(result.data.readme.content)}</pre>
           </section>
         ) : null}
         {blob && items ? (

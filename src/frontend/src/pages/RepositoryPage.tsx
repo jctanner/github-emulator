@@ -2,6 +2,7 @@ import {Link, useParams} from "react-router-dom";
 
 import {api} from "../api/client";
 import type {components} from "../api/schema";
+import {BranchSelector} from "../components/BranchSelector";
 import {FileTypeIcon} from "../components/FileTypeIcon";
 import {Loadable} from "../components/Loadable";
 import {Octicon} from "../components/Octicon";
@@ -62,10 +63,11 @@ export function RepositoryPage() {
   return (
     <>
       <div className="repo-home-toolbar">
-        <Link className="branch-selector" to={`/${owner}/${repo}/tree/${ref}`}>
-          <Octicon name="branch" /> {ref}
-        </Link>
-        <Link className="button" to={`/${owner}/${repo}/new/${ref}/`}>
+        <BranchSelector owner={owner} repo={repo} currentRef={ref} />
+        <Link
+          className="button"
+          to={`/${owner}/${repo}/new/${encodeURIComponent(ref)}/`}
+        >
           <Octicon name="plus" /> Add file
         </Link>
       </div>
@@ -87,7 +89,7 @@ export function RepositoryPage() {
                 <div className="list-row file-row" key={item.path}>
                   <FileTypeIcon type={item.type} />
                   <Link
-                    to={`/${owner}/${repo}/${item.type === "dir" ? "tree" : "blob"}/${ref}/${item.path}`}
+                    to={`/${owner}/${repo}/${item.type === "dir" ? "tree" : "blob"}/${encodeURIComponent(ref)}/${item.path}`}
                   >
                     {item.name}
                   </Link>
