@@ -16,6 +16,11 @@ type Import = components["schemas"]["AdminImportResponse"];
 type Issue = components["schemas"]["AdminIssueResponse"];
 type App = components["schemas"]["AdminAppResponse"];
 
+interface AppInstallationOptions {
+  accounts: string[];
+  repositories: Repository[];
+}
+
 function AdminList<T>({
   loading,
   error,
@@ -293,11 +298,53 @@ function Apps() {
     const {data, response} = await api.GET("/admin/api/apps");
     return requireApiData(data, response, "Could not load Apps.");
   });
+  const installationOptions = useApiData<AppInstallationOptions>(
+    "admin-app-installation-options",
+    async () => {
+      const [usersResult, organizationsResult, repositoriesResult] =
+        await Promise.all([
+          api.GET("/admin/api/users"),
+          api.GET("/admin/api/organizations"),
+          api.GET("/admin/api/repositories"),
+        ]);
+      const users = requireApiData(
+        usersResult.data,
+        usersResult.response,
+        "Could not load users.",
+      );
+      const organizations = requireApiData(
+        organizationsResult.data,
+        organizationsResult.response,
+        "Could not load organizations.",
+      );
+      const repositories = requireApiData(
+        repositoriesResult.data,
+        repositoriesResult.response,
+        "Could not load repositories.",
+      );
+      return {
+        accounts: [
+          ...new Set([
+            ...users.map((user) => user.login),
+            ...organizations.map((organization) => organization.login),
+            ...repositories.map((repository) =>
+              repository.full_name.split("/", 1)[0],
+            ),
+          ]),
+        ].sort((left, right) => left.localeCompare(right)),
+        repositories,
+      };
+    },
+  );
   const [name, setName] = useState("");
   const [owner, setOwner] = useState("");
   const [repo, setRepo] = useState("");
   const [appId, setAppId] = useState("");
   const [secret, setSecret] = useState<string | null>(null);
+  const [installError, setInstallError] = useState<string | null>(null);
+  const repositoryOptions = installationOptions.data?.repositories.filter(
+    (repository) => repository.full_name.startsWith(`${owner}/`),
+  );
   async function create(event: FormEvent) {
     event.preventDefault();
     const {data} = await api.POST("/admin/api/apps", {body: {name}});
@@ -307,10 +354,28 @@ function Apps() {
   }
   async function install(event: FormEvent) {
     event.preventDefault();
-    await api.POST("/admin/api/apps/{app_id}/installations", {
-      params: {path: {app_id: appId}},
-      body: {owner, repo},
-    });
+    if (!installationOptions.data?.accounts.includes(owner)) {
+      return setInstallError("Select an account from the available options.");
+    }
+    if (
+      !repositoryOptions?.some(
+        (repository) => repository.full_name === `${owner}/${repo}`,
+      )
+    ) {
+      return setInstallError(
+        "Select a repository belonging to the selected account.",
+      );
+    }
+    const {response} = await api.POST(
+      "/admin/api/apps/{app_id}/installations",
+      {
+        params: {path: {app_id: appId}},
+        body: {owner, repo},
+      },
+    );
+    if (!response.ok) return setInstallError("Could not create installation.");
+    setInstallError(null);
+    setRepo("");
     values.reload();
   }
   async function remove(id: string) {
@@ -332,32 +397,72 @@ function Apps() {
         />
         <button className="button">Register App</button>
       </form>
-      <form className="inline-editor" onSubmit={(event) => void install(event)}>
-        <select
-          required
-          value={appId}
-          onChange={(event) => setAppId(event.target.value)}
-        >
-          <option value="">App</option>
-          {values.data?.map((app) => (
-            <option key={app.app_id} value={app.app_id}>
-              {app.name}
-            </option>
+      {installationOptions.error ? (
+        <p className="flash-error">{installationOptions.error}</p>
+      ) : null}
+      {installError ? <p className="flash-error">{installError}</p> : null}
+      <form
+        className="inline-editor app-installation-editor"
+        onSubmit={(event) => void install(event)}
+      >
+        <label className="searchable-field">
+          <span>App</span>
+          <select
+            required
+            value={appId}
+            onChange={(event) => setAppId(event.target.value)}
+          >
+            <option value="">Select an App</option>
+            {values.data?.map((app) => (
+              <option key={app.app_id} value={app.app_id}>
+                {app.name}
+              </option>
+            ))}
+          </select>
+        </label>
+        <label className="searchable-field">
+          <span>Account</span>
+          <input
+            required
+            autoComplete="off"
+            list="app-installation-accounts"
+            placeholder="Search accounts..."
+            value={owner}
+            onChange={(event) => {
+              setOwner(event.target.value);
+              setRepo("");
+              setInstallError(null);
+            }}
+          />
+        </label>
+        <datalist id="app-installation-accounts">
+          {installationOptions.data?.accounts.map((account) => (
+            <option key={account} value={account} />
           ))}
-        </select>
-        <input
-          required
-          placeholder="Account"
-          value={owner}
-          onChange={(event) => setOwner(event.target.value)}
-        />
-        <input
-          required
-          placeholder="Repository"
-          value={repo}
-          onChange={(event) => setRepo(event.target.value)}
-        />
-        <button className="button">Create installation</button>
+        </datalist>
+        <label className="searchable-field">
+          <span>Repository</span>
+          <input
+            required
+            autoComplete="off"
+            disabled={!owner}
+            list="app-installation-repositories"
+            placeholder={owner ? "Search repositories..." : "Select account first"}
+            value={repo}
+            onChange={(event) => {
+              setRepo(event.target.value);
+              setInstallError(null);
+            }}
+          />
+        </label>
+        <datalist id="app-installation-repositories">
+          {repositoryOptions?.map((repository) => (
+            <option key={repository.id} value={repository.name} />
+          ))}
+        </datalist>
+        <button className="button" disabled={installationOptions.loading}>
+          Create installation
+        </button>
       </form>
       <AdminList
         {...values}

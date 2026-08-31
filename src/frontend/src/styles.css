@@ -898,6 +898,33 @@ a:hover {
   margin: 0;
 }
 
+.searchable-field {
+  display: grid;
+  gap: 4px;
+  min-width: 190px;
+  color: #57606a;
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.searchable-field input {
+  width: 100%;
+  color: #24292f;
+  font-size: 14px;
+  font-weight: 400;
+}
+
+.app-installation-editor {
+  align-items: flex-end;
+}
+
+.app-installation-editor .searchable-field > input,
+.app-installation-editor .searchable-field > select,
+.app-installation-editor > .button {
+  box-sizing: border-box;
+  height: 39px;
+}
+
 .label-row {
   display: grid;
   grid-template-columns: 180px 1fr auto;

@@ -36,6 +36,38 @@ describe("App", () => {
         if (path === "/admin/api/apps") {
           return Promise.resolve(Response.json([]));
         }
+        if (path === "/admin/api/users") {
+          return Promise.resolve(
+            Response.json([{id: 1, login: "admin", site_admin: true}]),
+          );
+        }
+        if (path === "/admin/api/organizations") {
+          return Promise.resolve(
+            Response.json([{id: 2, login: "fullsend-dev"}]),
+          );
+        }
+        if (path === "/admin/api/repositories") {
+          return Promise.resolve(
+            Response.json([
+              {
+                id: 3,
+                name: "ansible-agent-harness",
+                full_name: "admin/ansible-agent-harness",
+                default_branch: "main",
+                owner_type: "User",
+                private: false,
+              },
+              {
+                id: 4,
+                name: "triage-target",
+                full_name: "fullsend-dev/triage-target",
+                default_branch: "main",
+                owner_type: "Organization",
+                private: false,
+              },
+            ]),
+          );
+        }
         return Promise.resolve(Response.json({detail: "Not Found"}, {status: 404}));
       }),
     );
@@ -44,7 +76,23 @@ describe("App", () => {
     render(<App />);
 
     expect(await screen.findByRole("heading", {name: "GitHub Apps"})).toBeVisible();
+    const account = screen.getByLabelText("Account");
+    const repository = screen.getByLabelText("Repository");
+    expect(account).toHaveAttribute("list", "app-installation-accounts");
+    expect(repository).toBeDisabled();
+    fireEvent.change(account, {target: {value: "admin"}});
+    expect(repository).not.toBeDisabled();
+    expect(
+      Array.from(
+        document.querySelectorAll<HTMLOptionElement>(
+          "#app-installation-repositories option",
+        ),
+      ).map((option) => option.value),
+    ).toEqual(["ansible-agent-harness"]);
     expect(requests).toContain("/admin/api/apps");
+    expect(requests).toContain("/admin/api/users");
+    expect(requests).toContain("/admin/api/organizations");
+    expect(requests).toContain("/admin/api/repositories");
     expect(requests).not.toContain("/api/v3/repos/_admin/apps");
   });
 
