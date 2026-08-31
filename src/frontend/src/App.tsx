@@ -19,9 +19,11 @@ import {LoginPage} from "./pages/LoginPage";
 import {NewIssuePage} from "./pages/NewIssuePage";
 import {NewPullPage} from "./pages/NewPullPage";
 import {NewRepositoryPage} from "./pages/NewRepositoryPage";
-import {MigrationPage} from "./pages/MigrationPage";
+import {NotFoundPage} from "./pages/NotFoundPage";
 import {ProfilePage} from "./pages/ProfilePage";
 import {PullDetailPage} from "./pages/PullDetailPage";
+import {PullCommitsPage} from "./pages/PullCommitsPage";
+import {PullFilesPage} from "./pages/PullFilesPage";
 import {PullsPage} from "./pages/PullsPage";
 import {RepositoryPage} from "./pages/RepositoryPage";
 import {RunnersPage} from "./pages/RunnersPage";
@@ -54,6 +56,11 @@ export function App() {
               <Route path="pulls" element={<PullsPage />} />
               <Route path="pulls/new" element={<NewPullPage />} />
               <Route path="pulls/:number" element={<PullDetailPage />} />
+              <Route
+                path="pulls/:number/commits"
+                element={<PullCommitsPage />}
+              />
+              <Route path="pulls/:number/files" element={<PullFilesPage />} />
               <Route path="actions" element={<ActionsPage />} />
               <Route path="actions/runs/:runId" element={<ActionRunPage />} />
               <Route path="actions/jobs/:jobId" element={<ActionJobPage />} />
@@ -69,7 +76,7 @@ export function App() {
               <Route path="tags" element={<TagsPage />} />
             </Route>
             <Route path="/:owner" element={<ProfilePage />} />
-            <Route path="*" element={<MigrationPage />} />
+            <Route path="*" element={<NotFoundPage />} />
           </Routes>
         </AppShell>
       </SessionProvider>

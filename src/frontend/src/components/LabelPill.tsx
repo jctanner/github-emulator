@@ -1,6 +1,9 @@
 import type {components} from "../api/schema";
 
-type Label = components["schemas"]["LabelResponse"];
+type Label = Pick<
+  components["schemas"]["LabelResponse"],
+  "name" | "color" | "description"
+>;
 
 export function LabelPill({label}: {label: Label}) {
   return (

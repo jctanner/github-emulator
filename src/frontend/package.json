@@ -11,9 +11,6 @@
     "format": "prettier --check .",
     "format:write": "prettier --write .",
     "test": "vitest run",
-    "parity": "playwright test",
-    "parity:list": "playwright test --list",
-    "parity:update": "UPDATE_PARITY_BASELINES=1 playwright test",
     "generate:api": "openapi-typescript openapi.json -o src/api/schema.d.ts"
   },
   "dependencies": {
@@ -24,7 +21,6 @@
   },
   "devDependencies": {
     "@eslint/js": "^9.0.0",
-    "@playwright/test": "^1.62.1",
     "@testing-library/jest-dom": "^6.0.0",
     "@testing-library/react": "^16.0.0",
     "@types/node": "^24.0.0",

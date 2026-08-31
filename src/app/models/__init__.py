@@ -18,6 +18,7 @@ from app.models.deploy_key import DeployKey
 from app.models.commit_status import CommitStatus
 from app.models.check import CheckRun, CheckSuite
 from app.models.event import Event
+from app.models.issue_event import IssueEvent
 from app.models.notification import Notification
 from app.models.actions import EnterpriseRunnerRegistrationToken, Runner, RunnerSession, RegistrationToken, Workflow, WorkflowRun, WorkflowJob, Secret, Variable
 from app.models.gist import Gist, GistFile
@@ -48,6 +49,7 @@ __all__ = [
     "CommitStatus",
     "CheckRun", "CheckSuite",
     "Event",
+    "IssueEvent",
     "Notification",
     "Runner", "RunnerSession", "RegistrationToken", "EnterpriseRunnerRegistrationToken",
     "Workflow", "WorkflowRun", "WorkflowJob", "Secret", "Variable",

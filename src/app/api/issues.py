@@ -321,6 +321,7 @@ async def update_issue(
     old_title = issue.title
     old_body = issue.body
     old_labels = {label.name: label for label in (issue.labels or [])}
+    replacement_labels: dict[str, Label] = {}
 
     if "title" in body:
         issue.title = body["title"]
@@ -374,6 +375,7 @@ async def update_issue(
             )
             label = lbl_result.scalar_one_or_none()
             if label:
+                replacement_labels[label.name] = label
                 db.add(IssueLabel(issue_id=issue.id, label_id=label.id))
 
     # Assignees
@@ -388,6 +390,16 @@ async def update_issue(
             assignee = u_result.scalar_one_or_none()
             if assignee:
                 db.add(IssueAssignee(issue_id=issue.id, user_id=assignee.id))
+
+    if "labels" in body:
+        from app.services.issue_event_service import record_label_event
+
+        for name, label in replacement_labels.items():
+            if name not in old_labels:
+                record_label_event(db, issue, user, "labeled", label)
+        for name, label in old_labels.items():
+            if name not in replacement_labels:
+                record_label_event(db, issue, user, "unlabeled", label)
 
     await db.commit()
     await db.refresh(issue)

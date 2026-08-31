@@ -10,7 +10,6 @@ import os
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
-from fastapi.staticfiles import StaticFiles
 
 from app.config import settings
 from app.database import init_db, async_session, get_db
@@ -173,6 +172,7 @@ def create_app() -> FastAPI:
     from app.api.forks import router as forks_router
     from app.api.reactions import router as reactions_router
     from app.api.events import router as events_router
+    from app.api.issue_events import router as issue_events_router
     from app.api.search import router as search_router
     from app.api.orgs import router as orgs_router
     from app.api.teams import router as teams_router
@@ -206,6 +206,7 @@ def create_app() -> FastAPI:
         git_trees_router, git_blobs_router, git_tags_router, webhooks_router,
         statuses_router, check_runs_router, releases_router,
         collaborators_router, forks_router, reactions_router, events_router,
+        issue_events_router,
         search_router, orgs_router, teams_router, notifications_router,
         gists_router, starring_router, reviews_router,
         actions_router, actions_runners_router, actions_dispatch_router,
@@ -263,64 +264,17 @@ def create_app() -> FastAPI:
     except ImportError:
         logger.warning("Strawberry not installed; GraphQL endpoint disabled")
 
-    # -- Admin frontend -------------------------------------------------------
-    from app.admin.routes import router as admin_router
-    from app.admin.routes import get_static_files_app
-    from app.admin.legacy import router as legacy_admin_router
-
     # -- GHES-internal Actions endpoints (root-level, not under /api/v3/) -----
     from app.api.actions_pipelines import router as pipelines_router
     from app.api.actions_distributed_task import router as dt_router
     app.include_router(pipelines_router)
     app.include_router(dt_router)
 
-    # Keep the broad /admin/{path} browser compatibility redirect behind the
-    # repository-scoped runner protocol. The seeded ``admin`` account is also
-    # a valid repository owner, and upstream runners call paths such as
-    # /admin/test-repo/_apis/connectionData during registration.
-    app.include_router(legacy_admin_router)
-
     # -- Git Smart HTTP protocol handler --------------------------------------
     from app.git.smart_http import router as git_router
     app.include_router(git_router, tags=["git"])
 
-    # -- Web frontend (LAST -- catch-all /{owner}/{repo} patterns) -----------
-    from app.web.routes import router as web_router
-
-    _WEB_STATIC = os.path.join(
-        os.path.dirname(os.path.abspath(__file__)), "web", "static"
-    )
-    # Temporary server-rendered mirror used for frontend migration parity.
-    # It has a private source app so /ui can move to the API-client frontend
-    # without changing or recursively invoking the retained Jinja application.
-    from app.legacy_ui import LegacyUiMirror
-
-    legacy_source = FastAPI(
-        title="GitHub Emulator Legacy UI",
-        docs_url=None,
-        redoc_url=None,
-        openapi_url=None,
-    )
-    legacy_source.include_router(admin_router)
-    legacy_source.mount(
-        "/ui/_admin/static",
-        get_static_files_app(),
-        name="legacy-admin-static",
-    )
-    legacy_source.mount(
-        "/ui/static",
-        StaticFiles(directory=_WEB_STATIC),
-        name="legacy-web-static",
-    )
-    legacy_source.include_router(web_router)
-    app.mount(
-        "/ui-legacy",
-        LegacyUiMirror(legacy_source, dependency_overrides_from=app),
-        name="legacy-ui",
-    )
-
-    # API-client frontend. Deep links are handled by the SPA history fallback;
-    # the retained server-rendered implementation remains under /ui-legacy.
+    # API-client frontend. Deep links are handled by the SPA history fallback.
     from app.frontend import FrontendStaticFiles
 
     _FRONTEND_DIST = os.path.join(

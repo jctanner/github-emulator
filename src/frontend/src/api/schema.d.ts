@@ -3463,6 +3463,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v3/repos/{owner}/{repo}/issues/{issue_number}/events": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** List Issue Events */
+        get: operations["list_issue_events_api_v3_repos__owner___repo__issues__issue_number__events_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v3/repos/{owner}/{repo}/issues/{issue_number}/labels": {
         parameters: {
             query?: never;
@@ -5937,6 +5954,41 @@ export interface components {
             url: string;
             user: components["schemas"]["SimpleUser"];
         };
+        /** IssueEventLabel */
+        IssueEventLabel: {
+            /** Color */
+            color: string;
+            /**
+             * Default
+             * @default false
+             */
+            default: boolean;
+            /** Description */
+            description?: string | null;
+            /** Id */
+            id: number;
+            /** Name */
+            name: string;
+        };
+        /** IssueEventResponse */
+        IssueEventResponse: {
+            actor: components["schemas"]["SimpleUser"];
+            /** Commit Id */
+            commit_id?: string | null;
+            /** Commit Url */
+            commit_url?: string | null;
+            /** Created At */
+            created_at: string;
+            /** Event */
+            event: string;
+            /** Id */
+            id: number;
+            label?: components["schemas"]["IssueEventLabel"] | null;
+            /** Node Id */
+            node_id: string;
+            /** Url */
+            url: string;
+        };
         /**
          * IssueResponse
          * @description Full GitHub-compatible issue JSON response.
@@ -6323,6 +6375,80 @@ export interface components {
             /** Url */
             url: string;
             user: components["schemas"]["SimpleUser"];
+        };
+        /** PullCommitDetails */
+        PullCommitDetails: {
+            author: components["schemas"]["PullCommitIdentity"];
+            /**
+             * Comment Count
+             * @default 0
+             */
+            comment_count: number;
+            committer: components["schemas"]["PullCommitIdentity"];
+            /** Message */
+            message: string;
+            /** Tree */
+            tree: {
+                [key: string]: unknown;
+            };
+            /** Url */
+            url: string;
+        };
+        /** PullCommitIdentity */
+        PullCommitIdentity: {
+            /** Date */
+            date?: string | null;
+            /** Email */
+            email?: string | null;
+            /** Name */
+            name?: string | null;
+        };
+        /** PullCommitResponse */
+        PullCommitResponse: {
+            commit: components["schemas"]["PullCommitDetails"];
+            /** Html Url */
+            html_url: string;
+            /** Node Id */
+            node_id: string;
+            /**
+             * Parents
+             * @default []
+             */
+            parents: {
+                [key: string]: unknown;
+            }[];
+            /** Sha */
+            sha: string;
+            /** Url */
+            url: string;
+        };
+        /** PullFileResponse */
+        PullFileResponse: {
+            /** Additions */
+            additions: number;
+            /** Blob Url */
+            blob_url: string;
+            /** Changes */
+            changes: number;
+            /** Contents Url */
+            contents_url: string;
+            /** Deletions */
+            deletions: number;
+            /** Filename */
+            filename: string;
+            /**
+             * Patch
+             * @default
+             */
+            patch: string;
+            /** Previous Filename */
+            previous_filename?: string | null;
+            /** Raw Url */
+            raw_url: string;
+            /** Sha */
+            sha: string;
+            /** Status */
+            status: string;
         };
         /**
          * RepoPermissions
@@ -14375,6 +14501,42 @@ export interface operations {
             };
         };
     };
+    list_issue_events_api_v3_repos__owner___repo__issues__issue_number__events_get: {
+        parameters: {
+            query?: {
+                page?: number;
+                per_page?: number;
+            };
+            header?: never;
+            path: {
+                owner: string;
+                repo: string;
+                issue_number: number;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["IssueEventResponse"][];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     list_issue_labels_api_v3_repos__owner___repo__issues__issue_number__labels_get: {
         parameters: {
             query?: never;
@@ -15498,7 +15660,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": unknown;
+                    "application/json": components["schemas"]["PullCommitResponse"][];
                 };
             };
             /** @description Validation Error */
@@ -15531,7 +15693,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": unknown;
+                    "application/json": components["schemas"]["PullFileResponse"][];
                 };
             };
             /** @description Validation Error */

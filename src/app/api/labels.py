@@ -12,6 +12,7 @@ from app.config import settings
 from app.models.label import Label
 from app.models.issue import Issue, IssueLabel
 from app.schemas.label import LabelCreate, LabelResponse, LabelUpdate
+from app.services.issue_event_service import record_label_event
 
 router = APIRouter(tags=["labels"])
 
@@ -288,6 +289,8 @@ async def add_issue_labels(
             if label.name not in existing_names:
                 added_labels.append(label)
 
+    for label in added_labels:
+        record_label_event(db, issue, user, "labeled", label)
     await db.commit()
     await db.refresh(issue)
     for label in added_labels:
@@ -339,6 +342,16 @@ async def set_issue_labels(
         )
         db.add(IssueLabel(issue_id=issue.id, label_id=label.id))
 
+    requested_labels = {
+        label.name: label for label in labels_by_name.values()
+    }
+    for name, label in requested_labels.items():
+        if name not in old_labels:
+            record_label_event(db, issue, user, "labeled", label)
+    for name, label in old_labels.items():
+        if name not in requested_labels:
+            record_label_event(db, issue, user, "unlabeled", label)
+
     await db.commit()
     await db.refresh(issue)
     new_labels = {label.name: label for label in (issue.labels or [])}
@@ -388,11 +401,20 @@ async def remove_issue_label(
     if label is None:
         raise HTTPException(status_code=404, detail="Label not found")
 
+    assignment = await db.execute(
+        select(IssueLabel).where(
+            IssueLabel.issue_id == issue.id, IssueLabel.label_id == label.id
+        )
+    )
+    if assignment.scalar_one_or_none() is None:
+        raise HTTPException(status_code=404, detail="Label not found")
+
     await db.execute(
         sa_delete(IssueLabel).where(
             IssueLabel.issue_id == issue.id, IssueLabel.label_id == label.id
         )
     )
+    record_label_event(db, issue, user, "unlabeled", label)
     await db.commit()
     await db.refresh(issue)
     await _dispatch_label_event(db, repository, user, issue, "unlabeled", label)

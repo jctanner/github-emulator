@@ -1,9 +1,11 @@
 """Authentication service for token and password management."""
 
+import asyncio
 import hashlib
 import secrets
 import string
-from datetime import datetime
+import time
+from datetime import datetime, timedelta
 from typing import Optional
 
 from passlib.context import CryptContext
@@ -11,9 +13,20 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database_retry import rollback_after_sqlite_lock
+from app.db_loaders import scalar_only_options
 from app.models import AppInstallationToken, GitHubApp, PersonalAccessToken, User
 
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
+
+_PAT_LAST_USED_INTERVAL = timedelta(minutes=5)
+_pat_touch_locks: dict[int, asyncio.Lock] = {}
+_BASIC_PASSWORD_CACHE_TTL_SECONDS = 30.0
+_basic_password_cache: dict[str, float] = {}
+_basic_password_locks: dict[str, asyncio.Lock] = {}
+
+
+def _pat_last_used_is_stale(last_used_at: datetime | None, now: datetime) -> bool:
+    return last_used_at is None or last_used_at < now - _PAT_LAST_USED_INTERVAL
 
 
 def hash_password(password: str) -> str:
@@ -29,6 +42,34 @@ def verify_password(plain: str, hashed: str) -> bool:
         return False
 
 
+def _basic_password_cache_key(username: str, password: str, hashed: str) -> str:
+    """Return a non-reversible cache key tied to the current password hash."""
+    material = f"{username}\0{password}\0{hashed}".encode("utf-8")
+    return hashlib.sha256(material).hexdigest()
+
+
+async def _verify_basic_password(
+    username: str, password: str, hashed: str
+) -> bool:
+    """Verify Basic-auth passwords without blocking or stampeding the event loop."""
+    cache_key = _basic_password_cache_key(username, password, hashed)
+    now = time.monotonic()
+    if _basic_password_cache.get(cache_key, 0.0) > now:
+        return True
+
+    lock = _basic_password_locks.setdefault(cache_key, asyncio.Lock())
+    async with lock:
+        now = time.monotonic()
+        if _basic_password_cache.get(cache_key, 0.0) > now:
+            return True
+        verified = await asyncio.to_thread(verify_password, password, hashed)
+        if verified:
+            _basic_password_cache[cache_key] = (
+                time.monotonic() + _BASIC_PASSWORD_CACHE_TTL_SECONDS
+            )
+        return verified
+
+
 async def ensure_app_bot(db: AsyncSession, app: GitHubApp) -> User:
     """Return the stable bot account associated with a GitHub App.
 
@@ -41,12 +82,20 @@ async def ensure_app_bot(db: AsyncSession, app: GitHubApp) -> User:
     bot = None
     if app.bot_user_id is not None:
         bot = (
-            await db.execute(select(User).where(User.id == app.bot_user_id))
+            await db.execute(
+                select(User)
+                .options(*scalar_only_options())
+                .where(User.id == app.bot_user_id)
+            )
         ).scalar_one_or_none()
     if bot is None:
         bot_login = f"{app.slug}[bot]"
         bot = (
-            await db.execute(select(User).where(User.login == bot_login))
+            await db.execute(
+                select(User)
+                .options(*scalar_only_options())
+                .where(User.login == bot_login)
+            )
         ).scalar_one_or_none()
         if bot is None:
             bot = User(
@@ -78,7 +127,11 @@ async def get_installation_actor(
             await ensure_app_bot(db, app)
         if app.bot_user_id is not None:
             bot = (
-                await db.execute(select(User).where(User.id == app.bot_user_id))
+                await db.execute(
+                    select(User)
+                    .options(*scalar_only_options())
+                    .where(User.id == app.bot_user_id)
+                )
             ).scalar_one_or_none()
             if bot is not None:
                 return bot
@@ -118,9 +171,9 @@ async def validate_token(db: AsyncSession, token: str) -> Optional[User]:
     """
     token_hash_value = hash_token(token)
     result = await db.execute(
-        select(PersonalAccessToken).where(
-            PersonalAccessToken.token_hash == token_hash_value
-        )
+        select(PersonalAccessToken)
+        .options(*scalar_only_options())
+        .where(PersonalAccessToken.token_hash == token_hash_value)
     )
     pat = result.scalar_one_or_none()
     if pat is None:
@@ -135,19 +188,41 @@ async def validate_token(db: AsyncSession, token: str) -> Optional[User]:
     if pat.expires_at and pat.expires_at < datetime.utcnow():
         return None
 
-    # Update last_used_at
     user_id = pat.user_id
-    pat.last_used_at = datetime.utcnow()
-    try:
-        await db.commit()
-        await db.refresh(pat)
-    except Exception as exc:
-        if not await rollback_after_sqlite_lock(db, exc):
-            raise
-        result = await db.execute(select(User).where(User.id == user_id))
-        return result.scalar_one_or_none()
+    now = datetime.utcnow()
+    if _pat_last_used_is_stale(pat.last_used_at, now):
+        pat_id = pat.id
+        # End the token lookup's read transaction before waiting for another
+        # request to finish its usage update. This avoids SQLite snapshot
+        # promotion conflicts when a page sends several PAT-authenticated API
+        # requests in parallel.
+        await db.rollback()
+        lock = _pat_touch_locks.setdefault(pat_id, asyncio.Lock())
+        async with lock:
+            pat = (
+                await db.execute(
+                    select(PersonalAccessToken)
+                    .options(*scalar_only_options())
+                    .where(PersonalAccessToken.id == pat_id)
+                )
+            ).scalar_one_or_none()
+            if pat is None:
+                return None
+            now = datetime.utcnow()
+            if _pat_last_used_is_stale(pat.last_used_at, now):
+                pat.last_used_at = now
+                try:
+                    await db.commit()
+                except Exception as exc:
+                    if not await rollback_after_sqlite_lock(db, exc):
+                        raise
 
-    return pat.user
+    result = await db.execute(
+        select(User)
+        .options(*scalar_only_options())
+        .where(User.id == user_id)
+    )
+    return result.scalar_one_or_none()
 
 
 async def validate_installation_token(
@@ -187,10 +262,24 @@ async def validate_basic_auth(
     Returns:
         The authenticated User, or None if credentials are invalid.
     """
-    # Try password auth first
-    result = await db.execute(select(User).where(User.login == username))
+    # GitHub API clients commonly send PATs as the Basic password. Avoid an
+    # expensive bcrypt attempt when the credential is clearly a token.
+    if password.startswith(("ghp_", "ghs_")):
+        token_user = await validate_token(db, password)
+        if token_user is not None:
+            return token_user
+
+    # Try password auth. Bcrypt is deliberately expensive and synchronous, so
+    # run it off the event loop and coalesce parallel browser requests.
+    result = await db.execute(
+        select(User)
+        .options(*scalar_only_options())
+        .where(User.login == username)
+    )
     user = result.scalar_one_or_none()
-    if user and verify_password(password, user.hashed_password):
+    if user and await _verify_basic_password(
+        username, password, user.hashed_password
+    ):
         return user
 
     # Try treating the password as a token

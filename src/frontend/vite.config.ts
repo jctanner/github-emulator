@@ -10,7 +10,6 @@ export default defineConfig({
       "/api": "http://127.0.0.1:8000",
       "/avatars": "http://127.0.0.1:8000",
       "/graphql": "http://127.0.0.1:8000",
-      "/ui-legacy": "http://127.0.0.1:8000",
     },
   },
   test: {

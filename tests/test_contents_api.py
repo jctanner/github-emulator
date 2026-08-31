@@ -3,6 +3,7 @@
 import base64
 
 import pytest
+from sqlalchemy import event
 
 from tests.conftest import auth_headers
 
@@ -20,6 +21,26 @@ async def test_get_readme(client, test_user, test_token, test_repo_with_init):
     assert data["name"] == "README.md"
     assert data["encoding"] == "base64"
     assert "content" in data
+
+
+@pytest.mark.asyncio
+async def test_get_readme_uses_one_repository_query(
+    client, test_repo_with_init, db_engine
+):
+    owner, repo_name, _ = test_repo_with_init
+    statements: list[str] = []
+
+    def record_statement(_conn, _cursor, statement, _parameters, _context, _many):
+        statements.append(statement)
+
+    event.listen(db_engine.sync_engine, "before_cursor_execute", record_statement)
+    try:
+        response = await client.get(f"{API}/repos/{owner}/{repo_name}/readme")
+    finally:
+        event.remove(db_engine.sync_engine, "before_cursor_execute", record_statement)
+
+    assert response.status_code == 200
+    assert len(statements) == 1, statements
 
 
 @pytest.mark.asyncio

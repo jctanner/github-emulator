@@ -41,6 +41,44 @@ class PRMergeResponse(BaseModel):
     message: str
 
 
+class PullCommitIdentity(BaseModel):
+    name: str | None = None
+    email: str | None = None
+    date: str | None = None
+
+
+class PullCommitDetails(BaseModel):
+    author: PullCommitIdentity
+    committer: PullCommitIdentity
+    message: str
+    tree: dict
+    url: str
+    comment_count: int = 0
+
+
+class PullCommitResponse(BaseModel):
+    sha: str
+    node_id: str
+    commit: PullCommitDetails
+    url: str
+    html_url: str
+    parents: list[dict] = []
+
+
+class PullFileResponse(BaseModel):
+    sha: str
+    filename: str
+    status: str
+    additions: int
+    deletions: int
+    changes: int
+    blob_url: str
+    raw_url: str
+    contents_url: str
+    patch: str = ""
+    previous_filename: str | None = None
+
+
 class PRBranchRef(BaseModel):
     """Branch reference in a PR (head or base)."""
 

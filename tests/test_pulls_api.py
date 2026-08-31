@@ -2,7 +2,6 @@
 
 import asyncio
 import os
-import re
 
 import pytest
 from sqlalchemy import select
@@ -11,7 +10,6 @@ from app.git.bare_repo import write_file
 from app.models.issue import Issue
 from app.models.pull_request import PullRequest
 from app.models.repository import Repository
-from app.web.routes import _sign_session
 from tests.conftest import auth_headers
 
 API = "/api/v3"
@@ -64,24 +62,6 @@ async def _create_real_pr_with_diff(
     return repo_name
 
 
-async def _repo_ref_sha(db_session, full_name: str, ref: str) -> str:
-    result = await db_session.execute(
-        select(Repository).where(Repository.full_name == full_name)
-    )
-    repo = result.scalar_one()
-    proc = await asyncio.create_subprocess_exec(
-        "git",
-        "rev-parse",
-        ref,
-        stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.PIPE,
-        env={**os.environ, "GIT_DIR": repo.disk_path},
-    )
-    stdout, stderr = await proc.communicate()
-    assert proc.returncode == 0, stderr.decode()
-    return stdout.decode().strip()
-
-
 @pytest.mark.asyncio
 async def test_repo_navigation_shows_issue_and_pull_request_counts(
     client, test_token, repo_with_branch
@@ -98,23 +78,14 @@ async def test_repo_navigation_shows_issue_and_pull_request_counts(
         headers=auth_headers(test_token),
     )
     assert response.status_code == 201
-    pr_number = response.json()["number"]
-
-    for path in (
-        "pulls",
-        "issues",
-        "pulls/" + str(pr_number),
-        "issues/1",
-    ):
-        page = await client.get(f"/ui-legacy/testuser/pr-repo/{path}")
-        assert page.status_code == 200
-        assert re.search(
-            r'<span>Issues</span>\s*<span class="Counter">1</span>', page.text
-        )
-        assert re.search(
-            r'<span>Pull requests</span>\s*<span class="Counter">1</span>',
-            page.text,
-        )
+    navigation = await client.get(
+        "/api/_ui/repos/testuser/pr-repo/navigation"
+    )
+    assert navigation.status_code == 200
+    assert navigation.json() == {
+        "open_issues_count": 1,
+        "open_pulls_count": 1,
+    }
 
 
 @pytest.fixture
@@ -152,51 +123,6 @@ async def test_create_pull_request(client, test_user, test_token, repo_with_bran
     assert data["head"]["ref"] == "feature-branch"
     assert data["base"]["ref"] == "main"
     assert data["user"]["login"] == "testuser"
-
-
-@pytest.mark.asyncio
-async def test_legacy_pull_page_manages_issue_labels(
-    client, test_user, test_token, repo_with_branch
-):
-    """The legacy pull sidebar provides the same label manager as issues."""
-    for name, color in (("bug", "d73a4a"), ("ready", "0e8a16")):
-        response = await client.post(
-            f"{API}/repos/testuser/pr-repo/labels",
-            json={"name": name, "color": color},
-            headers=auth_headers(test_token),
-        )
-        assert response.status_code == 201
-
-    response = await client.post(
-        f"{API}/repos/testuser/pr-repo/pulls",
-        json={"title": "Labeled PR", "head": "feature", "base": "main"},
-        headers=auth_headers(test_token),
-    )
-    assert response.status_code == 201
-    number = response.json()["number"]
-    client.cookies.set("ui_session", _sign_session("testuser"))
-
-    page = await client.get(f"/ui-legacy/testuser/pr-repo/pulls/{number}")
-    assert page.status_code == 200
-    assert 'aria-label="Manage labels"' in page.text
-    assert "Apply labels to this pull request" in page.text
-    assert 'name="labels" value="bug"' in page.text
-
-    update = await client.post(
-        f"/ui-legacy/testuser/pr-repo/pulls/{number}/labels",
-        data={"labels": ["bug"]},
-        follow_redirects=False,
-    )
-    assert update.status_code == 302
-    assert update.headers["location"] == (
-        f"/ui-legacy/testuser/pr-repo/pulls/{number}"
-    )
-
-    labels = await client.get(
-        f"{API}/repos/testuser/pr-repo/issues/{number}/labels",
-        headers=auth_headers(test_token),
-    )
-    assert [label["name"] for label in labels.json()] == ["bug"]
 
 
 @pytest.mark.asyncio
@@ -428,6 +354,13 @@ async def test_pr_list_files_returns_real_diff(client, db_session, test_user, te
     assert data[0]["deletions"] == 0
     assert "+hello from a pull request" in data[0]["patch"]
 
+    summary = await client.get(f"{API}/repos/testuser/{repo_name}/pulls/1")
+    assert summary.status_code == 200
+    assert summary.json()["commits"] == 1
+    assert summary.json()["changed_files"] == 1
+    assert summary.json()["additions"] == 1
+    assert summary.json()["deletions"] == 0
+
 
 @pytest.mark.asyncio
 async def test_pr_owner_prefixed_head_ref_resolves_commits_and_diff(
@@ -475,260 +408,6 @@ async def test_pr_owner_prefixed_head_ref_resolves_commits_and_diff(
     files = files_resp.json()
     assert len(files) == 1
     assert files[0]["filename"] == "feature.txt"
-
-    page = await client.get(f"/ui-legacy/testuser/{repo_name}/pulls/1")
-    assert page.status_code == 200
-    assert "testuser:testuser:feature" not in page.text
-    assert "testuser:feature" in page.text
-
-
-@pytest.mark.asyncio
-async def test_pr_web_files_tab_renders_diff(client, db_session, test_user, test_token):
-    """The PR web page exposes a Files changed tab with rendered patches."""
-    repo_name = await _create_real_pr_with_diff(
-        client, db_session, test_token, repo_name="pr-web-diff-repo"
-    )
-
-    conversation = await client.get(f"/ui-legacy/testuser/{repo_name}/pulls/1")
-    assert conversation.status_code == 200
-    assert "Conversation" in conversation.text
-    assert re.search(r"Commits\s*<span class=\"Counter\">1</span>", conversation.text)
-    assert "Files changed" in conversation.text
-
-    files = await client.get(f"/ui-legacy/testuser/{repo_name}/pulls/1?tab=files")
-    assert files.status_code == 200
-    assert 'class="pr-files-main px-3 px-md-4 px-lg-5 mt-4"' in files.text
-    assert "Showing 1 changed file" in files.text
-    assert 'class="pr-file-sidebar"' in files.text
-    assert 'aria-label="Changed files"' in files.text
-    assert "Jump to file" in files.text
-    assert 'href="#file-1"' in files.text
-    assert 'id="file-1"' in files.text
-    assert "added" in files.text
-    assert "feature.txt" in files.text
-    assert "+1" in files.text
-    assert "-0" in files.text
-    assert "+hello from a pull request" in files.text
-
-
-@pytest.mark.asyncio
-async def test_pr_web_renders_markdown_body_and_comments(
-    client, test_user, test_token, repo_with_branch
-):
-    """The PR conversation renders common Markdown constructs as HTML."""
-    body = "\n".join(
-        [
-            "## Pull request checklist",
-            "",
-            "This is **important** and uses `pytest`.",
-            "",
-            "| Check | Result |",
-            "| --- | --- |",
-            "| tests | pass |",
-            "",
-            "- [ ] Review the diff",
-            "- [x] Run tests",
-            "",
-            "<script>alert('xss')</script>",
-        ]
-    )
-    resp = await client.post(
-        f"{API}/repos/testuser/pr-repo/pulls",
-        json={"title": "Markdown PR", "body": body, "head": "feature", "base": "main"},
-        headers=auth_headers(test_token),
-    )
-    assert resp.status_code == 201
-
-    resp = await client.post(
-        f"{API}/repos/testuser/pr-repo/issues/1/comments",
-        json={"body": "### Comment\n\nA **bold** comment with `code`."},
-        headers=auth_headers(test_token),
-    )
-    assert resp.status_code == 201
-
-    page = await client.get("/ui-legacy/testuser/pr-repo/pulls/1")
-
-    assert page.status_code == 200
-    assert "<h2>Pull request checklist</h2>" in page.text
-    assert "<strong>important</strong>" in page.text
-    assert "<code>pytest</code>" in page.text
-    assert "<table>" in page.text
-    assert "<th>Check</th>" in page.text
-    assert "<td>pass</td>" in page.text
-    assert '<input type="checkbox" disabled>' in page.text
-    assert '<input type="checkbox" disabled checked>' in page.text
-    assert "<h3>Comment</h3>" in page.text
-    assert "<strong>bold</strong>" in page.text
-    assert "<code>code</code>" in page.text
-    assert "IssueDescription" in page.text
-    assert "IssueComment" in page.text
-    assert 'class="TimelineItem-avatar"' not in page.text
-    assert "<script>alert" not in page.text
-    assert "&lt;script&gt;alert" in page.text
-
-
-@pytest.mark.asyncio
-async def test_pr_web_renders_labels_on_list_and_detail(
-    client, db_session, test_token, repo_with_branch
-):
-    """Labels attached to a PR are visible in both PR web views."""
-    repo_name = await _create_real_pr_with_diff(
-        client, db_session, test_token, repo_name="pr-web-label-repo"
-    )
-    response = await client.post(
-        f"{API}/repos/testuser/{repo_name}/issues/1/labels",
-        json={"labels": ["ready-for-review"]},
-        headers=auth_headers(test_token),
-    )
-    assert response.status_code == 200
-
-    list_page = await client.get(f"/ui-legacy/testuser/{repo_name}/pulls")
-    assert list_page.status_code == 200
-    assert 'aria-label="Pull request labels"' in list_page.text
-    assert "ready-for-review" in list_page.text
-
-    detail_page = await client.get(f"/ui-legacy/testuser/{repo_name}/pulls/1")
-    assert detail_page.status_code == 200
-    assert 'aria-label="Pull request labels"' in detail_page.text
-    assert 'class="issue-detail-sidebar"' in detail_page.text
-    assert "ready-for-review" in detail_page.text
-
-
-@pytest.mark.asyncio
-async def test_pr_web_can_add_edit_and_close_pull_request(
-    client, db_session, test_user, test_token, repo_with_branch
-):
-    """The PR conversation supports comments and closing/reopening a PR."""
-    repo_name = await _create_real_pr_with_diff(
-        client, db_session, test_token, repo_name="pr-web-conversation-repo"
-    )
-    client.cookies.set("ui_session", _sign_session("testuser"))
-
-    page = await client.get(f"/ui-legacy/testuser/{repo_name}/pulls/1")
-    assert page.status_code == 200
-    assert "Add a comment" in page.text
-    assert "Comment" in page.text
-    assert "Close pull request" in page.text
-
-    create_response = await client.post(
-        f"/ui-legacy/testuser/{repo_name}/pulls/1/comments",
-        data={"body": "A PR conversation comment"},
-        follow_redirects=False,
-    )
-    assert create_response.status_code == 302
-
-    comments_response = await client.get(
-        f"{API}/repos/testuser/{repo_name}/issues/1/comments",
-        headers=auth_headers(test_token),
-    )
-    assert comments_response.status_code == 200
-    comment = comments_response.json()[0]
-    assert comment["body"] == "A PR conversation comment"
-
-    page = await client.get(f"/ui-legacy/testuser/{repo_name}/pulls/1")
-    assert "A PR conversation comment" in page.text
-    assert f"/pulls/1/comments/{comment['id']}" in page.text
-
-    edit_response = await client.post(
-        f"/ui-legacy/testuser/{repo_name}/pulls/1/comments/{comment['id']}",
-        data={"body": "An edited PR comment"},
-        follow_redirects=False,
-    )
-    assert edit_response.status_code == 302
-    page = await client.get(f"/ui-legacy/testuser/{repo_name}/pulls/1")
-    assert "An edited PR comment" in page.text
-    assert "A PR conversation comment" not in page.text
-
-    close_response = await client.post(
-        f"/ui-legacy/testuser/{repo_name}/pulls/1/state",
-        data={"state": "closed"},
-        follow_redirects=False,
-    )
-    assert close_response.status_code == 302
-    pr_response = await client.get(
-        f"{API}/repos/testuser/{repo_name}/pulls/1",
-        headers=auth_headers(test_token),
-    )
-    assert pr_response.json()["state"] == "closed"
-    page = await client.get(f"/ui-legacy/testuser/{repo_name}/pulls/1")
-    assert "Reopen pull request" in page.text
-    assert "Close pull request" not in page.text
-
-    reopen_response = await client.post(
-        f"/ui-legacy/testuser/{repo_name}/pulls/1/state",
-        data={"state": "open"},
-        follow_redirects=False,
-    )
-    assert reopen_response.status_code == 302
-    pr_response = await client.get(
-        f"{API}/repos/testuser/{repo_name}/pulls/1",
-        headers=auth_headers(test_token),
-    )
-    assert pr_response.json()["state"] == "open"
-
-
-@pytest.mark.asyncio
-async def test_pr_web_merge_button_merges_pull_request(
-    client, db_session, test_user, test_token
-):
-    """The PR web page shows a merge button and can merge an open PR."""
-    repo_name = await _create_real_pr_with_diff(
-        client, db_session, test_token, repo_name="pr-web-merge-repo"
-    )
-    main_before = await _repo_ref_sha(db_session, f"testuser/{repo_name}", "main")
-    feature_sha = await _repo_ref_sha(db_session, f"testuser/{repo_name}", "feature")
-
-    resp = await client.post(
-        f"{API}/repos/testuser/{repo_name}/issues/1/comments",
-        json={"body": "Reviewer comment before merge controls."},
-        headers=auth_headers(test_token),
-    )
-    assert resp.status_code == 201
-
-    page = await client.get(f"/ui-legacy/testuser/{repo_name}/pulls/1")
-    assert page.status_code == 200
-    assert "Merge pull request" not in page.text
-    assert "Sign in to merge" in page.text
-
-    client.cookies.set("ui_session", _sign_session("testuser"))
-    page = await client.get(f"/ui-legacy/testuser/{repo_name}/pulls/1")
-    assert page.status_code == 200
-    assert "Merge pull request" in page.text
-    assert page.text.index("Reviewer comment before merge controls.") < page.text.index(
-        "Merge pull request"
-    )
-
-    resp = await client.post(f"/ui-legacy/testuser/{repo_name}/pulls/1/merge")
-    assert resp.status_code == 302
-    assert resp.headers["location"] == f"/ui-legacy/testuser/{repo_name}/pulls/1"
-
-    page = await client.get(f"/ui-legacy/testuser/{repo_name}/pulls/1")
-    assert page.status_code == 200
-    assert "Pull request successfully merged" in page.text
-    assert "Merge pull request" not in page.text
-
-    pr = await client.get(f"{API}/repos/testuser/{repo_name}/pulls/1")
-    pr_data = pr.json()
-    assert pr_data["state"] == "closed"
-    assert pr_data["merged"] is True
-    assert pr_data["merged_at"] is not None
-    assert pr_data["merge_commit_sha"] not in {main_before, feature_sha}
-
-    main_after = await _repo_ref_sha(db_session, f"testuser/{repo_name}", "main")
-    assert main_after == pr_data["merge_commit_sha"]
-    branch = await client.get(f"{API}/repos/testuser/{repo_name}/branches/main")
-    assert branch.status_code == 200
-    assert branch.json()["commit"]["sha"] == pr_data["merge_commit_sha"]
-
-    commit_page = await client.get(
-        f"/ui-legacy/testuser/{repo_name}/commit/{pr_data['merge_commit_sha']}"
-    )
-    assert commit_page.status_code == 200
-    assert "Showing 1 changed file" in commit_page.text
-    assert "feature.txt" in commit_page.text
-    assert "+hello from a pull request" in commit_page.text
-    assert "No file changes in this commit." not in commit_page.text
-
 
 @pytest.mark.asyncio
 async def test_create_draft_pr(client, test_user, test_token, repo_with_branch):

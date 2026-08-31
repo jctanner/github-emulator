@@ -13,17 +13,28 @@ logger = logging.getLogger(__name__)
 from fastapi import APIRouter, HTTPException, Query, Request
 from fastapi.responses import JSONResponse
 from sqlalchemy import select, func as sa_func
-from sqlalchemy.orm import selectinload
+from sqlalchemy.orm import joinedload, raiseload, selectinload
 
 from app.api.deps import AuthUser, CurrentUser, DbSession, get_repo_or_404
 from app.config import settings
-from app.git.bare_repo import get_compare_diff, get_log, normalize_branch_ref
+from app.git.bare_repo import (
+    get_compare_commit_count,
+    get_compare_diff,
+    get_compare_stats,
+    get_log,
+    normalize_branch_ref,
+)
 from app.models.branch import Branch
 from app.models.issue import Issue
 from app.models.pull_request import PullRequest
 from app.models.repository import Repository
 from app.schemas.user import SimpleUser, _fmt_dt, _make_node_id
-from app.schemas.pull_request import PRMergeResponse, PRResponse
+from app.schemas.pull_request import (
+    PRMergeResponse,
+    PRResponse,
+    PullCommitResponse,
+    PullFileResponse,
+)
 
 router = APIRouter(tags=["pulls"])
 
@@ -34,17 +45,20 @@ BASE = settings.BASE_URL
 # Helpers
 # ---------------------------------------------------------------------------
 
-def _pr_query():
+def _pr_query(*, include_issue_labels: bool = False):
     """Return a base select for PullRequest with eager-loaded relationships."""
-    return (
-        select(PullRequest)
-        .options(
-            selectinload(PullRequest.issue).selectinload(Issue.user),
-            selectinload(PullRequest.repository).selectinload(Repository.owner),
-            selectinload(PullRequest.head_repository),
-            selectinload(PullRequest.merged_by),
+    options = [
+        raiseload("*"),
+        joinedload(PullRequest.issue).joinedload(Issue.user),
+        joinedload(PullRequest.repository).joinedload(Repository.owner),
+        joinedload(PullRequest.head_repository).joinedload(Repository.owner),
+        joinedload(PullRequest.merged_by),
+    ]
+    if include_issue_labels:
+        options.append(
+            joinedload(PullRequest.issue).selectinload(Issue.labels)
         )
-    )
+    return select(PullRequest).options(*options)
 
 
 def _pr_json(pr: PullRequest, base_url: str) -> dict:
@@ -135,10 +149,10 @@ def _pr_json(pr: PullRequest, base_url: str) -> dict:
         "comments": 0,
         "review_comments": 0,
         "maintainer_can_modify": True,
-        "commits": 1,
-        "additions": 0,
-        "deletions": 0,
-        "changed_files": 0,
+        "commits": getattr(pr, "resolved_commits_count", 1),
+        "additions": getattr(pr, "resolved_additions", 0),
+        "deletions": getattr(pr, "resolved_deletions", 0),
+        "changed_files": getattr(pr, "resolved_changed_files", 0),
     }
 
 
@@ -165,6 +179,30 @@ async def _attach_resolved_refs(pr: PullRequest, repository: Repository) -> None
     pr.resolved_head_sha = head_sha
     pr.resolved_base_sha = base_sha
     pr.resolved_head_label = f"{owner_login or 'unknown'}:{head_ref}"
+
+
+async def _attach_pr_stats(pr: PullRequest, repository: Repository) -> None:
+    """Attach Git-derived summary counts used by the pull-request response."""
+    if not repository.disk_path or not os.path.isdir(repository.disk_path):
+        pr.resolved_commits_count = 1
+        pr.resolved_additions = 0
+        pr.resolved_deletions = 0
+        pr.resolved_changed_files = 0
+        return
+
+    commits_count, stats = await asyncio.gather(
+        get_compare_commit_count(
+            repository.disk_path, pr.resolved_base_ref, pr.resolved_head_ref
+        ),
+        get_compare_stats(
+            repository.disk_path, pr.resolved_base_ref, pr.resolved_head_ref
+        ),
+    )
+    additions, deletions, changed_files = stats
+    pr.resolved_commits_count = commits_count
+    pr.resolved_additions = additions
+    pr.resolved_deletions = deletions
+    pr.resolved_changed_files = changed_files
 
 
 async def _record_merged_base_sha(
@@ -623,7 +661,7 @@ async def create_pull(
 
     # Re-query with eager loading
     result = await db.execute(
-        _pr_query().where(PullRequest.id == pr.id)
+        _pr_query(include_issue_labels=True).where(PullRequest.id == pr.id)
     )
     pr = result.scalar_one()
     await _attach_resolved_refs(pr, repository)
@@ -669,6 +707,7 @@ async def get_pull(
         raise HTTPException(status_code=404, detail="Not Found")
 
     await _attach_resolved_refs(pr, repository)
+    await _attach_pr_stats(pr, repository)
     return _pr_json(pr, BASE)
 
 
@@ -722,9 +761,10 @@ async def update_pull(
 
     # Re-query with eager loading
     result = await db.execute(
-        _pr_query().where(PullRequest.id == pr.id)
+        _pr_query(include_issue_labels=True).where(PullRequest.id == pr.id)
     )
     pr = result.scalar_one()
+    issue = pr.issue
     await _attach_resolved_refs(pr, repository)
     from app.services.workflow_service import build_activity_payload, dispatch_event
     action = "edited"
@@ -779,7 +819,7 @@ async def merge_pull(
     repository = await get_repo_or_404(owner, repo, db)
 
     result = await db.execute(
-        _pr_query()
+        _pr_query(include_issue_labels=True)
         .join(Issue, PullRequest.issue_id == Issue.id)
         .where(PullRequest.repo_id == repository.id, Issue.number == pull_number)
     )
@@ -938,7 +978,10 @@ async def merge_pull(
     }
 
 
-@router.get("/repos/{owner}/{repo}/pulls/{pull_number}/commits")
+@router.get(
+    "/repos/{owner}/{repo}/pulls/{pull_number}/commits",
+    response_model=list[PullCommitResponse],
+)
 async def list_pull_commits(
     owner: str,
     repo: str,
@@ -970,7 +1013,10 @@ async def list_pull_commits(
     return [_commit_json(owner, repo, commit) for commit in commits]
 
 
-@router.get("/repos/{owner}/{repo}/pulls/{pull_number}/files")
+@router.get(
+    "/repos/{owner}/{repo}/pulls/{pull_number}/files",
+    response_model=list[PullFileResponse],
+)
 async def list_pull_files(
     owner: str,
     repo: str,

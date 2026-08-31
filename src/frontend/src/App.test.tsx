@@ -9,7 +9,7 @@ afterEach(() => {
 });
 
 describe("App", () => {
-  it("renders a typed migration fallback with a legacy-route link", async () => {
+  it("renders a typed not-found page for unknown routes", async () => {
     vi.stubGlobal(
       "fetch",
       vi.fn().mockImplementation(() =>
@@ -25,11 +25,9 @@ describe("App", () => {
 
     render(<App />);
 
+    expect(await screen.findByText("Page not found")).toBeVisible();
     expect(
-      await screen.findByText("This route has not migrated yet"),
-    ).toBeVisible();
-    expect(
-      screen.getByRole("link", {name: "Open this route in the legacy UI"}),
-    ).toHaveAttribute("href", "/ui-legacy/example/repository/wiki");
+      screen.getByRole("link", {name: "Return to repositories"}),
+    ).toHaveAttribute("href", "/ui/");
   });
 });

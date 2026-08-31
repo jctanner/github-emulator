@@ -8,6 +8,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database import get_db
+from app.db_loaders import repository_identity_options, scalar_only_options
 from app.models.user import User
 from app.models.repository import Repository
 from app.services.auth_service import (
@@ -43,10 +44,12 @@ async def get_current_user(
     Returns ``None`` when no credentials are supplied.
     """
     auth_header = request.headers.get("Authorization")
-    if not auth_header:
-        session_token = request.cookies.get(COOKIE_NAME)
-        if not session_token:
-            return None
+    session_token = request.cookies.get(COOKIE_NAME)
+    prefer_browser_session = bool(session_token) and (
+        not auth_header
+        or request.headers.get("Sec-Fetch-Site", "").lower() == "same-origin"
+    )
+    if prefer_browser_session:
         username = verify_browser_session(session_token)
         if not username:
             return None
@@ -55,11 +58,18 @@ async def get_current_user(
             request.headers.get(CSRF_HEADER),
         ):
             raise HTTPException(status_code=403, detail="Invalid or missing CSRF token")
-        result = await db.execute(select(User).where(User.login == username))
+        result = await db.execute(
+            select(User)
+            .options(*scalar_only_options())
+            .where(User.login == username)
+        )
         user = result.scalar_one_or_none()
         if user is not None:
             request.state.browser_session = True
         return user
+
+    if not auth_header:
+        return None
 
     parts = auth_header.split(" ", 1)
 
@@ -123,7 +133,27 @@ async def get_repo_or_404(
     """Resolve *owner/repo* to a :class:`Repository`, or raise 404."""
     full_name = f"{owner}/{repo}"
     result = await db.execute(
-        select(Repository).where(Repository.full_name == full_name)
+        select(Repository)
+        .options(*repository_identity_options())
+        .where(Repository.full_name == full_name)
+    )
+    repository = result.scalar_one_or_none()
+    if repository is None:
+        raise HTTPException(status_code=404, detail="Not Found")
+    return repository
+
+
+async def get_repo_record_or_404(
+    owner: str,
+    repo: str,
+    db: AsyncSession,
+) -> Repository:
+    """Resolve a repository without loading any ORM relationships."""
+    full_name = f"{owner}/{repo}"
+    result = await db.execute(
+        select(Repository)
+        .options(*scalar_only_options())
+        .where(Repository.full_name == full_name)
     )
     repository = result.scalar_one_or_none()
     if repository is None:

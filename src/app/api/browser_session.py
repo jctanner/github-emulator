@@ -6,6 +6,7 @@ from sqlalchemy import select
 
 from app.api.deps import AuthUser, DbSession
 from app.config import settings
+from app.db_loaders import scalar_only_options
 from app.models.user import User
 from app.schemas.user import UserResponse
 from app.services.auth_service import verify_password
@@ -42,7 +43,11 @@ async def create_browser_session(
     response: Response,
     db: DbSession,
 ):
-    result = await db.execute(select(User).where(User.login == body.username))
+    result = await db.execute(
+        select(User)
+        .options(*scalar_only_options())
+        .where(User.login == body.username)
+    )
     user = result.scalar_one_or_none()
     if user is None or not verify_password(body.password, user.hashed_password):
         raise HTTPException(status_code=401, detail="Invalid username or password")

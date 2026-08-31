@@ -3,20 +3,25 @@ import {FormEvent, useState} from "react";
 import {api} from "../api/client";
 import type {components} from "../api/schema";
 import {useSession} from "../auth/SessionContext";
+import {LabelPill} from "./LabelPill";
+import {Octicon} from "./Octicon";
 
 type Comment = components["schemas"]["IssueCommentResponse"];
+type IssueEvent = components["schemas"]["IssueEventResponse"];
 
 export function IssueComments({
   owner,
   repo,
   issueNumber,
   comments,
+  events,
   onChanged,
 }: {
   owner: string;
   repo: string;
   issueNumber: number;
   comments: Comment[];
+  events: IssueEvent[];
   onChanged: () => void;
 }) {
   const {user} = useSession();
@@ -52,6 +57,7 @@ export function IssueComments({
   }
 
   async function deleteComment(commentId: number) {
+    if (!globalThis.confirm("Delete this comment?")) return;
     const {response} = await api.DELETE(
       "/api/v3/repos/{owner}/{repo}/issues/comments/{comment_id}",
       {params: {path: {owner, repo, comment_id: commentId}}},
@@ -61,54 +67,97 @@ export function IssueComments({
     onChanged();
   }
 
+  const timeline = [
+    ...comments.map((comment) => ({
+      kind: "comment" as const,
+      createdAt: comment.created_at,
+      item: comment,
+    })),
+    ...events.map((issueEvent) => ({
+      kind: "event" as const,
+      createdAt: issueEvent.created_at,
+      item: issueEvent,
+    })),
+  ].sort((left, right) => left.createdAt.localeCompare(right.createdAt));
+
   return (
     <>
-      {comments.map((comment) => (
-        <article className="timeline-item" key={comment.id}>
-          <strong>{comment.user.login}</strong>
-          {editing === comment.id ? (
-            <div className="stack-form">
-              <textarea
-                value={editBody}
-                onChange={(event) => setEditBody(event.target.value)}
-              />
-              <div className="button-row">
-                <button
-                  className="button"
-                  type="button"
-                  onClick={() => void saveComment(comment.id)}
-                >
-                  Save
-                </button>
-                <button type="button" onClick={() => setEditing(null)}>
-                  Cancel
-                </button>
+      {timeline.map((entry) =>
+        entry.kind === "event" ? (
+          <div className="timeline-event" key={`event-${entry.item.id}`}>
+            <span className="timeline-event-icon">
+              <Octicon name="tag" size={16} />
+            </span>
+            <span>
+              <strong>{entry.item.actor.login}</strong>{" "}
+              {entry.item.event === "labeled" ? "added" : "removed"}{" "}
+              {entry.item.label ? <LabelPill label={entry.item.label} /> : null}{" "}
+              <time dateTime={entry.item.created_at}>
+                {new Date(entry.item.created_at).toLocaleString()}
+              </time>
+            </span>
+          </div>
+        ) : (
+          <article className="timeline-item" key={entry.item.id}>
+            <header className="timeline-item-header">
+              <strong>{entry.item.user.login}</strong>
+              {user &&
+              (user.login === entry.item.user.login || user.site_admin) ? (
+                <details className="comment-actions-menu">
+                  <summary
+                    aria-label={`Actions for ${entry.item.user.login}'s comment`}
+                    title="More actions"
+                  >
+                    <Octicon name="kebab-horizontal" size={16} />
+                  </summary>
+                  <div className="comment-actions-popover" role="menu">
+                    <button
+                      role="menuitem"
+                      type="button"
+                      onClick={() => {
+                        setEditing(entry.item.id);
+                        setEditBody(entry.item.body);
+                      }}
+                    >
+                      Edit
+                    </button>
+                    <button
+                      className="danger"
+                      role="menuitem"
+                      type="button"
+                      onClick={() => void deleteComment(entry.item.id)}
+                    >
+                      Delete
+                    </button>
+                  </div>
+                </details>
+              ) : null}
+            </header>
+            {editing === entry.item.id ? (
+              <div className="stack-form">
+                <textarea
+                  value={editBody}
+                  onChange={(event) => setEditBody(event.target.value)}
+                />
+                <div className="button-row">
+                  <button
+                    className="button"
+                    type="button"
+                    onClick={() => void saveComment(entry.item.id)}
+                  >
+                    Save
+                  </button>
+                  <button type="button" onClick={() => setEditing(null)}>
+                    Cancel
+                  </button>
+                </div>
               </div>
-            </div>
-          ) : (
-            <div className="markdown-body">{comment.body}</div>
-          )}
-          {user?.login === comment.user.login && editing !== comment.id ? (
-            <div className="button-row">
-              <button
-                type="button"
-                onClick={() => {
-                  setEditing(comment.id);
-                  setEditBody(comment.body);
-                }}
-              >
-                Edit
-              </button>
-              <button
-                type="button"
-                onClick={() => void deleteComment(comment.id)}
-              >
-                Delete
-              </button>
-            </div>
-          ) : null}
-        </article>
-      ))}
+            ) : (
+              <div className="markdown-body">{entry.item.body}</div>
+            )}
+          </article>
+        ),
+      )}
       {error ? <p className="flash-error">{error}</p> : null}
       {user ? (
         <form

@@ -664,6 +664,70 @@ async def get_compare_diff(disk_path: str, base_ref: str, head_ref: str) -> list
     return _parse_git_diff(stdout.decode(errors="replace"))
 
 
+async def get_compare_commit_count(
+    disk_path: str, base_ref: str, head_ref: str
+) -> int:
+    """Count commits reachable from a pull-request head but not its base."""
+    env = os.environ.copy()
+    env["GIT_DIR"] = disk_path
+    proc = await asyncio.create_subprocess_exec(
+        "git",
+        "rev-list",
+        "--count",
+        f"{base_ref}..{head_ref}",
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+        env=env,
+    )
+    stdout, _ = await proc.communicate()
+    if proc.returncode != 0:
+        return 0
+    try:
+        return int(stdout.decode().strip())
+    except ValueError:
+        return 0
+
+
+async def get_compare_stats(
+    disk_path: str, base_ref: str, head_ref: str
+) -> tuple[int, int, int]:
+    """Return additions, deletions, and changed-file count without patches."""
+    env = os.environ.copy()
+    env["GIT_DIR"] = disk_path
+
+    async def run_diff(revision_range: str):
+        proc = await asyncio.create_subprocess_exec(
+            "git",
+            "diff",
+            "--numstat",
+            revision_range,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+            env=env,
+        )
+        stdout, _ = await proc.communicate()
+        return stdout, proc.returncode
+
+    stdout, returncode = await run_diff(f"{base_ref}...{head_ref}")
+    if returncode != 0:
+        stdout, returncode = await run_diff(f"{base_ref}..{head_ref}")
+    if returncode != 0:
+        return 0, 0, 0
+
+    additions = 0
+    deletions = 0
+    changed_files = 0
+    for line in stdout.decode(errors="replace").splitlines():
+        fields = line.split("\t", 2)
+        if len(fields) != 3:
+            continue
+        added, deleted, _ = fields
+        additions += int(added) if added.isdigit() else 0
+        deletions += int(deleted) if deleted.isdigit() else 0
+        changed_files += 1
+    return additions, deletions, changed_files
+
+
 def _parse_git_diff(output: str) -> list[dict]:
     """Parse git patch output into changed-file records."""
     files = []

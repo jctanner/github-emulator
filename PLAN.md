@@ -21,10 +21,13 @@ Actions visibility and runner evaluation.
 
 ## Active Tasks
 
-- `docs/tasks/current/api-client-frontend-migration.md`
+- None.
 
 ## Completed Tasks
 
+- `docs/tasks/done/pull-detail-request-latency.md`
+- `docs/tasks/done/pat-last-used-write-amplification.md`
+- `docs/tasks/done/api-client-frontend-migration.md`
 - `docs/tasks/done/architectural-maintainability-followups.md`
 - `docs/tasks/done/admin-ui-and-http-middleware.md`
 - `docs/tasks/done/route-and-actions-modularization.md`
@@ -50,6 +53,8 @@ Actions visibility and runner evaluation.
 - `docs/tasks/done/admin-app-frontend-lifecycle.md`
 - `docs/tasks/done/pull-request-web-conversation-controls.md`
 - `docs/tasks/done/pull-request-web-labels.md`
+- `docs/tasks/done/issue-conversation-timeline-parity.md`
+- `docs/tasks/done/pull-request-commits-and-files-navigation.md`
 
 ## Milestones
 

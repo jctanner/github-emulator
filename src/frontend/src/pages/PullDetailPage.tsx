@@ -3,44 +3,58 @@ import {useParams} from "react-router-dom";
 
 import {api} from "../api/client";
 import type {components} from "../api/schema";
+import {useSession} from "../auth/SessionContext";
 import {IssueComments} from "../components/IssueComments";
 import {LabelManager} from "../components/LabelManager";
 import {Loadable} from "../components/Loadable";
+import {Octicon} from "../components/Octicon";
+import {PullRequestHeader} from "../components/PullRequestHeader";
 import {useRepositoryLayout} from "../components/RepositoryContext";
 import {requireApiData, useApiData} from "../hooks/useApiData";
 
 type Pull = components["schemas"]["PRResponse"];
 type Issue = components["schemas"]["IssueResponse"];
 type Comment = components["schemas"]["IssueCommentResponse"];
+type IssueEvent = components["schemas"]["IssueEventResponse"];
 
 export function PullDetailPage() {
   const {owner = "", repo = "", number = "0"} = useParams();
   const pullNumber = Number(number);
   const {reloadNavigation} = useRepositoryLayout();
+  const {user} = useSession();
   const [mutationError, setMutationError] = useState<string | null>(null);
   const page = useApiData<{
     pull: Pull;
     issue: Issue;
     comments: Comment[];
+    events: IssueEvent[];
     labels: components["schemas"]["LabelResponse"][];
   }>(`pull:${owner}/${repo}:${pullNumber}`, async () => {
     const pullPath = {owner, repo, pull_number: pullNumber};
     const issuePath = {owner, repo, issue_number: pullNumber};
-    const [pullResult, issueResult, commentsResult, labelsResult] =
-      await Promise.all([
-        api.GET("/api/v3/repos/{owner}/{repo}/pulls/{pull_number}", {
-          params: {path: pullPath},
-        }),
-        api.GET("/api/v3/repos/{owner}/{repo}/issues/{issue_number}", {
-          params: {path: issuePath},
-        }),
-        api.GET("/api/v3/repos/{owner}/{repo}/issues/{issue_number}/comments", {
-          params: {path: issuePath},
-        }),
-        api.GET("/api/v3/repos/{owner}/{repo}/labels", {
-          params: {path: {owner, repo}},
-        }),
-      ]);
+    const [
+      pullResult,
+      issueResult,
+      commentsResult,
+      eventsResult,
+      labelsResult,
+    ] = await Promise.all([
+      api.GET("/api/v3/repos/{owner}/{repo}/pulls/{pull_number}", {
+        params: {path: pullPath},
+      }),
+      api.GET("/api/v3/repos/{owner}/{repo}/issues/{issue_number}", {
+        params: {path: issuePath},
+      }),
+      api.GET("/api/v3/repos/{owner}/{repo}/issues/{issue_number}/comments", {
+        params: {path: issuePath},
+      }),
+      api.GET("/api/v3/repos/{owner}/{repo}/issues/{issue_number}/events", {
+        params: {path: issuePath},
+      }),
+      api.GET("/api/v3/repos/{owner}/{repo}/labels", {
+        params: {path: {owner, repo}},
+      }),
+    ]);
     return {
       pull: requireApiData(
         pullResult.data,
@@ -56,6 +70,11 @@ export function PullDetailPage() {
         commentsResult.data,
         commentsResult.response,
         "Could not load comments.",
+      ),
+      events: requireApiData(
+        eventsResult.data,
+        eventsResult.response,
+        "Could not load pull request history.",
       ),
       labels: requireApiData(
         labelsResult.data,
@@ -118,31 +137,34 @@ export function PullDetailPage() {
     <Loadable loading={page.loading} error={page.error}>
       {page.data ? (
         <>
-          <header className="conversation-heading">
-            <h1>
-              {page.data.pull.title}{" "}
-              <span className="muted">#{page.data.pull.number}</span>
-            </h1>
-            <span className={`state state-${page.data.pull.state}`}>
-              {page.data.pull.state}
-            </span>
-            <button type="button" onClick={() => void editPull()}>
-              Edit
-            </button>
-            <p>
-              {page.data.pull.head.label} wants to merge into{" "}
-              {page.data.pull.base.label}
-            </p>
-          </header>
-          <nav className="pr-tabs" aria-label="Pull request">
-            <span className="selected">Conversation</span>
-            <span>Commits {page.data.pull.commits}</span>
-            <span>Files changed {page.data.pull.changed_files}</span>
-          </nav>
+          <PullRequestHeader owner={owner} repo={repo} pull={page.data.pull} />
           <div className="conversation-layout">
             <main className="conversation-main">
               <article className="timeline-item">
-                <strong>{page.data.pull.user.login}</strong>
+                <header className="timeline-item-header">
+                  <strong>{page.data.pull.user.login}</strong>
+                  {user &&
+                  (user.login === page.data.pull.user.login ||
+                    user.site_admin) ? (
+                    <details className="comment-actions-menu">
+                      <summary
+                        aria-label={`Actions for ${page.data.pull.user.login}'s description`}
+                        title="More actions"
+                      >
+                        <Octicon name="kebab-horizontal" size={16} />
+                      </summary>
+                      <div className="comment-actions-popover" role="menu">
+                        <button
+                          role="menuitem"
+                          type="button"
+                          onClick={() => void editPull()}
+                        >
+                          Edit
+                        </button>
+                      </div>
+                    </details>
+                  ) : null}
+                </header>
                 <div className="markdown-body">
                   {page.data.pull.body ?? "No description provided."}
                 </div>
@@ -152,6 +174,7 @@ export function PullDetailPage() {
                 repo={repo}
                 issueNumber={pullNumber}
                 comments={page.data.comments}
+                events={page.data.events}
                 onChanged={page.reload}
               />
               {mutationError ? (

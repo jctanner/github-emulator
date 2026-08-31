@@ -31,11 +31,12 @@ async def test_api_responses_include_security_and_request_id_headers(client):
 
 
 @pytest.mark.asyncio
-async def test_admin_html_and_legacy_redirect_include_security_headers(client):
-    redirect = await client.get("/admin/login", follow_redirects=False)
-    assert redirect.status_code == 307
-    assert redirect.headers["location"] == "/ui/_admin/login"
-    _assert_security_headers(redirect)
+async def test_admin_ui_and_unreserved_admin_path_include_security_headers(client):
+    unreserved = await client.get("/admin/login", follow_redirects=False)
+    assert unreserved.status_code == 404
+    assert "location" not in unreserved.headers
+    _assert_security_headers(unreserved)
+    _assert_request_id_headers(unreserved)
 
     response = await client.get("/ui/_admin/login")
     assert response.status_code == 200
@@ -63,13 +64,13 @@ async def test_request_id_headers_preserve_incoming_request_id(client):
 
 
 @pytest.mark.asyncio
-async def test_legacy_redirect_preserves_path_and_query_without_moving_api(client):
+async def test_admin_browser_paths_do_not_redirect_or_move_admin_api(client):
     response = await client.get(
         "/admin/apps?state=active",
         follow_redirects=False,
     )
-    assert response.status_code == 307
-    assert response.headers["location"] == "/ui/_admin/apps?state=active"
+    assert response.status_code == 404
+    assert "location" not in response.headers
 
     api_response = await client.get("/admin/api/does-not-exist")
     assert api_response.status_code == 404

@@ -35,7 +35,6 @@ The server will be available at:
 | REST API | `http://localhost:8000/api/v3` |
 | Web UI | `http://localhost:8000/ui/` |
 | Admin Panel | `http://localhost:8000/ui/_admin/` |
-| Legacy parity UI | `http://localhost:8000/ui-legacy/` |
 | GraphQL | `http://localhost:8000/api/graphql` |
 
 Default admin credentials: `admin` / `admin`. Fresh instances also seed a
@@ -82,8 +81,8 @@ make dev
 
 Honcho starts the reloadable FastAPI backend on port 8000 and Vite on port
 5173. Open `http://127.0.0.1:5173/ui/`; Vite proxies API, avatar, admin API,
-and `/ui-legacy` parity requests to FastAPI. The production image builds the
-same React source and serves its static bundle directly from FastAPI.
+and GraphQL requests to FastAPI. The production image builds the same React
+source and serves its static bundle directly from FastAPI.
 
 ## Configuration
 
@@ -335,14 +334,12 @@ make actions-ui-smoke
 src/
   app/
     api/            # REST API route handlers
-    admin/          # Admin panel (Jinja2 templates, static assets, routes)
     git/            # Git Smart HTTP and SSH transport
     graphql/        # Strawberry GraphQL schema, queries, mutations, types
     middleware/     # FastAPI middleware (auth, rate limiting, ETag, error handling)
     models/         # SQLAlchemy ORM models
     schemas/        # Pydantic request/response schemas
     services/       # Business-logic layer (import, webhooks, search, etc.)
-    web/            # Web UI (Jinja2 templates with Primer CSS)
     config.py       # Settings (env-driven via pydantic-settings)
     database.py     # Async engine, session factory, Base
     main.py         # Application entrypoint
@@ -350,7 +347,7 @@ src/
     emulator/       # Deterministic Python Actions runner
     upstream/       # Official actions/runner container wrapper
 alembic/          # Database migration scripts
-tests/            # Pytest test suite (357 tests)
+tests/            # Pytest test suite
 scripts/          # Integration test scripts for gh/git CLI
 Dockerfile
 docker-compose.yml

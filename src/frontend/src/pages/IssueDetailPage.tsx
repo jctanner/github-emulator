@@ -3,37 +3,46 @@ import {useParams} from "react-router-dom";
 
 import {api} from "../api/client";
 import type {components} from "../api/schema";
+import {useSession} from "../auth/SessionContext";
 import {IssueComments} from "../components/IssueComments";
 import {LabelManager} from "../components/LabelManager";
 import {Loadable} from "../components/Loadable";
+import {Octicon} from "../components/Octicon";
 import {useRepositoryLayout} from "../components/RepositoryContext";
 import {requireApiData, useApiData} from "../hooks/useApiData";
 
 type Issue = components["schemas"]["IssueResponse"];
 type Comment = components["schemas"]["IssueCommentResponse"];
+type IssueEvent = components["schemas"]["IssueEventResponse"];
 
 export function IssueDetailPage() {
   const {owner = "", repo = "", number = "0"} = useParams();
   const issueNumber = Number(number);
   const {reloadNavigation} = useRepositoryLayout();
+  const {user} = useSession();
   const [mutationError, setMutationError] = useState<string | null>(null);
   const page = useApiData<{
     issue: Issue;
     comments: Comment[];
+    events: IssueEvent[];
     labels: components["schemas"]["LabelResponse"][];
   }>(`issue:${owner}/${repo}:${issueNumber}`, async () => {
     const path = {owner, repo, issue_number: issueNumber};
-    const [issueResult, commentsResult, labelsResult] = await Promise.all([
-      api.GET("/api/v3/repos/{owner}/{repo}/issues/{issue_number}", {
-        params: {path},
-      }),
-      api.GET("/api/v3/repos/{owner}/{repo}/issues/{issue_number}/comments", {
-        params: {path},
-      }),
-      api.GET("/api/v3/repos/{owner}/{repo}/labels", {
-        params: {path: {owner, repo}},
-      }),
-    ]);
+    const [issueResult, commentsResult, eventsResult, labelsResult] =
+      await Promise.all([
+        api.GET("/api/v3/repos/{owner}/{repo}/issues/{issue_number}", {
+          params: {path},
+        }),
+        api.GET("/api/v3/repos/{owner}/{repo}/issues/{issue_number}/comments", {
+          params: {path},
+        }),
+        api.GET("/api/v3/repos/{owner}/{repo}/issues/{issue_number}/events", {
+          params: {path},
+        }),
+        api.GET("/api/v3/repos/{owner}/{repo}/labels", {
+          params: {path: {owner, repo}},
+        }),
+      ]);
     return {
       issue: requireApiData(
         issueResult.data,
@@ -44,6 +53,11 @@ export function IssueDetailPage() {
         commentsResult.data,
         commentsResult.response,
         "Could not load comments.",
+      ),
+      events: requireApiData(
+        eventsResult.data,
+        eventsResult.response,
+        "Could not load issue history.",
       ),
       labels: requireApiData(
         labelsResult.data,
@@ -102,9 +116,6 @@ export function IssueDetailPage() {
             <span className={`state state-${page.data.issue.state}`}>
               {page.data.issue.state}
             </span>
-            <button type="button" onClick={() => void editIssue()}>
-              Edit
-            </button>
             <p className="conversation-meta">
               <strong>{page.data.issue.user.login}</strong> opened this issue ·{" "}
               {page.data.comments.length} comments
@@ -113,7 +124,30 @@ export function IssueDetailPage() {
           <div className="conversation-layout">
             <main className="conversation-main">
               <article className="timeline-item">
-                <strong>{page.data.issue.user.login}</strong>
+                <header className="timeline-item-header">
+                  <strong>{page.data.issue.user.login}</strong>
+                  {user &&
+                  (user.login === page.data.issue.user.login ||
+                    user.site_admin) ? (
+                    <details className="comment-actions-menu">
+                      <summary
+                        aria-label={`Actions for ${page.data.issue.user.login}'s description`}
+                        title="More actions"
+                      >
+                        <Octicon name="kebab-horizontal" size={16} />
+                      </summary>
+                      <div className="comment-actions-popover" role="menu">
+                        <button
+                          role="menuitem"
+                          type="button"
+                          onClick={() => void editIssue()}
+                        >
+                          Edit
+                        </button>
+                      </div>
+                    </details>
+                  ) : null}
+                </header>
                 <div className="markdown-body">
                   {page.data.issue.body ?? "No description provided."}
                 </div>
@@ -123,6 +157,7 @@ export function IssueDetailPage() {
                 repo={repo}
                 issueNumber={issueNumber}
                 comments={page.data.comments}
+                events={page.data.events}
                 onChanged={page.reload}
               />
               {mutationError ? (

@@ -1,12 +1,14 @@
 import {FormEvent, useState} from "react";
-import {useNavigate, useParams} from "react-router-dom";
+import {Navigate, useNavigate, useParams} from "react-router-dom";
 
 import {api} from "../api/client";
+import {useSession} from "../auth/SessionContext";
 import {useRepositoryLayout} from "../components/RepositoryContext";
 
 export function NewIssuePage() {
   const {owner = "", repo = ""} = useParams();
   const navigate = useNavigate();
+  const session = useSession();
   const {reloadNavigation} = useRepositoryLayout();
   const [title, setTitle] = useState("");
   const [body, setBody] = useState("");
@@ -24,30 +26,39 @@ export function NewIssuePage() {
     reloadNavigation();
     await navigate(`/${owner}/${repo}/issues/${data.number}`);
   }
+  if (session.loading) return <p className="loading">Loading...</p>;
+  if (!session.user) return <Navigate replace to="/login" />;
+
   return (
-    <>
-      <form className="editor-form" onSubmit={(event) => void submit(event)}>
-        <h1>New issue</h1>
-        {error ? <p className="flash-error">{error}</p> : null}
+    <form className="new-issue-form" onSubmit={(event) => void submit(event)}>
+      <div className="new-issue-subhead">New issue</div>
+      {error ? <p className="flash-error">{error}</p> : null}
+      <div className="new-issue-box">
         <label>
-          Title
+          <span>
+            Title <span className="required-marker">*</span>
+          </span>
           <input
+            autoFocus
             required
             value={title}
             onChange={(event) => setTitle(event.target.value)}
           />
         </label>
         <label>
-          Description
+          <span>
+            Description <span className="optional-marker">(optional)</span>
+          </span>
           <textarea
+            placeholder="Leave a comment"
             value={body}
             onChange={(event) => setBody(event.target.value)}
           />
         </label>
-        <button className="button" type="submit">
-          Submit new issue
-        </button>
-      </form>
-    </>
+      </div>
+      <button className="button" type="submit">
+        Submit new issue
+      </button>
+    </form>
   );
 }

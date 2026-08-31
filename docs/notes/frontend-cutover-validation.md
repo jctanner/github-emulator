@@ -1,7 +1,8 @@
 # Frontend Cutover Validation
 
-The React API-client frontend is the canonical `/ui` surface. The Jinja UI is
-still mounted at `/ui-legacy` for review and has not been approved for removal.
+The React API-client frontend is the canonical and only browser UI under
+`/ui`. The Jinja UI and `/ui-legacy` parity mount were retired after explicit
+approval on 2026-08-30.
 
 ## Automated evidence
 
@@ -23,10 +24,10 @@ the `/admin/{repo}/_apis` protocol was shadowed by the legacy `/admin` browser
 redirect, and local runner service URLs exposed an unreachable `:8000` port
 instead of the port-80 compatibility proxy.
 
-## Remaining approval gate
+## Retirement decision
 
-Routes remain classified as `candidate` in the parity manifest. The current
-suite proves both surfaces are reachable at the same route and fixture state;
-it does not claim pixel or semantic equivalence. Baseline acceptance and legacy
-deletion therefore remain explicit review steps. No Jinja routes, templates,
-or `/ui-legacy` compatibility helpers should be removed before that approval.
+The final candidate differences were accepted for cutover. The parity harness,
+Jinja routes and templates, `/ui-legacy`, and the broad `/admin` browser
+compatibility redirect were removed. The latter is necessary because `admin`
+is also a valid repository owner and Git Smart HTTP must be able to serve
+`/admin/<repository>.git` without interception.

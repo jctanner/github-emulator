@@ -6,7 +6,7 @@ import os
 from fastapi import APIRouter, HTTPException
 from sqlalchemy import func, select
 
-from app.api.deps import CurrentUser, DbSession, get_repo_or_404
+from app.api.deps import CurrentUser, DbSession, get_repo_record_or_404
 from app.git.bare_repo import get_commit_count, get_tag_count
 from app.models.branch import Branch
 from app.models.issue import Issue
@@ -21,7 +21,7 @@ router = APIRouter(prefix="/api/_ui/repos", tags=["ui-repositories"])
 
 
 async def _get_visible_repository(owner: str, repo: str, db: DbSession, current_user: CurrentUser):
-    repository = await get_repo_or_404(owner, repo, db)
+    repository = await get_repo_record_or_404(owner, repo, db)
     if repository.private and (
         current_user is None
         or (

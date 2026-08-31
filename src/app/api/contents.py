@@ -9,7 +9,7 @@ from fastapi import APIRouter, HTTPException
 from fastapi.responses import JSONResponse
 from sqlalchemy import select
 
-from app.api.deps import AuthUser, CurrentUser, DbSession, get_repo_or_404
+from app.api.deps import AuthUser, CurrentUser, DbSession, get_repo_record_or_404
 from app.config import settings
 from app.schemas.browse import ContentResponse
 from app.schemas.user import _make_node_id
@@ -97,7 +97,7 @@ async def get_contents(
     ref: str | None = None,
 ):
     """Get file or directory contents."""
-    repository = await get_repo_or_404(owner, repo, db)
+    repository = await get_repo_record_or_404(owner, repo, db)
 
     if not repository.disk_path or not os.path.isdir(repository.disk_path):
         raise HTTPException(status_code=404, detail="Not Found")
@@ -161,7 +161,7 @@ async def create_or_update_file(
     owner: str, repo: str, path: str, body: dict, user: AuthUser, db: DbSession,
 ):
     """Create or update a file."""
-    repository = await get_repo_or_404(owner, repo, db)
+    repository = await get_repo_record_or_404(owner, repo, db)
 
     if not repository.disk_path or not os.path.isdir(repository.disk_path):
         raise HTTPException(status_code=404, detail="Repository not found on disk")
@@ -280,7 +280,7 @@ async def delete_file(
     owner: str, repo: str, path: str, body: dict, user: AuthUser, db: DbSession,
 ):
     """Delete a file (stub -- returns 200 with commit info)."""
-    repository = await get_repo_or_404(owner, repo, db)
+    repository = await get_repo_record_or_404(owner, repo, db)
     message = body.get("message", f"Delete {path}")
     sha = body.get("sha", "")
 
@@ -299,7 +299,7 @@ async def get_readme(
     ref: str | None = None,
 ):
     """Get the README for a repository."""
-    repository = await get_repo_or_404(owner, repo, db)
+    repository = await get_repo_record_or_404(owner, repo, db)
 
     if not repository.disk_path or not os.path.isdir(repository.disk_path):
         raise HTTPException(status_code=404, detail="Not Found")

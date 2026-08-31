@@ -40,4 +40,4 @@ def test_ui_admin_api_and_actions_route_contracts(app):
 
     mounts = {getattr(route, "path", None) for route in app.routes}
     assert "/ui" in mounts
-    assert "/ui-legacy" in mounts
+    assert "/ui-legacy" not in mounts

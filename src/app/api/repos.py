@@ -10,6 +10,7 @@ from sqlalchemy import select, func as sa_func
 
 from app.api.deps import AuthUser, CurrentUser, DbSession
 from app.config import settings
+from app.db_loaders import repository_identity_options
 from app.models.branch import Branch
 from app.models.repository import Repository
 from app.models.user import User
@@ -178,6 +179,7 @@ async def list_public_repositories(
     """List public repositories using GitHub's global repository endpoint."""
     query = (
         select(Repository)
+        .options(*repository_identity_options())
         .where(Repository.id > since)
         .order_by(Repository.id)
         .limit(per_page)
@@ -197,7 +199,9 @@ async def create_repo_for_user(body: dict, user: AuthUser, db: DbSession):
 
     full_name = f"{user.login}/{name}"
     existing = await db.execute(
-        select(Repository).where(Repository.full_name == full_name)
+        select(Repository)
+        .options(*repository_identity_options())
+        .where(Repository.full_name == full_name)
     )
     if existing.scalar_one_or_none() is not None:
         raise HTTPException(status_code=422, detail="Repository already exists")
@@ -259,7 +263,9 @@ async def get_repo(owner: str, repo: str, db: DbSession, current_user: CurrentUs
     """Get a single repository."""
     full_name = f"{owner}/{repo}"
     result = await db.execute(
-        select(Repository).where(Repository.full_name == full_name)
+        select(Repository)
+        .options(*repository_identity_options())
+        .where(Repository.full_name == full_name)
     )
     repository = result.scalar_one_or_none()
     if repository is None:
@@ -282,7 +288,9 @@ async def update_repo(
     """Update repository settings."""
     full_name = f"{owner}/{repo}"
     result = await db.execute(
-        select(Repository).where(Repository.full_name == full_name)
+        select(Repository)
+        .options(*repository_identity_options())
+        .where(Repository.full_name == full_name)
     )
     repository = result.scalar_one_or_none()
     if repository is None:
@@ -320,7 +328,9 @@ async def delete_repo(owner: str, repo: str, user: AuthUser, db: DbSession):
     """Delete a repository."""
     full_name = f"{owner}/{repo}"
     result = await db.execute(
-        select(Repository).where(Repository.full_name == full_name)
+        select(Repository)
+        .options(*repository_identity_options())
+        .where(Repository.full_name == full_name)
     )
     repository = result.scalar_one_or_none()
     if repository is None:
@@ -351,7 +361,7 @@ async def list_user_repos(
     if owner is None:
         raise HTTPException(status_code=404, detail="Not Found")
 
-    query = select(Repository).where(
+    query = select(Repository).options(*repository_identity_options()).where(
         Repository.owner_id == owner.id,
         Repository.owner_type == "User",
     )
@@ -407,7 +417,11 @@ async def list_authenticated_user_repos(
     page: int = Query(1, ge=1),
 ):
     """List repositories for the authenticated user."""
-    query = select(Repository).where(Repository.owner_id == user.id)
+    query = (
+        select(Repository)
+        .options(*repository_identity_options())
+        .where(Repository.owner_id == user.id)
+    )
 
     if type == "public":
         query = query.where(Repository.private == False)
@@ -472,7 +486,7 @@ async def list_org_repos(
         ).scalar_one_or_none()
         can_view_private = membership is not None
 
-    query = select(Repository).where(
+    query = select(Repository).options(*repository_identity_options()).where(
         Repository.organization_id == organisation.id,
         Repository.owner_type == "Organization",
     )

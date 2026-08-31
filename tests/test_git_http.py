@@ -42,6 +42,31 @@ async def test_info_refs_upload_pack(client, test_user, test_token, git_repo):
 
 
 @pytest.mark.asyncio
+async def test_info_refs_allows_admin_repository_owner(
+    client, admin_user, admin_token
+):
+    """The admin login remains a valid Git owner namespace."""
+    created = await client.post(
+        f"{API}/user/repos",
+        json={"name": "admin-git-test", "auto_init": True},
+        headers=auth_headers(admin_token),
+    )
+    assert created.status_code == 201
+
+    response = await client.get(
+        "/admin/admin-git-test.git/info/refs?service=git-upload-pack",
+        follow_redirects=False,
+    )
+
+    assert response.status_code == 200
+    assert (
+        response.headers["content-type"]
+        == "application/x-git-upload-pack-advertisement"
+    )
+    assert b"# service=git-upload-pack" in response.content
+
+
+@pytest.mark.asyncio
 async def test_info_refs_receive_pack_requires_auth(client, test_user, test_token, git_repo):
     """GET info/refs?service=git-receive-pack without auth returns 401."""
     resp = await client.get(

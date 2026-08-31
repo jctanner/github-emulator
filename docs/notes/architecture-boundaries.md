@@ -13,11 +13,11 @@ and bare repositories share one persistent data volume.
 - `app.frontend` serves the production bundle and SPA history fallback.
 - `app.api.browser_session` supplies same-origin cookie authentication and
   CSRF tokens; admin APIs authorize the same user with `site_admin`.
-- `app.web.routes`, `app.web.settings_routes`, `app.admin.routes`, and
-  `app.admin.apps_routes` are frozen Jinja parity implementations mounted only
-  under `/ui-legacy` until explicit retirement approval.
-- `/admin` browser GETs are compatibility redirects. `/admin/api` remains a
-  machine-facing administration namespace.
+- The retired Jinja implementation and `/ui-legacy` parity mount have been
+  removed. Unknown browser routes render the React not-found page.
+- `/admin` remains available as a valid repository-owner namespace. There is
+  no broad browser redirect on that path; `/admin/api` remains a machine-facing
+  administration namespace.
 
 Local development uses `Procfile.dev`: Honcho runs FastAPI on port 8000 and
 Vite on port 5173, while Vite proxies backend-owned paths. Production builds

@@ -303,6 +303,47 @@ async def test_remove_label_from_issue(client, test_user, test_token, label_repo
 
 
 @pytest.mark.asyncio
+async def test_issue_label_changes_are_exposed_as_timeline_events(
+    client, test_user, test_token, label_repo_with_issue,
+):
+    """Label mutations produce ordered GitHub-shaped issue events."""
+    await client.post(
+        f"{API}/repos/testuser/label-repo/labels",
+        json={
+            "name": "timeline-label",
+            "color": "1d76db",
+            "description": "Visible in issue history",
+        },
+        headers=auth_headers(test_token),
+    )
+    await client.post(
+        f"{API}/repos/testuser/label-repo/issues/1/labels",
+        json={"labels": ["timeline-label"]},
+        headers=auth_headers(test_token),
+    )
+    await client.delete(
+        f"{API}/repos/testuser/label-repo/issues/1/labels/timeline-label",
+        headers=auth_headers(test_token),
+    )
+
+    response = await client.get(
+        f"{API}/repos/testuser/label-repo/issues/1/events",
+        headers=auth_headers(test_token),
+    )
+
+    assert response.status_code == 200
+    events = response.json()
+    assert [event["event"] for event in events] == ["labeled", "unlabeled"]
+    assert [event["actor"]["login"] for event in events] == [
+        "testuser",
+        "testuser",
+    ]
+    assert all(event["label"]["name"] == "timeline-label" for event in events)
+    assert all(event["label"]["color"] == "1d76db" for event in events)
+    assert all(event["created_at"] for event in events)
+
+
+@pytest.mark.asyncio
 async def test_remove_nonexistent_label_from_issue(client, test_user, test_token, label_repo_with_issue):
     """Removing a label that doesn't exist from an issue returns 404."""
     resp = await client.delete(

@@ -5,6 +5,7 @@ from datetime import datetime
 from typing import Optional
 
 from pydantic import BaseModel, ConfigDict
+from sqlalchemy import inspect as sqlalchemy_inspect
 
 
 def _fmt_dt(dt: Optional[datetime]) -> Optional[str]:
@@ -154,7 +155,8 @@ class UserResponse(BaseModel):
 
         # Count public repos if the relationship is loaded
         public_repos = 0
-        if hasattr(user, "repositories") and user.repositories is not None:
+        state = sqlalchemy_inspect(user)
+        if "repositories" not in state.unloaded and user.repositories is not None:
             public_repos = sum(
                 1 for r in user.repositories if not r.private
             )

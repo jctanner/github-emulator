@@ -1,5 +1,11 @@
 # API-Client Frontend Migration
 
+## Outcome
+
+Completed on 2026-08-30. The React API-client frontend is the sole `/ui`
+surface; `/ui-legacy`, the Jinja implementation, parity-only tooling, and the
+broad `/admin` browser redirect have been retired.
+
 ## Goal
 
 Replace the tightly coupled Jinja2 browser UI with a typed frontend that uses
