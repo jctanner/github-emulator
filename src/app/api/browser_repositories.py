@@ -3,7 +3,7 @@
 import asyncio
 import os
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Query
 from sqlalchemy import func, select
 
 from app.api.deps import CurrentUser, DbSession, get_repo_record_or_404
@@ -79,6 +79,7 @@ async def repository_home_summary(
     repo: str,
     db: DbSession,
     current_user: CurrentUser,
+    ref: str | None = Query(None),
 ):
     """Return accurate repository-home counts without loading collections."""
     repository = await _get_visible_repository(owner, repo, db, current_user)
@@ -92,7 +93,9 @@ async def repository_home_summary(
     tag_count = 0
     if repository.disk_path and os.path.isdir(repository.disk_path):
         commit_count, tag_count = await asyncio.gather(
-            get_commit_count(repository.disk_path, repository.default_branch),
+            get_commit_count(
+                repository.disk_path, ref or repository.default_branch
+            ),
             get_tag_count(repository.disk_path),
         )
 

@@ -43,6 +43,29 @@ async def test_repository_home_summary_does_not_cap_commit_count(
 
 
 @pytest.mark.asyncio
+async def test_repository_home_summary_counts_requested_ref(
+    client, test_repo_with_init, monkeypatch
+):
+    owner, repo, _ = test_repo_with_init
+    counted_refs = []
+
+    async def count_commits(_disk_path: str, ref: str) -> int:
+        counted_refs.append(ref)
+        return 3
+
+    monkeypatch.setattr(
+        "app.api.browser_repositories.get_commit_count", count_commits
+    )
+    response = await client.get(
+        f"{UI_API}/repos/{owner}/{repo}/summary?ref=feature"
+    )
+
+    assert response.status_code == 200
+    assert response.json()["commit_count"] == 3
+    assert counted_refs == ["feature"]
+
+
+@pytest.mark.asyncio
 async def test_repository_navigation_counts_issues_and_pulls_separately(
     client, test_repo_with_init, test_token
 ):

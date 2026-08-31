@@ -564,34 +564,7 @@ async def get_commit_diff(disk_path: str, sha: str) -> list[dict]:
     if proc.returncode != 0:
         return []
 
-    output = stdout.decode(errors="replace")
-    files = []
-    current_file = None
-    patch_lines = []
-
-    for line in output.split("\n"):
-        if line.startswith("diff --git "):
-            # Save previous file
-            if current_file is not None:
-                current_file["patch"] = "\n".join(patch_lines)
-                files.append(current_file)
-            # Parse filename from "diff --git a/path b/path"
-            parts = line.split(" b/", 1)
-            filename = parts[1] if len(parts) > 1 else ""
-            current_file = {"filename": filename, "status": "modified", "patch": ""}
-            patch_lines = [line]
-        elif current_file is not None:
-            if line.startswith("new file"):
-                current_file["status"] = "added"
-            elif line.startswith("deleted file"):
-                current_file["status"] = "deleted"
-            patch_lines.append(line)
-
-    if current_file is not None:
-        current_file["patch"] = "\n".join(patch_lines)
-        files.append(current_file)
-
-    return files
+    return _parse_git_diff(stdout.decode(errors="replace"))
 
 
 async def resolve_ref(disk_path: str, ref: str) -> str | None:

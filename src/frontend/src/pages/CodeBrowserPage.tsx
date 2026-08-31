@@ -5,6 +5,7 @@ import type {components} from "../api/schema";
 import {FileTypeIcon} from "../components/FileTypeIcon";
 import {Loadable} from "../components/Loadable";
 import {Octicon} from "../components/Octicon";
+import {RepositoryActivity} from "../components/RepositoryActivity";
 import {requireApiData, useApiData} from "../hooks/useApiData";
 import {decodeBase64Content} from "../utils/content";
 
@@ -68,6 +69,9 @@ export function CodeBrowserPage({blob = false}: {blob?: boolean}) {
             ) : null}
           </div>
         </div>
+        {sortedItems ? (
+          <RepositoryActivity owner={owner} repo={repo} ref={ref} />
+        ) : null}
         {sortedItems ? (
           <div className="list-box code-tree" aria-label="Repository files">
             {sortedItems.map((item) => (

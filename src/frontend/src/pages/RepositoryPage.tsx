@@ -5,13 +5,12 @@ import type {components} from "../api/schema";
 import {FileTypeIcon} from "../components/FileTypeIcon";
 import {Loadable} from "../components/Loadable";
 import {Octicon} from "../components/Octicon";
+import {RepositoryActivity} from "../components/RepositoryActivity";
 import {useRepository} from "../components/RepositoryContext";
 import {requireApiData, useApiData} from "../hooks/useApiData";
 import {decodeBase64Content} from "../utils/content";
 
 type Content = components["schemas"]["ContentResponse"];
-type Summary = components["schemas"]["RepositoryHomeSummaryResponse"];
-
 interface RepositoryFilesData {
   contents: Content[];
   readme: Content | null;
@@ -60,27 +59,6 @@ export function RepositoryPage() {
       };
     },
   );
-  const summary = useApiData<Summary | null>(
-    `repo-summary:${owner}/${repo}:${files.data ? "ready" : "deferred"}`,
-    async () => {
-      if (!files.data) return null;
-      const {data, response} = await api.GET(
-        "/api/_ui/repos/{owner}/{repo}/summary",
-        {params: {path: {owner, repo}}},
-      );
-      return requireApiData(
-        data,
-        response,
-        "Could not load repository counts.",
-      );
-    },
-  );
-
-  function count(value: number | undefined): number | string {
-    if (!files.data || summary.loading) return "…";
-    return value ?? "—";
-  }
-
   return (
     <>
       <div className="repo-home-toolbar">
@@ -91,20 +69,12 @@ export function RepositoryPage() {
           <Octicon name="plus" /> Add file
         </Link>
       </div>
-      <nav className="repo-activity" aria-label="Repository activity">
-        <Link to={`/${owner}/${repo}/commits/${ref}`}>
-          <Octicon name="history" />
-          <strong>{count(summary.data?.commit_count)}</strong> commits
-        </Link>
-        <Link to={`/${owner}/${repo}/branches`}>
-          <Octicon name="branch" />
-          <strong>{count(summary.data?.branch_count)}</strong> branches
-        </Link>
-        <Link to={`/${owner}/${repo}/tags`}>
-          <Octicon name="tag" />
-          <strong>{count(summary.data?.tag_count)}</strong> tags
-        </Link>
-      </nav>
+      <RepositoryActivity
+        owner={owner}
+        repo={repo}
+        ref={ref}
+        ready={Boolean(files.data)}
+      />
       <Loadable loading={files.loading || !ref} error={files.error}>
         {files.data ? (
           <>

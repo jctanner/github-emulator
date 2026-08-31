@@ -1,21 +1,14 @@
-import {Link, useParams} from "react-router-dom";
+import {useParams} from "react-router-dom";
 
 import {api} from "../api/client";
 import type {components} from "../api/schema";
 import {Loadable} from "../components/Loadable";
+import {FileDiffList} from "../components/FileDiffList";
 import {PullRequestHeader} from "../components/PullRequestHeader";
 import {requireApiData, useApiData} from "../hooks/useApiData";
 
 type Pull = components["schemas"]["PRResponse"];
 type PullFile = components["schemas"]["PullFileResponse"];
-
-function patchLineClass(line: string): string {
-  if (line.startsWith("+") && !line.startsWith("+++")) return "addition";
-  if (line.startsWith("-") && !line.startsWith("---")) return "deletion";
-  if (line.startsWith("@@")) return "hunk";
-  if (line.startsWith("diff ") || line.startsWith("index ")) return "meta";
-  return "";
-}
 
 export function PullFilesPage() {
   const {owner = "", repo = "", number = "0"} = useParams();
@@ -58,31 +51,12 @@ export function PullFilesPage() {
             <span className="diff-additions">+{data.pull.additions}</span>
             <span className="diff-deletions">-{data.pull.deletions}</span>
           </div>
-          <div className="pr-file-list">
-            {data.files.map((file) => (
-              <article className="pr-file" key={file.filename}>
-                <header>
-                  <Link
-                    to={`/${owner}/${repo}/blob/${encodeURIComponent(data.pull.head.ref)}/${file.filename}`}
-                  >
-                    {file.filename}
-                  </Link>
-                  <span>
-                    <span className="diff-additions">+{file.additions}</span>{" "}
-                    <span className="diff-deletions">-{file.deletions}</span>
-                  </span>
-                </header>
-                <pre className="diff-patch">
-                  {file.patch.split("\n").map((line, index) => (
-                    <code className={patchLineClass(line)} key={index}>
-                      {line || " "}
-                      {"\n"}
-                    </code>
-                  ))}
-                </pre>
-              </article>
-            ))}
-          </div>
+          <FileDiffList
+            files={data.files}
+            fileHref={(file) =>
+              `/${owner}/${repo}/blob/${encodeURIComponent(data.pull.head.ref)}/${file.filename}`
+            }
+          />
         </>
       ) : null}
     </Loadable>

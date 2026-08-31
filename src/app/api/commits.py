@@ -8,6 +8,7 @@ from sqlalchemy import select
 
 from app.api.deps import CurrentUser, DbSession, get_repo_or_404
 from app.config import settings
+from app.git.bare_repo import get_commit_diff
 from app.schemas.browse import CommitResponse
 from app.schemas.user import _fmt_dt, _make_node_id
 
@@ -150,13 +151,36 @@ async def get_commit(
     if not line:
         raise HTTPException(status_code=404, detail="Not Found")
 
-    return _parse_commit_line(
+    commit = _parse_commit_line(
         line,
         owner,
         repo,
         BASE,
         bool(getattr(request.state, "is_installation_token", False)),
     )
+    files = await get_commit_diff(repository.disk_path, commit["sha"])
+    for file in files:
+        filename = file.get("filename", "")
+        file.update(
+            {
+                "sha": file.get("sha", ""),
+                "blob_url": f"{BASE}/{owner}/{repo}/blob/{commit['sha']}/{filename}",
+                "raw_url": f"{BASE}/{owner}/{repo}/raw/{commit['sha']}/{filename}",
+                "contents_url": (
+                    f"{BASE}/api/v3/repos/{owner}/{repo}/contents/{filename}"
+                    f"?ref={commit['sha']}"
+                ),
+            }
+        )
+    additions = sum(file.get("additions", 0) for file in files)
+    deletions = sum(file.get("deletions", 0) for file in files)
+    commit["stats"] = {
+        "total": additions + deletions,
+        "additions": additions,
+        "deletions": deletions,
+    }
+    commit["files"] = files
+    return commit
 
 
 @router.get("/repos/{owner}/{repo}/compare/{basehead}")

@@ -14,8 +14,15 @@ router = APIRouter(tags=["git-commits"])
 BASE = settings.BASE_URL
 
 
-async def _git(repo_path: str, *args: str, input_data: bytes | None = None) -> str:
+async def _git(
+    repo_path: str,
+    *args: str,
+    input_data: bytes | None = None,
+    extra_env: dict[str, str] | None = None,
+) -> str:
     env = {**os.environ, "GIT_DIR": repo_path}
+    if extra_env:
+        env.update(extra_env)
     proc = await asyncio.create_subprocess_exec(
         "git", *args,
         stdin=asyncio.subprocess.PIPE if input_data else None,
@@ -104,12 +111,33 @@ async def create_git_commit(
     if not message or not tree:
         raise HTTPException(status_code=422, detail="message and tree are required")
 
+    author = body.get("author") or {}
+    committer = body.get("committer") or {}
+    author_name = author.get("name") or user.name or user.login
+    author_email = (
+        author.get("email") or user.email or f"{user.login}@github-emulator.local"
+    )
+    committer_name = committer.get("name") or author_name
+    committer_email = committer.get("email") or author_email
+    commit_env = {
+        "GIT_AUTHOR_NAME": author_name,
+        "GIT_AUTHOR_EMAIL": author_email,
+        "GIT_COMMITTER_NAME": committer_name,
+        "GIT_COMMITTER_EMAIL": committer_email,
+    }
+    if author.get("date"):
+        commit_env["GIT_AUTHOR_DATE"] = author["date"]
+    if committer.get("date"):
+        commit_env["GIT_COMMITTER_DATE"] = committer["date"]
+
     args = ["commit-tree", tree, "-m", message]
     for parent in parents:
         args.extend(["-p", parent])
 
     try:
-        sha = (await _git(repository.disk_path, *args)).strip()
+        sha = (
+            await _git(repository.disk_path, *args, extra_env=commit_env)
+        ).strip()
     except RuntimeError as e:
         raise HTTPException(status_code=422, detail=str(e))
 
@@ -118,6 +146,16 @@ async def create_git_commit(
         "sha": sha,
         "url": f"{api}/repos/{owner}/{repo}/git/commits/{sha}",
         "message": message,
+        "author": {
+            "name": author_name,
+            "email": author_email,
+            "date": author.get("date"),
+        },
+        "committer": {
+            "name": committer_name,
+            "email": committer_email,
+            "date": committer.get("date"),
+        },
         "tree": {"sha": tree, "url": f"{api}/repos/{owner}/{repo}/git/trees/{tree}"},
         "parents": [{"sha": p, "url": f"{api}/repos/{owner}/{repo}/git/commits/{p}"} for p in parents],
         "verification": verification(request),

@@ -5802,6 +5802,37 @@ export interface components {
                 [key: string]: unknown;
             };
         };
+        /** CommitFile */
+        CommitFile: {
+            /** Additions */
+            additions: number;
+            /** Blob Url */
+            blob_url: string;
+            /** Changes */
+            changes: number;
+            /** Contents Url */
+            contents_url: string;
+            /** Deletions */
+            deletions: number;
+            /** Filename */
+            filename: string;
+            /**
+             * Patch
+             * @default
+             */
+            patch: string;
+            /** Previous Filename */
+            previous_filename?: string | null;
+            /** Raw Url */
+            raw_url: string;
+            /**
+             * Sha
+             * @default
+             */
+            sha: string;
+            /** Status */
+            status: string;
+        };
         /** CommitResponse */
         CommitResponse: {
             /** Author */
@@ -5815,6 +5846,8 @@ export interface components {
             committer?: {
                 [key: string]: unknown;
             } | null;
+            /** Files */
+            files?: components["schemas"]["CommitFile"][] | null;
             /** Html Url */
             html_url: string;
             /** Node Id */
@@ -5828,8 +5861,18 @@ export interface components {
             }[];
             /** Sha */
             sha: string;
+            stats?: components["schemas"]["CommitStats"] | null;
             /** Url */
             url: string;
+        };
+        /** CommitStats */
+        CommitStats: {
+            /** Additions */
+            additions: number;
+            /** Deletions */
+            deletions: number;
+            /** Total */
+            total: number;
         };
         /** ContentLinks */
         ContentLinks: {
@@ -9112,7 +9155,9 @@ export interface operations {
     };
     repository_home_summary_api__ui_repos__owner___repo__summary_get: {
         parameters: {
-            query?: never;
+            query?: {
+                ref?: string | null;
+            };
             header?: never;
             path: {
                 owner: string;

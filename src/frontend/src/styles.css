@@ -627,6 +627,10 @@ a:hover {
   margin: 24px auto;
 }
 
+.editor-form > .button {
+  justify-self: start;
+}
+
 .editor-form label,
 .stack-form label {
   display: grid;

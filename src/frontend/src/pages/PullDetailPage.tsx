@@ -180,7 +180,7 @@ export function PullDetailPage() {
               {mutationError ? (
                 <p className="flash-error">{mutationError}</p>
               ) : null}
-              {!page.data.pull.merged ? (
+              {user && !page.data.pull.merged ? (
                 <div className="button-row">
                   <button
                     className="button secondary"

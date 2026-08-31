@@ -36,6 +36,26 @@ class CommitDetails(BaseModel):
     verification: dict[str, Any]
 
 
+class CommitStats(BaseModel):
+    total: int
+    additions: int
+    deletions: int
+
+
+class CommitFile(BaseModel):
+    sha: str = ""
+    filename: str
+    status: str
+    additions: int
+    deletions: int
+    changes: int
+    blob_url: str
+    raw_url: str
+    contents_url: str
+    patch: str = ""
+    previous_filename: str | None = None
+
+
 class CommitResponse(BaseModel):
     sha: str
     node_id: str
@@ -46,6 +66,8 @@ class CommitResponse(BaseModel):
     author: dict[str, Any] | None = None
     committer: dict[str, Any] | None = None
     parents: list[dict[str, str]] = []
+    stats: CommitStats | None = None
+    files: list[CommitFile] | None = None
 
 
 class ContentLinks(BaseModel):
