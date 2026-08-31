@@ -925,6 +925,326 @@ a:hover {
   height: 39px;
 }
 
+.app-registration-trigger {
+  margin: 16px 0;
+}
+
+.app-registration-backdrop {
+  position: fixed;
+  z-index: 1000;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  padding: 24px;
+  overflow: auto;
+  background: #1f232880;
+}
+
+.app-registration-modal {
+  width: min(760px, 100%);
+  max-height: calc(100vh - 48px);
+  overflow: auto;
+  border: 1px solid #8c959f;
+  border-radius: 12px;
+  background: #fff;
+  box-shadow: 0 16px 48px #1f23284d;
+}
+
+.app-registration-form {
+  display: grid;
+  gap: 16px;
+  padding: 20px;
+}
+
+.app-registration-heading {
+  position: sticky;
+  z-index: 1;
+  top: 0;
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 16px 20px;
+  border-bottom: 1px solid #d8dee4;
+  background: #f6f8fa;
+}
+
+.app-registration-heading h2,
+.app-registration-heading p {
+  margin: 0;
+}
+
+.app-registration-heading p,
+.app-registration-form small {
+  color: #656d76;
+}
+
+.app-registration-close {
+  width: 32px;
+  height: 32px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: #57606a;
+  font-size: 24px;
+  line-height: 1;
+}
+
+.app-registration-close:hover {
+  background: #afb8c133;
+}
+
+.app-registration-form label {
+  display: grid;
+  gap: 6px;
+  font-weight: 600;
+}
+
+.app-registration-form input,
+.app-registration-form select {
+  box-sizing: border-box;
+  width: 100%;
+  padding: 8px 12px;
+  border: 1px solid #d0d7de;
+  border-radius: 6px;
+  font: inherit;
+  font-weight: 400;
+}
+
+.app-permissions-fieldset {
+  min-width: 0;
+  margin: 0;
+  padding: 0;
+  border: 0;
+}
+
+.app-permissions-fieldset legend {
+  padding: 0;
+  font-weight: 600;
+}
+
+.app-permissions-fieldset > p {
+  margin: 4px 0 10px;
+  color: #656d76;
+  font-size: 13px;
+}
+
+.app-permission-list {
+  overflow: hidden;
+  border: 1px solid #d0d7de;
+  border-radius: 6px;
+}
+
+.app-registration-form .app-permission-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 170px;
+  align-items: center;
+  gap: 16px;
+  padding: 12px;
+  border-bottom: 1px solid #d8dee4;
+}
+
+.app-registration-form .app-permission-row:last-child {
+  border-bottom: 0;
+}
+
+.app-permission-row > span {
+  display: grid;
+  gap: 2px;
+}
+
+.app-permission-row select:disabled {
+  color: #57606a;
+  background: #f6f8fa;
+  opacity: 1;
+}
+
+.app-registration-actions {
+  position: sticky;
+  bottom: -20px;
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin: 0 -20px -20px;
+  padding: 12px 20px;
+  border-top: 1px solid #d8dee4;
+  background: #f6f8fa;
+}
+
+.app-registration-actions .button {
+  margin: 0;
+}
+
+.app-private-key {
+  margin: 16px 0;
+  padding: 12px;
+  border: 1px solid #d8dee4;
+  border-radius: 6px;
+  background: #fff8c5;
+}
+
+.app-private-key p {
+  margin: 0 0 8px;
+}
+
+.app-private-key .one-time-secret {
+  max-height: 240px;
+  margin: 0;
+  overflow: auto;
+}
+
+.admin-app-row {
+  display: grid;
+  grid-template-columns: minmax(180px, 1fr) minmax(220px, 2fr) auto;
+  align-items: center;
+  gap: 12px;
+}
+
+.admin-app-details {
+  margin-top: 16px;
+  padding: 20px;
+  border: 1px solid #d0d7de;
+  border-radius: 6px;
+  background: #fff;
+}
+
+.admin-app-details-heading {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.admin-app-details-heading h2,
+.admin-app-details-heading p {
+  margin: 0;
+}
+
+.admin-app-details-heading p {
+  margin-top: 4px;
+  color: #656d76;
+}
+
+.app-detail-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 16px;
+  margin: 20px 0;
+}
+
+.app-detail-grid div {
+  min-width: 0;
+  padding: 12px;
+  border: 1px solid #d8dee4;
+  border-radius: 6px;
+  background: #f6f8fa;
+}
+
+.app-detail-grid dt {
+  color: #656d76;
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.app-detail-grid dd {
+  margin: 4px 0 0;
+  overflow-wrap: anywhere;
+  font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
+}
+
+.app-installations-heading {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding-bottom: 8px;
+  border-bottom: 1px solid #d8dee4;
+}
+
+.app-installations-heading h3 {
+  margin: 0;
+}
+
+.app-installations-heading span {
+  min-width: 20px;
+  padding: 1px 6px;
+  border-radius: 20px;
+  background: #afb8c133;
+  text-align: center;
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.app-installation-list {
+  display: grid;
+}
+
+.admin-app-installation-row {
+  display: grid;
+  grid-template-columns: minmax(220px, 1fr) 220px auto;
+  align-items: center;
+  gap: 16px;
+  padding: 12px 0;
+  border-bottom: 1px solid #d8dee4;
+}
+
+.admin-app-installation-row > div,
+.app-installation-meta {
+  display: grid;
+  gap: 3px;
+}
+
+.admin-app-installation-row span,
+.app-installation-meta {
+  color: #656d76;
+  font-size: 12px;
+}
+
+.admin-app-installation-row > button {
+  min-width: 72px;
+  justify-self: end;
+  white-space: nowrap;
+}
+
+.empty-note {
+  color: #656d76;
+}
+
+@media (max-width: 800px) {
+  .app-detail-grid,
+  .app-registration-form .form-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .admin-app-row,
+  .admin-app-installation-row {
+    grid-template-columns: 1fr;
+  }
+
+  .admin-app-installation-row > button {
+    justify-self: start;
+  }
+
+  .app-registration-form .app-permission-row {
+    grid-template-columns: 1fr;
+  }
+
+  .app-registration-backdrop {
+    place-items: stretch;
+    padding: 0;
+  }
+
+  .app-registration-modal {
+    width: 100%;
+    max-height: 100vh;
+    border: 0;
+    border-radius: 0;
+  }
+
+  .admin-app-details-heading {
+    display: grid;
+  }
+}
+
 .label-row {
   display: grid;
   grid-template-columns: 180px 1fr auto;

@@ -15,10 +15,59 @@ type Runner = components["schemas"]["AdminRunnerResponse"];
 type Import = components["schemas"]["AdminImportResponse"];
 type Issue = components["schemas"]["AdminIssueResponse"];
 type App = components["schemas"]["AdminAppResponse"];
+type AppInstallation = components["schemas"]["AdminInstallationResponse"];
 
 interface AppInstallationOptions {
   accounts: string[];
   repositories: Repository[];
+}
+
+type AppPermissionName = "contents" | "issues" | "pull_requests" | "metadata";
+type AppPermissionLevel = "" | "read" | "write";
+
+const APP_PERMISSION_FIELDS: {
+  name: AppPermissionName;
+  label: string;
+  description: string;
+  readOnly?: boolean;
+}[] = [
+  {
+    name: "contents",
+    label: "Repository contents",
+    description: "Source code, commits, branches, and files.",
+  },
+  {
+    name: "issues",
+    label: "Issues",
+    description: "Issues, labels, assignees, and comments.",
+  },
+  {
+    name: "pull_requests",
+    label: "Pull requests",
+    description: "Pull requests, reviews, and review comments.",
+  },
+  {
+    name: "metadata",
+    label: "Metadata",
+    description: "Basic repository information required by GitHub Apps.",
+    readOnly: true,
+  },
+];
+
+function defaultAppPermissions(): Record<AppPermissionName, AppPermissionLevel> {
+  return {contents: "", issues: "", pull_requests: "", metadata: "read"};
+}
+
+function privateKeyFrom(value: unknown): string | null {
+  if (
+    typeof value === "object" &&
+    value !== null &&
+    "private_key" in value &&
+    typeof value.private_key === "string"
+  ) {
+    return value.private_key;
+  }
+  return null;
 }
 
 function AdminList<T>({
@@ -293,6 +342,169 @@ function Tokens() {
   );
 }
 
+function AppDetails({
+  appId,
+  initialSecret,
+  onChanged,
+}: {
+  appId: string;
+  initialSecret?: string | null;
+  onChanged: () => void;
+}) {
+  const value = useApiData<App>(`admin-app:${appId}`, async () => {
+    const {data, response} = await api.GET("/admin/api/apps/{app_id}", {
+      params: {path: {app_id: appId}},
+    });
+    return requireApiData(data, response, "Could not load App details.");
+  });
+  const [secret, setSecret] = useState<string | null>(initialSecret ?? null);
+  const [actionError, setActionError] = useState<string | null>(null);
+
+  async function showPrivateKey() {
+    const {data, response} = await api.GET(
+      "/admin/api/apps/{app_id}/private-key",
+      {params: {path: {app_id: appId}}},
+    );
+    const privateKey = privateKeyFrom(data);
+    if (!response.ok || !privateKey) {
+      return setActionError("Could not load the private key.");
+    }
+    setActionError(null);
+    setSecret(privateKey);
+  }
+
+  async function regeneratePrivateKey() {
+    if (
+      !globalThis.confirm(
+        "Regenerate this private key? Existing copies will stop working.",
+      )
+    ) {
+      return;
+    }
+    const {data, response} = await api.POST(
+      "/admin/api/apps/{app_id}/private-key/regenerate",
+      {params: {path: {app_id: appId}}},
+    );
+    const privateKey = privateKeyFrom(data);
+    if (!response.ok || !privateKey) {
+      return setActionError("Could not regenerate the private key.");
+    }
+    setActionError(null);
+    setSecret(privateKey);
+    value.reload();
+  }
+
+  async function removeInstallation(installation: AppInstallation) {
+    const {response} = await api.DELETE(
+      "/admin/api/apps/{app_id}/installations/{installation_id}",
+      {
+        params: {
+          path: {app_id: appId, installation_id: installation.id},
+        },
+      },
+    );
+    if (!response.ok) {
+      return setActionError("Could not remove the installation.");
+    }
+    setActionError(null);
+    value.reload();
+    onChanged();
+  }
+
+  return (
+    <Loadable loading={value.loading} error={value.error}>
+      {value.data ? (
+        <section
+          className="admin-app-details"
+          aria-label={`${value.data.name} details`}
+        >
+          <div className="admin-app-details-heading">
+            <div>
+              <h2>{value.data.name}</h2>
+              <p>Registration and installation details for this GitHub App.</p>
+            </div>
+            <div className="button-row">
+              <button onClick={() => void showPrivateKey()}>
+                View private key
+              </button>
+              <button onClick={() => void regeneratePrivateKey()}>
+                Regenerate private key
+              </button>
+            </div>
+          </div>
+          {actionError ? <p className="flash-error">{actionError}</p> : null}
+          {secret ? (
+            <div className="app-private-key">
+              <p>
+                <strong>Private key</strong> — copy and store this securely.
+              </p>
+              <pre className="one-time-secret">{secret}</pre>
+            </div>
+          ) : null}
+          <dl className="app-detail-grid">
+            <div>
+              <dt>Owner</dt>
+              <dd>{value.data.owner}</dd>
+            </div>
+            <div>
+              <dt>Slug</dt>
+              <dd>{value.data.slug}</dd>
+            </div>
+            <div>
+              <dt>App ID</dt>
+              <dd>{value.data.app_id}</dd>
+            </div>
+            <div>
+              <dt>Client ID</dt>
+              <dd>{value.data.client_id}</dd>
+            </div>
+            <div>
+              <dt>Private key</dt>
+              <dd>{value.data.has_private_key ? "Configured" : "Not configured"}</dd>
+            </div>
+            <div>
+              <dt>Created</dt>
+              <dd>{value.data.created_at ?? "Unknown"}</dd>
+            </div>
+          </dl>
+          <div className="app-installations-heading">
+            <h3>Installations</h3>
+            <span>{value.data.installations_count}</span>
+          </div>
+          {value.data.installations?.length ? (
+            <div className="app-installation-list">
+              {value.data.installations.map((installation) => (
+                <div
+                  className="admin-app-installation-row"
+                  key={installation.id}
+                >
+                  <div>
+                    <strong>{installation.owner}</strong>
+                    <span>
+                      {installation.repositories.length
+                        ? installation.repositories.join(", ")
+                        : "All repositories"}
+                    </span>
+                  </div>
+                  <div className="app-installation-meta">
+                    <span>Installation #{installation.id}</span>
+                    <span>{installation.created_at ?? "Unknown date"}</span>
+                  </div>
+                  <button onClick={() => void removeInstallation(installation)}>
+                    Remove
+                  </button>
+                </div>
+              ))}
+            </div>
+          ) : (
+            <p className="empty-note">This App has no installations.</p>
+          )}
+        </section>
+      ) : null}
+    </Loadable>
+  );
+}
+
 function Apps() {
   const values = useApiData<App[]>("admin-apps", async () => {
     const {data, response} = await api.GET("/admin/api/apps");
@@ -337,19 +549,49 @@ function Apps() {
     },
   );
   const [name, setName] = useState("");
+  const [slug, setSlug] = useState("");
+  const [registrationAppId, setRegistrationAppId] = useState("");
+  const [permissions, setPermissions] = useState(defaultAppPermissions);
+  const [registrationError, setRegistrationError] = useState<string | null>(null);
+  const [registrationOpen, setRegistrationOpen] = useState(false);
   const [owner, setOwner] = useState("");
   const [repo, setRepo] = useState("");
   const [appId, setAppId] = useState("");
-  const [secret, setSecret] = useState<string | null>(null);
+  const [selectedAppId, setSelectedAppId] = useState<string | null>(null);
+  const [detailRevision, setDetailRevision] = useState(0);
+  const [createdSecret, setCreatedSecret] = useState<{
+    appId: string;
+    privateKey: string;
+  } | null>(null);
   const [installError, setInstallError] = useState<string | null>(null);
   const repositoryOptions = installationOptions.data?.repositories.filter(
     (repository) => repository.full_name.startsWith(`${owner}/`),
   );
   async function create(event: FormEvent) {
     event.preventDefault();
-    const {data} = await api.POST("/admin/api/apps", {body: {name}});
-    if (data?.private_key) setSecret(data.private_key);
+    const selectedPermissions = Object.fromEntries(
+      Object.entries(permissions).filter(([, level]) => level),
+    );
+    const body: Record<string, unknown> = {
+      name,
+      permissions: selectedPermissions,
+    };
+    if (slug.trim()) body.slug = slug.trim();
+    if (registrationAppId.trim()) body.app_id = registrationAppId.trim();
+    const {data, response} = await api.POST("/admin/api/apps", {body});
+    if (!response.ok || !data) {
+      return setRegistrationError("Could not register the GitHub App.");
+    }
+    if (data.private_key) {
+      setCreatedSecret({appId: data.app_id, privateKey: data.private_key});
+    }
+    setRegistrationError(null);
     setName("");
+    setSlug("");
+    setRegistrationAppId("");
+    setPermissions(defaultAppPermissions());
+    setSelectedAppId(data.app_id);
+    setRegistrationOpen(false);
     values.reload();
   }
   async function install(event: FormEvent) {
@@ -376,27 +618,145 @@ function Apps() {
     if (!response.ok) return setInstallError("Could not create installation.");
     setInstallError(null);
     setRepo("");
+    setSelectedAppId(appId);
+    setDetailRevision((value) => value + 1);
     values.reload();
   }
   async function remove(id: string) {
     await api.DELETE("/admin/api/apps/{app_id}", {
       params: {path: {app_id: id}},
     });
+    if (selectedAppId === id) setSelectedAppId(null);
     values.reload();
   }
   return (
     <>
       <h1>GitHub Apps</h1>
-      {secret ? <pre className="one-time-secret">{secret}</pre> : null}
-      <form className="inline-editor" onSubmit={(event) => void create(event)}>
-        <input
-          required
-          placeholder="App name"
-          value={name}
-          onChange={(event) => setName(event.target.value)}
-        />
-        <button className="button">Register App</button>
-      </form>
+      <button
+        className="button app-registration-trigger"
+        onClick={() => setRegistrationOpen(true)}
+      >
+        Register new GitHub App
+      </button>
+      {registrationOpen ? (
+        <div
+          className="app-registration-backdrop"
+          onMouseDown={(event) => {
+            if (event.target === event.currentTarget) setRegistrationOpen(false);
+          }}
+          onKeyDown={(event) => {
+            if (event.key === "Escape") setRegistrationOpen(false);
+          }}
+        >
+          <section
+            aria-labelledby="register-github-app-title"
+            aria-modal="true"
+            className="app-registration-modal"
+            role="dialog"
+          >
+            <div className="app-registration-heading">
+              <div>
+                <h2 id="register-github-app-title">Register a GitHub App</h2>
+                <p>
+                  Configure the identity and repository access for this App.
+                </p>
+              </div>
+              <button
+                aria-label="Close registration dialog"
+                className="app-registration-close"
+                onClick={() => setRegistrationOpen(false)}
+              >
+                ×
+              </button>
+            </div>
+            <form
+              className="app-registration-form"
+              onSubmit={(event) => void create(event)}
+            >
+              {registrationError ? (
+                <p className="flash-error">{registrationError}</p>
+              ) : null}
+              <label>
+                <span>
+                  GitHub App name <span className="required-marker">*</span>
+                </span>
+                <input
+                  autoFocus
+                  required
+                  placeholder="Fullsend Triage"
+                  value={name}
+                  onChange={(event) => setName(event.target.value)}
+                />
+              </label>
+              <div className="form-grid">
+                <label>
+                  <span>
+                    Slug <span className="optional-marker">Optional</span>
+                  </span>
+                  <input
+                    placeholder="Generated from the name"
+                    value={slug}
+                    onChange={(event) => setSlug(event.target.value)}
+                  />
+                </label>
+                <label>
+                  <span>
+                    App ID <span className="optional-marker">Optional</span>
+                  </span>
+                  <input
+                    placeholder="Generated automatically"
+                    value={registrationAppId}
+                    onChange={(event) => setRegistrationAppId(event.target.value)}
+                  />
+                </label>
+              </div>
+              <fieldset className="app-permissions-fieldset">
+                <legend>Repository permissions</legend>
+                <p>
+                  Choose the minimum access this App needs. Write access also
+                  includes read access.
+                </p>
+                <div className="app-permission-list">
+                  {APP_PERMISSION_FIELDS.map((permission) => (
+                    <label className="app-permission-row" key={permission.name}>
+                      <span>
+                        <strong>{permission.label}</strong>
+                        <small>{permission.description}</small>
+                      </span>
+                      <select
+                        aria-label={permission.label}
+                        value={permissions[permission.name]}
+                        disabled={permission.readOnly}
+                        onChange={(event) =>
+                          setPermissions((current) => ({
+                            ...current,
+                            [permission.name]: event.target
+                              .value as AppPermissionLevel,
+                          }))
+                        }
+                      >
+                        {!permission.readOnly ? (
+                          <option value="">No access</option>
+                        ) : null}
+                        <option value="read">Read-only</option>
+                        {!permission.readOnly ? (
+                          <option value="write">Read and write</option>
+                        ) : null}
+                      </select>
+                    </label>
+                  ))}
+                </div>
+              </fieldset>
+              <div className="app-registration-actions">
+                <button type="button" onClick={() => setRegistrationOpen(false)}>
+                  Cancel
+                </button>
+                <button className="button">Create GitHub App</button>
+              </div>
+            </form>
+          </section>
+        </div>
+      ) : null}
       {installationOptions.error ? (
         <p className="flash-error">{installationOptions.error}</p>
       ) : null}
@@ -468,15 +828,39 @@ function Apps() {
         {...values}
         values={values.data}
         row={(value) => (
-          <div className="list-row label-row" key={value.app_id}>
+          <div className="list-row admin-app-row" key={value.app_id}>
             <strong>{value.name}</strong>
             <span>
               {value.slug} · {value.installations_count} installations
             </span>
-            <button onClick={() => void remove(value.app_id)}>Delete</button>
+            <div className="button-row">
+              <button
+                aria-expanded={selectedAppId === value.app_id}
+                onClick={() =>
+                  setSelectedAppId((current) =>
+                    current === value.app_id ? null : value.app_id,
+                  )
+                }
+              >
+                {selectedAppId === value.app_id ? "Hide details" : "View details"}
+              </button>
+              <button onClick={() => void remove(value.app_id)}>Delete</button>
+            </div>
           </div>
         )}
       />
+      {selectedAppId ? (
+        <AppDetails
+          key={`${selectedAppId}:${detailRevision}`}
+          appId={selectedAppId}
+          initialSecret={
+            createdSecret?.appId === selectedAppId
+              ? createdSecret.privateKey
+              : null
+          }
+          onChanged={() => values.reload()}
+        />
+      ) : null}
     </>
   );
 }

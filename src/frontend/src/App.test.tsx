@@ -12,9 +12,10 @@ afterEach(() => {
 describe("App", () => {
   it("routes the site admin Apps page before repository coordinates", async () => {
     const requests: string[] = [];
+    let registeredAppBody: unknown = null;
     vi.stubGlobal(
       "fetch",
-      vi.fn().mockImplementation((request: Request) => {
+      vi.fn().mockImplementation(async (request: Request) => {
         const path = new URL(request.url).pathname;
         requests.push(path);
         if (path === "/api/_ui/session") {
@@ -33,8 +34,71 @@ describe("App", () => {
             }),
           );
         }
+        if (path === "/admin/api/apps/1002") {
+          return Response.json({
+            app_id: "1002",
+            name: "Example App",
+            slug: "example-app",
+            owner: "admin",
+            client_id: "Iv1.new-client",
+            installations_count: 0,
+            has_private_key: true,
+            created_at: "2026-08-31T12:20:00Z",
+            installations: [],
+          });
+        }
+        if (path === "/admin/api/apps/1001") {
+          return Promise.resolve(
+            Response.json({
+              app_id: "1001",
+              name: "Fullsend Triage",
+              slug: "fullsend-triage",
+              owner: "admin",
+              client_id: "Iv1.test-client",
+              installations_count: 1,
+              has_private_key: true,
+              created_at: "2026-08-31T12:00:00Z",
+              installations: [
+                {
+                  id: 7,
+                  app_id: "1001",
+                  owner: "admin",
+                  repo: "ansible-agent-harness",
+                  repositories: ["admin/ansible-agent-harness"],
+                  created_at: "2026-08-31T12:10:00Z",
+                },
+              ],
+            }),
+          );
+        }
+        if (path === "/admin/api/apps" && request.method === "POST") {
+          registeredAppBody = await request.json();
+          return Response.json(
+            {
+              app_id: "1002",
+              name: "Example App",
+              slug: "example-app",
+              owner: "admin",
+              client_id: "Iv1.new-client",
+              installations_count: 0,
+              private_key: "TEST PRIVATE KEY",
+            },
+            {status: 201},
+          );
+        }
         if (path === "/admin/api/apps") {
-          return Promise.resolve(Response.json([]));
+          return Promise.resolve(
+            Response.json([
+              {
+                app_id: "1001",
+                name: "Fullsend Triage",
+                slug: "fullsend-triage",
+                owner: "admin",
+                client_id: "Iv1.test-client",
+                installations_count: 1,
+              },
+            ]),
+          );
         }
         if (path === "/admin/api/users") {
           return Promise.resolve(
@@ -89,7 +153,36 @@ describe("App", () => {
         ),
       ).map((option) => option.value),
     ).toEqual(["ansible-agent-harness"]);
+    fireEvent.click(screen.getByText("Register new GitHub App"));
+    expect(screen.getByRole("dialog", {name: "Register a GitHub App"})).toBeVisible();
+    expect(screen.getByLabelText(/GitHub App name/)).toBeVisible();
+    expect(screen.getByLabelText("Repository contents")).toHaveValue("");
+    expect(screen.getByLabelText("Issues")).toHaveValue("");
+    expect(screen.getByLabelText("Pull requests")).toHaveValue("");
+    expect(screen.getByLabelText("Metadata")).toHaveValue("read");
+    expect(screen.getByLabelText("Metadata")).toBeDisabled();
+    fireEvent.change(screen.getByLabelText(/GitHub App name/), {
+      target: {value: "Example App"},
+    });
+    fireEvent.change(screen.getByLabelText("Repository contents"), {
+      target: {value: "read"},
+    });
+    fireEvent.change(screen.getByLabelText("Issues"), {
+      target: {value: "write"},
+    });
+    fireEvent.click(screen.getByRole("button", {name: "Create GitHub App"}));
+    expect(await screen.findByText("TEST PRIVATE KEY")).toBeVisible();
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+    expect(registeredAppBody).toEqual({
+      name: "Example App",
+      permissions: {contents: "read", issues: "write", metadata: "read"},
+    });
+    fireEvent.click(screen.getByRole("button", {name: "View details"}));
+    expect(await screen.findByText("Iv1.test-client")).toBeVisible();
+    expect(screen.getByText("admin/ansible-agent-harness")).toBeVisible();
+    expect(screen.getByText("Installation #7")).toBeVisible();
     expect(requests).toContain("/admin/api/apps");
+    expect(requests).toContain("/admin/api/apps/1001");
     expect(requests).toContain("/admin/api/users");
     expect(requests).toContain("/admin/api/organizations");
     expect(requests).toContain("/admin/api/repositories");
