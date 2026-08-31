@@ -474,7 +474,7 @@ function Issues() {
 }
 
 export function AdminPage() {
-  const {"*": section = ""} = useParams();
+  const {section = ""} = useParams();
   const current = section || "dashboard";
   const content =
     current === "users" ? (

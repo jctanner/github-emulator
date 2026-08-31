@@ -9,6 +9,44 @@ afterEach(() => {
 });
 
 describe("App", () => {
+  it("routes the site admin Apps page before repository coordinates", async () => {
+    const requests: string[] = [];
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockImplementation((request: Request) => {
+        const path = new URL(request.url).pathname;
+        requests.push(path);
+        if (path === "/api/_ui/session") {
+          return Promise.resolve(
+            Response.json({
+              user: {
+                id: 1,
+                login: "admin",
+                name: "Admin",
+                email: null,
+                avatar_url: "",
+                html_url: "",
+                site_admin: true,
+              },
+              csrf_token: "test-csrf",
+            }),
+          );
+        }
+        if (path === "/admin/api/apps") {
+          return Promise.resolve(Response.json([]));
+        }
+        return Promise.resolve(Response.json({detail: "Not Found"}, {status: 404}));
+      }),
+    );
+    window.history.replaceState({}, "", "/ui/_admin/apps");
+
+    render(<App />);
+
+    expect(await screen.findByRole("heading", {name: "GitHub Apps"})).toBeVisible();
+    expect(requests).toContain("/admin/api/apps");
+    expect(requests).not.toContain("/api/v3/repos/_admin/apps");
+  });
+
   it("renders a typed not-found page for unknown routes", async () => {
     vi.stubGlobal(
       "fetch",

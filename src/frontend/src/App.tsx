@@ -41,7 +41,8 @@ export function App() {
             <Route path="/login" element={<LoginPage />} />
             <Route path="/new" element={<NewRepositoryPage />} />
             <Route path="/search" element={<SearchPage />} />
-            <Route path="/_admin/*" element={<AdminPage />} />
+            <Route path="/_admin" element={<AdminPage />} />
+            <Route path="/_admin/:section" element={<AdminPage />} />
             <Route path="/:owner/:repo" element={<RepositoryLayout />}>
               <Route index element={<RepositoryPage />} />
               <Route path="issues" element={<IssuesPage />} />

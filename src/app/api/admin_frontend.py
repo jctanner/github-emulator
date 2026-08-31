@@ -8,6 +8,7 @@ from app.models.actions import Runner, WorkflowRun
 from app.models.import_job import ImportJob
 from app.models.issue import Issue
 from app.models.organization import Organization
+from app.models.pull_request import PullRequest
 from app.models.repository import Repository
 from app.models.token import PersonalAccessToken
 from app.models.user import User
@@ -203,9 +204,32 @@ async def import_job(job_id: int, user: AuthUser, db: DbSession):
 @router.get("/issues", response_model=list[AdminIssueResponse])
 async def issues(user: AuthUser, db: DbSession):
     _require_admin(user)
-    values = (await db.execute(select(Issue).order_by(Issue.created_at.desc()).limit(200))).scalars().all()
-    result = []
-    for value in values:
-        repository = (await db.execute(select(Repository).where(Repository.id == value.repo_id))).scalar_one()
-        result.append({"id": value.id, "repository": repository.full_name, "number": value.number, "title": value.title, "state": value.state, "is_pull_request": value.pull_request is not None, "created_at": _fmt_dt(value.created_at)})
-    return result
+    values = (
+        await db.execute(
+            select(
+                Issue.id,
+                Repository.full_name.label("repository"),
+                Issue.number,
+                Issue.title,
+                Issue.state,
+                PullRequest.id.is_not(None).label("is_pull_request"),
+                Issue.created_at,
+            )
+            .join(Repository, Repository.id == Issue.repo_id)
+            .outerjoin(PullRequest, PullRequest.issue_id == Issue.id)
+            .order_by(Issue.created_at.desc())
+            .limit(200)
+        )
+    ).all()
+    return [
+        {
+            "id": value.id,
+            "repository": value.repository,
+            "number": value.number,
+            "title": value.title,
+            "state": value.state,
+            "is_pull_request": value.is_pull_request,
+            "created_at": _fmt_dt(value.created_at),
+        }
+        for value in values
+    ]
