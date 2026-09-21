@@ -891,28 +891,130 @@ function Runners() {
   );
 }
 
+interface ImportDestination {
+  login: string;
+  kind: "User" | "Organization";
+}
+
 function Imports() {
   const values = useApiData<Import[]>("admin-imports", async () => {
     const {data, response} = await api.GET("/admin/api/imports");
     return requireApiData(data, response, "Could not load imports.");
   });
+  const destinationOptions = useApiData<ImportDestination[]>(
+    "admin-import-destinations",
+    async () => {
+      const [usersResult, organizationsResult] = await Promise.all([
+        api.GET("/admin/api/users"),
+        api.GET("/admin/api/organizations"),
+      ]);
+      const users = requireApiData(
+        usersResult.data,
+        usersResult.response,
+        "Could not load users.",
+      );
+      const organizations = requireApiData(
+        organizationsResult.data,
+        organizationsResult.response,
+        "Could not load organizations.",
+      );
+      return [
+        ...users.map((user) => ({login: user.login, kind: "User" as const})),
+        ...organizations.map((organization) => ({
+          login: organization.login,
+          kind: "Organization" as const,
+        })),
+      ].sort((left, right) => left.login.localeCompare(right.login));
+    },
+  );
   const [source, setSource] = useState("");
+  const [destination, setDestination] = useState("");
+  const [createAs, setCreateAs] = useState<"" | "User" | "Organization">("");
+  const [importError, setImportError] = useState<string | null>(null);
+  const matchedDestination = destinationOptions.data?.find(
+    (item) => item.login === destination.trim(),
+  );
+  const isNewDestination = destination.trim().length > 0 && !matchedDestination;
   async function create(event: FormEvent) {
     event.preventDefault();
-    await api.POST("/admin/api/imports", {body: {source_url: source}});
+    setImportError(null);
+    if (isNewDestination && !createAs) {
+      setImportError(
+        "Choose whether to create this as a new user or organization.",
+      );
+      return;
+    }
+    const body: Record<string, unknown> = {source_url: source};
+    if (destination.trim()) body.owner_login = destination.trim();
+    if (isNewDestination) body.create_as = createAs;
+    const {data, response} = await api.POST("/admin/api/imports", {body});
+    if (!response.ok || !data) {
+      setImportError("Could not start the import.");
+      return;
+    }
     setSource("");
+    setDestination("");
+    setCreateAs("");
     values.reload();
+    destinationOptions.reload();
   }
   return (
     <>
       <h1>Repository imports</h1>
-      <form className="inline-editor" onSubmit={(event) => void create(event)}>
-        <input
-          required
-          placeholder="https://github.com/owner/repository"
-          value={source}
-          onChange={(event) => setSource(event.target.value)}
-        />
+      {destinationOptions.error ? (
+        <p className="flash-error">{destinationOptions.error}</p>
+      ) : null}
+      {importError ? <p className="flash-error">{importError}</p> : null}
+      <form
+        className="inline-editor import-editor"
+        onSubmit={(event) => void create(event)}
+      >
+        <label className="searchable-field import-url-field">
+          <span>Repository URL</span>
+          <input
+            required
+            placeholder="https://github.com/owner/repository"
+            value={source}
+            onChange={(event) => setSource(event.target.value)}
+          />
+        </label>
+        <label className="searchable-field">
+          <span>Import into</span>
+          <input
+            autoComplete="off"
+            list="import-destinations"
+            placeholder="Your account"
+            value={destination}
+            onChange={(event) => {
+              setDestination(event.target.value);
+              setCreateAs("");
+              setImportError(null);
+            }}
+          />
+        </label>
+        <datalist id="import-destinations">
+          {destinationOptions.data?.map((item) => (
+            <option key={`${item.kind}:${item.login}`} value={item.login}>
+              {item.kind}
+            </option>
+          ))}
+        </datalist>
+        {isNewDestination ? (
+          <label className="searchable-field">
+            <span>Create as</span>
+            <select
+              required
+              value={createAs}
+              onChange={(event) =>
+                setCreateAs(event.target.value as "" | "User" | "Organization")
+              }
+            >
+              <option value="">New account type...</option>
+              <option value="User">New user</option>
+              <option value="Organization">New organization</option>
+            </select>
+          </label>
+        ) : null}
         <button className="button">Start import</button>
       </form>
       <AdminList

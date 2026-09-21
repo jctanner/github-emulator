@@ -19,6 +19,7 @@ from app.database_retry import commit_with_sqlite_retry
 from app.git.bare_repo import get_branches as get_disk_branches, get_default_branch, get_repo_size_kb
 from app.models.branch import Branch
 from app.models.import_job import ImportJob
+from app.models.organization import Organization
 from app.models.repository import Repository
 from app.models.user import User
 
@@ -50,6 +51,8 @@ async def start_single_import(
         source_url=source_url,
         repo_name=repo_name,
         owner_id=owner_id,
+        owner_type=owner_type,
+        org_login=org_login,
     )
     db.add(job)
     await commit_with_sqlite_retry(
@@ -73,6 +76,8 @@ async def start_bulk_import(
         status="running",
         source_url=f"https://github.com/{github_name}",
         owner_id=owner_id,
+        owner_type=owner_type,
+        org_login=org_login,
     )
     db.add(job)
     await db.commit()
@@ -176,6 +181,8 @@ async def _do_bulk_import(
                     source_url=clone_url,
                     repo_name=repo_name,
                     owner_id=owner_id,
+                    owner_type=owner_type,
+                    org_login=org_login,
                     parent_job_id=parent_job_id,
                 )
                 db.add(child)
@@ -218,11 +225,32 @@ async def _do_single_import(
             job.status = "running"
             await db.commit()
 
-            # Load the target user
+            # Load the acting user (the account performing the import; for an
+            # organization-owned import this is not the destination namespace)
             result = await db.execute(
                 select(User).where(User.id == owner_id)
             )
             owner = result.scalar_one()
+
+            # Resolve the destination organization, if importing into one
+            organization_id = None
+            if owner_type == "Organization" and org_login:
+                org_result = await db.execute(
+                    select(Organization).where(Organization.login == org_login)
+                )
+                organization = org_result.scalar_one_or_none()
+                if organization is None:
+                    result = await db.execute(
+                        select(ImportJob).where(ImportJob.id == job_id)
+                    )
+                    job = result.scalar_one()
+                    job.status = "failed"
+                    job.error_message = f"Organization '{org_login}' does not exist."
+                    job.completed_at = datetime.now(timezone.utc)
+                    await db.commit()
+                    await _maybe_complete_parent(db, job.parent_job_id)
+                    return
+                organization_id = organization.id
 
             # Extract repo name
             _, repo_name = parse_github_url(source_url)
@@ -286,6 +314,7 @@ async def _do_single_import(
             # Create Repository record
             repo = Repository(
                 owner_id=owner.id,
+                organization_id=organization_id,
                 owner_type=owner_type,
                 name=repo_name,
                 full_name=full_name,

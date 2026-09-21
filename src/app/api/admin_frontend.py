@@ -1,5 +1,7 @@
 """Site-admin API consumed by the API-client frontend."""
 
+import secrets
+
 from fastapi import APIRouter, HTTPException, Response
 from sqlalchemy import func, select
 
@@ -53,7 +55,41 @@ def _runner(value: Runner) -> dict:
 
 
 def _import(value: ImportJob) -> dict:
-    return {"id": value.id, "job_type": value.job_type, "status": value.status, "source_url": value.source_url, "repo_name": value.repo_name, "owner": value.owner.login, "error_message": value.error_message, "repo_count": value.repo_count, "completed_count": value.completed_count, "created_at": _fmt_dt(value.created_at), "completed_at": _fmt_dt(value.completed_at)}
+    owner = value.org_login if value.owner_type == "Organization" and value.org_login else value.owner.login
+    return {"id": value.id, "job_type": value.job_type, "status": value.status, "source_url": value.source_url, "repo_name": value.repo_name, "owner": owner, "error_message": value.error_message, "repo_count": value.repo_count, "completed_count": value.completed_count, "created_at": _fmt_dt(value.created_at), "completed_at": _fmt_dt(value.completed_at)}
+
+
+async def _resolve_import_destination(db: DbSession, user: User, body: dict) -> tuple[int, str, str | None]:
+    """Resolve the (owner_id, owner_type, org_login) an import should target.
+
+    ``owner_id`` is always a ``users.id`` (the acting admin, unless the
+    destination is a User account, in which case it's that account) — see
+    ``repo_service.create_repo`` for the same convention. Auto-creates a new
+    User or Organization when ``owner_login`` names one that doesn't exist
+    yet and ``create_as`` says which kind to create.
+    """
+    owner_login = str(body.get("owner_login") or "").strip()
+    if not owner_login:
+        return user.id, "User", None
+
+    existing_user = (await db.execute(select(User).where(User.login == owner_login))).scalar_one_or_none()
+    if existing_user is not None:
+        return existing_user.id, "User", None
+
+    existing_org = (await db.execute(select(Organization).where(Organization.login == owner_login))).scalar_one_or_none()
+    if existing_org is not None:
+        return user.id, "Organization", existing_org.login
+
+    create_as = str(body.get("create_as") or "").strip()
+    if create_as == "User":
+        new_user = await create_user(db, owner_login, secrets.token_urlsafe(24))
+        return new_user.id, "User", None
+    if create_as == "Organization":
+        new_org = Organization(login=owner_login)
+        db.add(new_org); await db.commit(); await db.refresh(new_org)
+        return user.id, "Organization", new_org.login
+
+    raise HTTPException(status_code=422, detail=f"Unknown user or organization '{owner_login}'")
 
 
 @router.get("/summary", response_model=AdminSummaryResponse)
@@ -187,9 +223,9 @@ async def imports(user: AuthUser, db: DbSession):
 async def add_import(body: dict, user: AuthUser, db: DbSession):
     _require_admin(user)
     source = str(body.get("source_url") or "").strip()
-    owner_id = int(body.get("owner_id") or user.id)
     if not source: raise HTTPException(status_code=422, detail="source_url is required")
-    value = await start_single_import(db, source, owner_id, body.get("token"))
+    owner_id, owner_type, org_login = await _resolve_import_destination(db, user, body)
+    value = await start_single_import(db, source, owner_id, body.get("token"), owner_type, org_login)
     return _import(value)
 
 

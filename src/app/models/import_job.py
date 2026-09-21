@@ -15,6 +15,8 @@ class ImportJob(Base):
     source_url: Mapped[str | None] = mapped_column(String, nullable=True)
     repo_name: Mapped[str | None] = mapped_column(String, nullable=True)
     owner_id: Mapped[int] = mapped_column(Integer, ForeignKey("users.id"), nullable=False)
+    owner_type: Mapped[str] = mapped_column(String, default="User")  # "User" or "Organization"
+    org_login: Mapped[str | None] = mapped_column(String, nullable=True)
     parent_job_id: Mapped[int | None] = mapped_column(
         Integer, ForeignKey("import_jobs.id"), nullable=True
     )

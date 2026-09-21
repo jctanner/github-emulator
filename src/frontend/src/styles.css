@@ -925,6 +925,21 @@ a:hover {
   height: 39px;
 }
 
+.import-editor {
+  align-items: flex-end;
+}
+
+.import-editor .searchable-field > input,
+.import-editor .searchable-field > select,
+.import-editor > .button {
+  box-sizing: border-box;
+  height: 39px;
+}
+
+.import-url-field {
+  flex: 1 1 auto;
+}
+
 .app-registration-trigger {
   margin: 16px 0;
 }

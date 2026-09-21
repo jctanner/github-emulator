@@ -1,10 +1,13 @@
 """Contracts for the API-client site-administration surface."""
 
 import pytest
-from sqlalchemy import event
+from sqlalchemy import event, select
 
+from app.models.import_job import ImportJob
 from app.models.issue import Issue
+from app.models.organization import Organization
 from app.models.pull_request import PullRequest
+from app.models.user import User
 
 from tests.conftest import auth_headers
 
@@ -48,6 +51,128 @@ async def test_admin_user_and_organization_lifecycle(client, admin_token):
             f"/admin/api/users/{user.json()['id']}", headers=headers
         )
     ).status_code == 204
+
+
+@pytest.mark.asyncio
+async def test_admin_import_defaults_to_acting_admin(client, admin_token, admin_user):
+    response = await client.post(
+        "/admin/api/imports",
+        json={"source_url": "https://github.com/octocat/hello-world"},
+        headers=auth_headers(admin_token),
+    )
+    assert response.status_code == 201
+    assert response.json()["owner"] == admin_user.login
+
+
+@pytest.mark.asyncio
+async def test_admin_import_targets_existing_user(
+    client, admin_token, test_user, db_session
+):
+    response = await client.post(
+        "/admin/api/imports",
+        json={
+            "source_url": "https://github.com/octocat/hello-world",
+            "owner_login": test_user.login,
+        },
+        headers=auth_headers(admin_token),
+    )
+    assert response.status_code == 201
+    assert response.json()["owner"] == test_user.login
+    job = (
+        await db_session.execute(
+            select(ImportJob).where(ImportJob.id == response.json()["id"])
+        )
+    ).scalar_one()
+    assert job.owner_id == test_user.id
+    assert job.owner_type == "User"
+
+
+@pytest.mark.asyncio
+async def test_admin_import_targets_existing_organization(
+    client, admin_token, admin_user, db_session
+):
+    org = Organization(login="acme-corp")
+    db_session.add(org)
+    await db_session.commit()
+    await db_session.refresh(org)
+
+    response = await client.post(
+        "/admin/api/imports",
+        json={
+            "source_url": "https://github.com/octocat/hello-world",
+            "owner_login": "acme-corp",
+        },
+        headers=auth_headers(admin_token),
+    )
+    assert response.status_code == 201
+    assert response.json()["owner"] == "acme-corp"
+    job = (
+        await db_session.execute(
+            select(ImportJob).where(ImportJob.id == response.json()["id"])
+        )
+    ).scalar_one()
+    assert job.owner_id == admin_user.id
+    assert job.owner_type == "Organization"
+    assert job.org_login == "acme-corp"
+
+
+@pytest.mark.asyncio
+async def test_admin_import_unknown_destination_requires_create_as(
+    client, admin_token
+):
+    response = await client.post(
+        "/admin/api/imports",
+        json={
+            "source_url": "https://github.com/octocat/hello-world",
+            "owner_login": "does-not-exist-yet",
+        },
+        headers=auth_headers(admin_token),
+    )
+    assert response.status_code == 422
+
+
+@pytest.mark.asyncio
+async def test_admin_import_auto_creates_new_user(client, admin_token, db_session):
+    response = await client.post(
+        "/admin/api/imports",
+        json={
+            "source_url": "https://github.com/octocat/hello-world",
+            "owner_login": "brand-new-user",
+            "create_as": "User",
+        },
+        headers=auth_headers(admin_token),
+    )
+    assert response.status_code == 201
+    assert response.json()["owner"] == "brand-new-user"
+    created = (
+        await db_session.execute(
+            select(User).where(User.login == "brand-new-user")
+        )
+    ).scalar_one()
+    assert created.type == "User"
+
+
+@pytest.mark.asyncio
+async def test_admin_import_auto_creates_new_organization(
+    client, admin_token, db_session
+):
+    response = await client.post(
+        "/admin/api/imports",
+        json={
+            "source_url": "https://github.com/octocat/hello-world",
+            "owner_login": "brand-new-org",
+            "create_as": "Organization",
+        },
+        headers=auth_headers(admin_token),
+    )
+    assert response.status_code == 201
+    assert response.json()["owner"] == "brand-new-org"
+    created = (
+        await db_session.execute(
+            select(Organization).where(Organization.login == "brand-new-org")
+        )
+    ).scalar_one()
+    assert created.login == "brand-new-org"
 
 
 @pytest.mark.asyncio

@@ -270,6 +270,12 @@ def create_app() -> FastAPI:
     app.include_router(pipelines_router)
     app.include_router(dt_router)
 
+    # -- Raw file content, as an enterprise host serves it ---------------------
+    # Registered before the git transport because both claim /{owner}/{repo}/*
+    # and this one is the more specific pattern.
+    from app.api.raw_content import router as raw_router
+    app.include_router(raw_router)
+
     # -- Git Smart HTTP protocol handler --------------------------------------
     from app.git.smart_http import router as git_router
     app.include_router(git_router, tags=["git"])
