@@ -48,7 +48,10 @@ class EventEnvelope:
 
 from app.services.workflow_expressions import (
     _EXPRESSION_RE,
+    _ExpressionError,
+    _IfExpressionParser,
     _lookup_context,
+    bind_server_context,
     evaluate_job_if,
     render_expressions,
 )
@@ -96,8 +99,23 @@ from app.services.workflow_triggers import evaluate_trigger
 
 def expand_matrix(job_config: dict) -> list[dict]:
     """Expand strategy.matrix into individual job configurations."""
-    strategy = job_config.get("strategy", {})
-    matrix = dict(strategy.get("matrix", {}) or {})
+    strategy = job_config.get("strategy", {}) or {}
+    if not isinstance(strategy, dict):
+        return [job_config]
+    raw_matrix = strategy.get("matrix", {}) or {}
+    if not isinstance(raw_matrix, dict):
+        # A dynamic matrix (``matrix: ${{ fromJSON(...) }}``) is a string here,
+        # because strategy blocks are not rendered before expansion and the
+        # value may depend on a job that has not run yet. Treat the job as a
+        # single job rather than failing the whole event dispatch: dict() on a
+        # string raises, which previously surfaced as a 500 on the API call
+        # that triggered the workflow.
+        logger.warning(
+            "Unsupported dynamic matrix for job %s; running it as a single job",
+            job_config.get("key", "<unknown>"),
+        )
+        return [job_config]
+    matrix = dict(raw_matrix)
     if not matrix:
         return [job_config]
 
@@ -142,6 +160,14 @@ def build_job_graph(workflow_yaml: dict) -> list[dict]:
     if not jobs_config:
         return []
 
+    # A workflow-level ``permissions:`` block applies to every job that does
+    # not declare its own; a job's own block replaces it outright rather than
+    # merging, which is what GitHub does. Reading only the job level meant a
+    # workflow that scoped its token once at the top was recorded as declaring
+    # nothing, so an id-token request was refused and every scope check saw an
+    # empty grant.
+    workflow_permissions = workflow_yaml.get("permissions")
+
     jobs = []
     for key, config in jobs_config.items():
         if not isinstance(config, dict):
@@ -167,8 +193,19 @@ def build_job_graph(workflow_yaml: dict) -> list[dict]:
             "uses": config.get("uses"),
             "env": config.get("env", {}),
             "strategy": config.get("strategy", {}),
-            "permissions": config.get("permissions", {}),
+            "permissions": (
+                config["permissions"]
+                if "permissions" in config
+                else workflow_permissions
+                if workflow_permissions is not None
+                else {}
+            ),
             "if": config.get("if"),
+            "outputs": config.get("outputs", {}),
+            "_call_inputs": config.get("_call_inputs", {}),
+            "_call_secrets": config.get("_call_secrets", {}),
+            "_workflow_repository": config.get("_workflow_repository", ""),
+            "_workflow_sha": config.get("_workflow_sha", ""),
             "timeout_minutes": config.get("timeout-minutes", 360),
         })
 
@@ -176,6 +213,37 @@ def build_job_graph(workflow_yaml: dict) -> list[dict]:
 
 
 _MAX_REUSABLE_WORKFLOW_DEPTH = 8
+
+# A single context path such as ``inputs.mint_url``: letters, digits, dots,
+# dashes and underscores only, with no operators, quotes, or calls.
+_BARE_CONTEXT_PATH_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_.-]*")
+
+
+def _condition_body(condition: object) -> str:
+    """Return a condition's expression text without its ``${{ }}`` wrapper."""
+    text = str(condition).strip()
+    if text.startswith("${{") and text.endswith("}}"):
+        return text[3:-2].strip()
+    return text
+
+
+def _combine_conditions(caller_condition: object, child_condition: object) -> str:
+    """AND a caller job's condition into an inlined child job's condition.
+
+    Both sides are unwrapped first. Concatenating them with their wrappers
+    intact produced ``(...) && (${{ ... }})``, where the inner marker sits
+    mid-expression and cannot be parsed, so the combined condition failed and
+    the job was silently skipped.
+    """
+    caller_text = _condition_body(caller_condition)
+    if child_condition is None:
+        return caller_text
+    child_text = _condition_body(child_condition)
+    if not child_text:
+        return caller_text
+    if not caller_text:
+        return child_text
+    return f"({caller_text}) && ({child_text})"
 
 
 def _render_reusable_call_context(value: object, inputs: dict, secrets: dict) -> object:
@@ -189,6 +257,14 @@ def _render_reusable_call_context(value: object, inputs: dict, secrets: dict) ->
     if isinstance(value, str):
         def replace(match):
             expression = match.group(1).strip()
+            # Only a bare path may be substituted lexically. A compound
+            # expression such as ``inputs.matrix == ''`` merely starts with
+            # "inputs." and must survive for the real evaluator, which reads
+            # these values from the job's expression context. Rewriting it as a
+            # path lookup yielded an empty string, which made the condition
+            # unparseable and silently skipped the job.
+            if not _BARE_CONTEXT_PATH_RE.fullmatch(expression):
+                return match.group(0)
             if expression.startswith("inputs."):
                 return _lookup_context({"inputs": inputs}, expression)
             if expression.startswith("secrets."):
@@ -211,7 +287,7 @@ async def _resolve_reusable_workflow(
     repo_disk_path: str,
     ref: str,
     db: AsyncSession | None,
-) -> tuple[dict | None, str, str, str]:
+) -> tuple[dict | None, str, str, str, str]:
     """Resolve a local or imported reusable workflow reference."""
     if "@" in uses:
         reference, called_ref = uses.rsplit("@", 1)
@@ -220,10 +296,11 @@ async def _resolve_reusable_workflow(
         # ``./.github/workflows/workflow.yml`` and intentionally has no ref.
         # It is resolved from the same repository and the caller's ref.
         if not uses.startswith("./"):
-            return None, repo_disk_path, ref, uses
+            return None, repo_disk_path, ref, uses, ""
         reference, called_ref = uses, ref
     called_ref = called_ref or ref
     called_repo_path = repo_disk_path
+    called_full_name = ""
     workflow_path = reference
 
     if reference.startswith("./"):
@@ -233,7 +310,7 @@ async def _resolve_reusable_workflow(
         # components because Fullsend's repository is named ``.fullsend``.
         parts = reference.split("/", 2)
         if len(parts) != 3:
-            return None, repo_disk_path, called_ref, uses
+            return None, repo_disk_path, called_ref, uses, ""
         called_owner, called_repo, workflow_path = parts
         repo_result = await db.execute(
             select(Repository).where(
@@ -242,8 +319,9 @@ async def _resolve_reusable_workflow(
         )
         called_repository = repo_result.scalar_one_or_none()
         if called_repository is None or not called_repository.disk_path:
-            return None, repo_disk_path, called_ref, uses
+            return None, repo_disk_path, called_ref, uses, ""
         called_repo_path = called_repository.disk_path
+        called_full_name = called_repository.full_name
 
     called_files = await detect_workflows(called_repo_path, called_ref)
     called = next(
@@ -251,7 +329,21 @@ async def _resolve_reusable_workflow(
          if candidate.get("_path") == workflow_path),
         None,
     )
-    return called, called_repo_path, called_ref, uses
+    return called, called_repo_path, called_ref, uses, called_full_name
+
+
+async def _resolve_ref_sha(repo_disk_path: str, ref: str) -> str:
+    """Resolve a ref to its commit sha inside a bare repository."""
+    proc = await asyncio.create_subprocess_exec(
+        "git", "rev-parse", ref,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+        env={"GIT_DIR": repo_disk_path},
+    )
+    stdout, _ = await proc.communicate()
+    if proc.returncode != 0:
+        return ""
+    return stdout.decode().strip()
 
 
 async def _materialize_reusable_jobs(
@@ -284,8 +376,8 @@ async def _materialize_reusable_jobs(
             expanded[key] = placeholder
             continue
 
-        called, called_repo_path, called_ref, _ = await _resolve_reusable_workflow(
-            uses, repo_disk_path, ref, db
+        called, called_repo_path, called_ref, _, called_full_name = (
+            await _resolve_reusable_workflow(uses, repo_disk_path, ref, db)
         )
         if called is None or not isinstance(called.get("jobs"), dict):
             # Keep unresolved calls inspectable and non-successful rather than
@@ -313,6 +405,7 @@ async def _materialize_reusable_jobs(
             depth=depth + 1,
             ancestry=(*ancestry, uses),
         )
+        called_sha = await _resolve_ref_sha(called_repo_path, called_ref)
         called_jobs = materialized.get("jobs", {})
         called_keys = set(called_jobs)
         prefix = f"{key} / "
@@ -322,15 +415,21 @@ async def _materialize_reusable_jobs(
             caller_condition = config.get("if")
             child_condition = child.get("if")
             if caller_condition is not None:
-                child["if"] = (
-                    caller_condition
-                    if child_condition is None
-                    else f"({caller_condition}) && ({child_condition})"
-                )
+                child["if"] = _combine_conditions(caller_condition, child_condition)
             child["env"] = {
                 **(materialized.get("env") or {}),
                 **(child.get("env") or {}),
             }
+            # Compound expressions (``inputs.matrix == ''``) are not
+            # substituted lexically, so the called workflow's inputs and
+            # secrets travel with the job and enter its expression context.
+            child["_call_inputs"] = {**call_inputs, **(child.get("_call_inputs") or {})}
+            child["_call_secrets"] = {**call_secrets, **(child.get("_call_secrets") or {})}
+            # Where this job's workflow actually came from. The stage jobs check
+            # out their upstream defaults at exactly this repo and commit, which
+            # is how ADR 0062 keeps the dispatch and its defaults in step.
+            child.setdefault("_workflow_repository", called_full_name)
+            child.setdefault("_workflow_sha", called_sha)
             child_needs = child.get("needs", [])
             if isinstance(child_needs, str):
                 child_needs = [child_needs]
@@ -377,6 +476,187 @@ async def materialize_reusable_workflows(
         depth=0,
         ancestry=(),
     )
+
+
+def _job_context(base_context: dict, job_config: dict) -> dict:
+    """Build a job's expression context, layering any reusable-call values.
+
+    A reusable call's ``with:`` values are written in the caller's terms
+    (``event_action: ${{ github.event.action }}``), so they are rendered
+    against the caller's context here. Leaving them unrendered made
+    ``inputs.event_action`` the literal expression text.
+    """
+    github = base_context.get("github") or {}
+    context = {
+        **base_context,
+        "matrix": job_config.get("_matrix", {}),
+        # A job executing an inlined reusable workflow reports that workflow's
+        # repository and commit; a job defined in this repository reports its
+        # own. Stage jobs read these to check out their upstream defaults at
+        # exactly the revision the dispatch came from.
+        "job": {
+            "workflow_repository": job_config.get("_workflow_repository")
+            or github.get("repository", ""),
+            "workflow_sha": job_config.get("_workflow_sha") or github.get("sha", ""),
+        },
+    }
+    call_inputs = job_config.get("_call_inputs") or {}
+    call_secrets = job_config.get("_call_secrets") or {}
+    if call_inputs:
+        rendered_inputs = render_expressions(call_inputs, context)
+        context["inputs"] = {**(base_context.get("inputs") or {}), **rendered_inputs}
+    if call_secrets:
+        rendered_secrets = render_expressions(call_secrets, context)
+        context["secrets"] = {**(base_context.get("secrets") or {}), **rendered_secrets}
+    return context
+
+
+# Step conditions that depend on runtime state stay with the runner; everything
+# else is decided server-side, where the full expression context exists.
+# hashFiles reads the job workspace, which only the runner can see, so it
+# belongs with the other runtime-dependent forms.
+_RUNTIME_CONDITION_RE = re.compile(
+    r"\bsteps\.|\bsuccess\s*\(|\bfailure\s*\(|\bcancelled\s*\(|\balways\s*\("
+    r"|\bhashFiles\s*\("
+)
+
+
+def _resolve_step_condition(condition: object, context: dict) -> object:
+    """Pre-evaluate a step ``if`` unless it depends on runtime state.
+
+    The runner can only resolve ``steps.*``; every other path evaluates to the
+    empty string there, so a guard such as ``inputs.event_action == ''`` was
+    always true and fired incorrectly. Conditions the server can decide are
+    reduced to a literal the runner understands.
+    """
+    text = _condition_body(condition)
+    if not text:
+        return condition
+    if _RUNTIME_CONDITION_RE.search(text):
+        # Mixed conditions are common: a step may gate on both a prior step's
+        # output and the event context. Bind what is known here so the runner
+        # receives an expression it can finish, rather than one it must fail on.
+        return bind_server_context(text, context)
+    try:
+        decided = _IfExpressionParser(text, context).parse()
+    except _ExpressionError:
+        # Not decidable here. Hand it to the runner rather than defaulting:
+        # resolving an unevaluable condition to false silently drops the step,
+        # which is how the upstream-defaults checkout disappeared.
+        return condition
+    return "true" if decided else "false"
+
+
+def build_steps_data(steps: list, job_env: dict, context: dict) -> list[dict]:
+    """Render a job's steps into the stored step records."""
+    steps_data = []
+    for i, step in enumerate(steps or []):
+        if not isinstance(step, dict):
+            continue
+        step_env = {**(job_env or {}), **(step.get("env") or {})}
+        step_data = {
+            "number": i + 1,
+            "name": step.get("name", f"Step {i + 1}"),
+            "status": "queued",
+            "conclusion": None,
+        }
+        if "if" in step:
+            # Conditions that read a prior step's outputs must stay intact for
+            # the runner; the rest are decided here, where the full context is
+            # available.
+            step_data["if"] = _resolve_step_condition(step["if"], context)
+        for key in ("run", "shell", "working-directory", "uses", "with"):
+            if key in step:
+                step_data[key] = render_expressions(step[key], context)
+        if "id" in step:
+            step_data["id"] = step["id"]
+        if step_env:
+            step_data["env"] = render_expressions(step_env, context)
+        steps_data.append(step_data)
+    return steps_data
+
+
+def resolve_job_outputs(outputs_config: dict, step_outputs: dict) -> dict:
+    """Resolve a job's ``outputs:`` mapping against its step outputs."""
+    if not isinstance(outputs_config, dict) or not outputs_config:
+        return {}
+    # The runner reports {step_id: {name: value}}, while expressions address
+    # steps.<id>.outputs.<name>, so insert the intermediate "outputs" level.
+    context = {
+        "steps": {
+            str(step_id): {"outputs": values or {}}
+            for step_id, values in (step_outputs or {}).items()
+        }
+    }
+    resolved = {}
+    for name, template in outputs_config.items():
+        rendered = render_expressions(template, context, resolve_steps=True)
+        resolved[str(name)] = "" if rendered is None else str(rendered)
+    return resolved
+
+
+async def build_run_expression_context(db, run) -> dict:
+    """Rebuild the base expression context for an existing run.
+
+    Job promotion happens long after the run was created, so the context is
+    derived again from the stored trigger payload and the repository's current
+    variables and secrets rather than being persisted with the run.
+    """
+    payload = run.trigger_payload or {}
+    variables = {
+        item.name: item.value
+        for item in (await db.execute(
+            select(Variable).where(Variable.repo_id == run.repo_id)
+        )).scalars().all()
+    }
+    secrets = {
+        item.name: item.value or ""
+        for item in (await db.execute(
+            select(Secret).where(Secret.repo_id == run.repo_id)
+        )).scalars().all()
+    }
+    repository = payload.get("repository", {}).get("full_name", "")
+    return {
+        "inputs": payload.get("inputs", {}),
+        "vars": variables,
+        "secrets": secrets,
+        "github": {
+            "event_name": run.event,
+            "event": payload,
+            "ref": payload.get("ref", f"refs/heads/{run.head_branch}"),
+            "repository": repository,
+            "repository_owner": repository.split("/", 1)[0],
+            "run_id": run.id,
+            "run_number": run.run_number,
+            "sha": run.head_sha,
+            "server_url": settings.BASE_URL,
+        },
+    }
+
+
+def build_needs_context(jobs) -> dict:
+    """Build the ``needs`` context from completed jobs, keyed by YAML job key.
+
+    Inlining a reusable workflow prefixes its job keys with the calling job
+    (``route`` becomes ``dispatch / route``) and remaps ``needs:`` to match.
+    The called workflow's own expressions still say ``needs.route``, though,
+    because that is its name for the job. Each job is therefore registered
+    under both its prefixed key and its original one; without the latter,
+    every stage condition read an empty stage and skipped.
+    """
+    context = {}
+    for job in jobs:
+        key = job.job_key or job.name
+        entry = {
+            "outputs": job.outputs or {},
+            "result": job.conclusion or "",
+        }
+        context[key] = entry
+        bare_key = key.rsplit(" / ", 1)[-1]
+        # A prefixed key wins over a bare alias if both somehow exist.
+        if bare_key != key and bare_key not in context:
+            context[bare_key] = entry
+    return context
 
 
 def _topo_sort(jobs: list[dict]) -> list[dict]:
@@ -535,36 +815,34 @@ async def create_workflow_run(
     for job_def in job_list:
         expanded = expand_matrix(job_def)
         for job_config in expanded:
-            job_expression_context = {**expression_context, "matrix": job_config.get("_matrix", {})}
+            job_expression_context = _job_context(expression_context, job_config)
             display_name = render_expressions(job_config.get("_display_name", job_config.get("name", job_config["key"])), job_expression_context)
             needs = job_config.get("needs", [])
             initial_status = "queued" if not needs else "waiting"
             should_run = evaluate_job_if(job_config.get("if"), job_expression_context)
 
-            steps_data = []
-            for i, step in enumerate(job_config.get("steps", [])):
-                step_env = {
-                    **(job_config.get("env") or {}),
-                    **(step.get("env") or {}),
+            steps_data = build_steps_data(
+                job_config.get("steps", []),
+                job_config.get("env") or {},
+                job_expression_context,
+            )
+
+            # A job with dependencies cannot be evaluated yet: its condition and
+            # steps may read needs.<job>.outputs.*, which only exist once those
+            # jobs finish. Hold the unrendered form and resolve it at promotion.
+            pending_render = None
+            if needs:
+                pending_render = {
+                    "if": job_config.get("if"),
+                    "steps": job_config.get("steps", []),
+                    "env": job_config.get("env") or {},
+                    "matrix": job_config.get("_matrix", {}),
+                    "_call_inputs": job_config.get("_call_inputs") or {},
+                    "_call_secrets": job_config.get("_call_secrets") or {},
+                    "_workflow_repository": job_config.get("_workflow_repository") or "",
+                    "_workflow_sha": job_config.get("_workflow_sha") or "",
                 }
-                step_data = {
-                    "number": i + 1,
-                    "name": step.get("name", f"Step {i + 1}"),
-                    "status": "queued",
-                    "conclusion": None,
-                }
-                if "if" in step:
-                    # Keep step conditions intact: expressions may depend on
-                    # outputs produced later by an earlier runner step.
-                    step_data["if"] = step["if"]
-                for key in ("run", "shell", "working-directory", "uses", "with"):
-                    if key in step:
-                        step_data[key] = render_expressions(step[key], job_expression_context)
-                if "id" in step:
-                    step_data["id"] = step["id"]
-                if step_env:
-                    step_data["env"] = render_expressions(step_env, job_expression_context)
-                steps_data.append(step_data)
+                should_run = True
 
             conclusion = None
             completed_at = None
@@ -590,6 +868,10 @@ async def create_workflow_run(
                 run_attempt=1,
                 needs=needs,
                 permissions=job_config.get("permissions") or {},
+                job_key=job_config.get("key"),
+                outputs_config=job_config.get("outputs") or {},
+                outputs={},
+                pending_render=pending_render,
             )
             db.add(job)
 
@@ -903,20 +1185,38 @@ async def process_push_event(
     # A push to a pull request's head branch is the source of the
     # pull_request_target ``synchronize`` activity.  The base branch is the
     # checkout/ref used for the resulting run.
+    #
+    # Only an *open* pull request synchronizes. Without the state filter a push
+    # to a branch that any historical pull request was once opened from raises
+    # synchronize activity for every one of them, including merged and closed
+    # ones. A repository whose default branch has ever been a pull request head
+    # then dispatches a stale run on every push to it.
     result = await db.execute(
         select(PullRequest)
         .join(Issue, PullRequest.issue_id == Issue.id)
-        .where(PullRequest.repo_id == repository.id, PullRequest.head_ref == head_branch)
+        .where(
+            PullRequest.repo_id == repository.id,
+            PullRequest.head_ref == head_branch,
+            Issue.state == "open",
+            PullRequest.merged.is_(False),
+        )
     )
     for pr in result.scalars().all():
         issue = pr.issue
+        # ``base_sha`` is the base commit recorded when the pull request was
+        # opened. GitHub runs pull_request_target against the base branch as it
+        # is *now*, which is the whole point of the event: it runs the base
+        # branch's own workflow code. Using the stored value stamps the run
+        # with a commit the branch may have moved far past, and a checkout of
+        # it then asks the git transport for an object no ref points at.
+        base_sha = await get_ref_sha(repository.disk_path, pr.base_ref) or pr.base_sha
         pr_payload = build_activity_payload(
             repository, user, "synchronize", issue=issue,
-            pull_request=pr, ref=f"refs/heads/{pr.base_ref}", sha=pr.base_sha,
+            pull_request=pr, ref=f"refs/heads/{pr.base_ref}", sha=base_sha,
         )
         runs.extend(await dispatch_event(
             db, repository, user, "pull_request_target", "synchronize",
-            pr_payload, ref=pr.base_ref, sha=pr.base_sha,
+            pr_payload, ref=pr.base_ref, sha=base_sha,
         ))
     return runs
 
@@ -961,7 +1261,16 @@ async def _get_changed_files_between(
 
 
 async def get_ref_sha(repo_disk_path: str, ref: str) -> str:
-    """Resolve a branch/ref in a bare repository to a commit SHA."""
+    """Resolve a branch/ref in a bare repository to a commit SHA.
+
+    A bare name is looked up as a branch first. ``git rev-parse main`` is
+    ambiguous when a tag shares the name, and resolving a branch event to a
+    tag's commit is not a failure anything downstream would report.
+    """
+    if not ref.startswith(("refs/", "HEAD")):
+        branch = await _resolve_ref_sha(repo_disk_path, f"refs/heads/{ref}^{{commit}}")
+        if branch:
+            return branch
     proc = await asyncio.create_subprocess_exec(
         "git", "rev-parse", f"{ref}^{{commit}}",
         stdout=asyncio.subprocess.PIPE,

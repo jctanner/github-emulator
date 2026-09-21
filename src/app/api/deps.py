@@ -11,6 +11,7 @@ from app.database import get_db
 from app.db_loaders import repository_identity_options, scalar_only_options
 from app.models.user import User
 from app.models.repository import Repository
+from app.services import job_permissions, repository_access
 from app.services.auth_service import (
     get_installation_actor,
     validate_basic_auth,
@@ -33,6 +34,42 @@ from app.services.browser_session_service import (
 async def get_current_user(
     request: Request,
     db: AsyncSession = Depends(get_db),
+) -> Optional[User]:
+    """Extract the authenticated user, and refuse repositories they cannot see.
+
+    Authentication itself is in :func:`_resolve_user`. The repository check is
+    wrapped around every one of its return paths deliberately: the branch that
+    matters most is the unauthenticated one, and a check placed after a single
+    return would have missed it.
+    """
+    user = await _resolve_user(request, db)
+    await _refuse_hidden_repository(request, db, user)
+    return user
+
+
+async def _refuse_hidden_repository(
+    request: Request, db: AsyncSession, user: Optional[User]
+) -> None:
+    """404 a request that names a private repository the caller cannot see.
+
+    Placed at the authentication chokepoint for the same reason the job-token
+    permission check below is: it covers every route without touching them
+    individually. 158 of the 165 repository route handlers already resolve a
+    user, and the seven that do not are runner-protocol endpoints authenticated
+    by a runner token rather than a user credential, which are not repository
+    reads.
+
+    404 rather than 403, because GitHub does not confirm that a private
+    repository exists to someone who cannot see it, and 403 would leak the very
+    fact this hides.
+    """
+    if await repository_access.is_hidden(db, request.url.path, user):
+        raise HTTPException(status_code=404, detail="Not Found")
+
+
+async def _resolve_user(
+    request: Request,
+    db: AsyncSession,
 ) -> Optional[User]:
     """Extract the authenticated user from the request.
 
@@ -107,7 +144,18 @@ async def get_current_user(
     if validated is not None:
         job, run = validated
         request.state.workflow_job = job
-        request.state.workflow_job_permissions = job.permissions or {}
+        request.state.workflow_job_permissions = job.permissions
+        # A job token is scoped by the permissions its job declared. Enforcing
+        # here covers every route without touching them individually, and
+        # applies only to job tokens, so other credentials are unaffected.
+        refusal = job_permissions.check(
+            request.method, request.url.path, job.permissions
+        )
+        if refusal is not None:
+            raise HTTPException(
+                status_code=403,
+                detail=f"Resource not accessible by integration: {refusal}",
+            )
         return run.actor
     return await validate_token(db, token_value)
 
@@ -132,6 +180,10 @@ async def get_repo_or_404(
 ) -> Repository:
     """Resolve *owner/repo* to a :class:`Repository`, or raise 404."""
     full_name = f"{owner}/{repo}"
+    # The visibility check already resolved this row for this request.
+    cached = repository_access.cached_repository(db, full_name)
+    if cached is not None:
+        return cached
     result = await db.execute(
         select(Repository)
         .options(*repository_identity_options())
@@ -140,6 +192,7 @@ async def get_repo_or_404(
     repository = result.scalar_one_or_none()
     if repository is None:
         raise HTTPException(status_code=404, detail="Not Found")
+    repository_access.remember_repository(db, repository)
     return repository
 
 
@@ -148,8 +201,16 @@ async def get_repo_record_or_404(
     repo: str,
     db: AsyncSession,
 ) -> Repository:
-    """Resolve a repository without loading any ORM relationships."""
+    """Resolve a repository without loading any ORM relationships.
+
+    A row the visibility check already loaded is reused. It carries more
+    eagerly-loaded relationships than this function would have asked for, which
+    costs nothing and is the same row either way.
+    """
     full_name = f"{owner}/{repo}"
+    cached = repository_access.cached_repository(db, full_name)
+    if cached is not None:
+        return cached
     result = await db.execute(
         select(Repository)
         .options(*scalar_only_options())
@@ -158,6 +219,7 @@ async def get_repo_record_or_404(
     repository = result.scalar_one_or_none()
     if repository is None:
         raise HTTPException(status_code=404, detail="Not Found")
+    repository_access.remember_repository(db, repository)
     return repository
 
 

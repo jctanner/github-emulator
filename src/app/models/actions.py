@@ -139,6 +139,20 @@ class WorkflowJob(Base):
     run_attempt: Mapped[int] = mapped_column(Integer, default=1)
     needs: Mapped[list | None] = mapped_column(JSON, nullable=True)
     permissions: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    # The YAML job key. ``name`` holds the rendered display name, which may
+    # differ (``name: Route`` under key ``route``) and is not what ``needs:``
+    # entries reference, so dependency resolution keys off this instead.
+    job_key: Mapped[str | None] = mapped_column(String, nullable=True)
+    # Resolved ``outputs:`` for this job, populated when it completes and read
+    # by dependent jobs through the ``needs`` context.
+    outputs: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    # The unrendered ``outputs:`` mapping, resolved against step outputs once
+    # the job finishes.
+    outputs_config: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    # For jobs with dependencies: the unrendered condition and steps, held
+    # until the dependencies complete so they can be rendered with a populated
+    # ``needs`` context.
+    pending_render: Mapped[dict | None] = mapped_column(JSON, nullable=True)
 
     created_at: Mapped[datetime] = mapped_column(
         DateTime, server_default=func.now()

@@ -280,6 +280,44 @@ async def list_installation_repositories(installation_id: int, request: Request,
     return {"total_count": len(repos), "repositories": [{"id": repo.id, "full_name": repo.full_name, "name": repo.name, "private": repo.private} for repo in repos]}
 
 
+@router.get("/installation/repositories")
+async def list_token_installation_repositories(
+    request: Request, db: DbSession, current_user: CurrentUser
+):
+    """List repositories reachable by the installation token making the call.
+
+    GitHub scopes this endpoint to installation access tokens. Clients probe it
+    to decide whether their credential is an installation token, and treat
+    401/403 as "this is an ordinary token" while treating any other status as a
+    hard error. Returning 404 here made that probe fatal for such clients, so a
+    personal access token must be refused with 403 rather than a missing route.
+    """
+    installation_token = getattr(request.state, "installation_token", None)
+    if installation_token is None:
+        raise HTTPException(
+            status_code=403,
+            detail="Resource not accessible by personal access token",
+        )
+
+    full_names = installation_token.repositories or []
+    repos = (
+        await db.execute(select(Repository).where(Repository.full_name.in_(full_names)))
+    ).scalars().all()
+    return {
+        "total_count": len(repos),
+        "repository_selection": "selected" if full_names else "all",
+        "repositories": [
+            {
+                "id": repo.id,
+                "full_name": repo.full_name,
+                "name": repo.name,
+                "private": repo.private,
+            }
+            for repo in repos
+        ],
+    }
+
+
 @router.get("/repos/{owner}/{repo}/installation")
 async def repo_installation(owner: str, repo: str, db: DbSession, current_user: CurrentUser):
     full_name = f"{owner}/{repo}"

@@ -16,7 +16,8 @@ from app.config import settings
 from app.models.actions import EnterpriseRunnerRegistrationToken, Runner, RegistrationToken, WorkflowJob, WorkflowRun
 from app.models.repository import Repository
 from app.services.auth_service import hash_token
-from app.services.workflow_service import check_run_completion, dispatch_ready_jobs
+from app.services.job_token_service import issue_job_token
+from app.services.workflow_service import check_run_completion, dispatch_ready_jobs, resolve_job_outputs
 
 router = APIRouter(tags=["actions-dispatch"])
 
@@ -385,6 +386,15 @@ async def _poll_for_jobs(
                     "job_id": job.id,
                     "run_id": job.run_id,
                     "name": job.name,
+                    # The scoped credential a workflow reaches through
+                    # ${{ github.token }}. Issued at claim time and resolved by
+                    # the runner, so it is never written into the stored steps.
+                    "token": issue_job_token(job),
+                    # The runner needs the declared scopes to decide whether
+                    # this job may request an Actions OIDC token. None means
+                    # the job declared no permissions block at all, which is
+                    # distinct from declaring an empty one.
+                    "permissions": job.permissions,
                     "steps": job.steps or [],
                     "labels": job.labels,
                     "workflow_name": job.workflow_name,
@@ -456,6 +466,12 @@ async def complete_job(
 
     if "steps" in body:
         job.steps = body["steps"]
+
+    # Resolve this job's declared outputs from the step outputs the runner
+    # collected, so dependent jobs can read needs.<job>.outputs.*.
+    step_outputs = body.get("step_outputs")
+    if isinstance(step_outputs, dict):
+        job.outputs = resolve_job_outputs(job.outputs_config or {}, step_outputs)
 
     runner.busy = False
     runner.status = "online"

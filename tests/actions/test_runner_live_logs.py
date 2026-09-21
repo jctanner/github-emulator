@@ -40,7 +40,6 @@ def test_step_if_supports_actions_boolean_subset():
 
 
 def test_runner_uploads_output_before_job_completion(monkeypatch, tmp_path):
-    monkeypatch.setattr(runner_module, "_start_oidc_broker", lambda: None)
     monkeypatch.setattr(runner_module, "WORKDIR", str(tmp_path))
 
     runner = runner_module.RunnerClient()
@@ -51,7 +50,7 @@ def test_runner_uploads_output_before_job_completion(monkeypatch, tmp_path):
     )
     runner._report_progress = lambda repository, job_id, steps: None
     runner._complete_job = (
-        lambda repository, job_id, conclusion, steps: completions.append(
+        lambda repository, job_id, conclusion, steps, step_outputs=None: completions.append(
             time.monotonic()
         )
     )

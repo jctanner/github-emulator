@@ -8,6 +8,7 @@ from typing import Optional
 from fastapi import APIRouter, HTTPException, Query, Request, Response
 from sqlalchemy import select, func as sa_func
 
+from app.services import repository_access
 from app.api.deps import AuthUser, CurrentUser, DbSession
 from app.config import settings
 from app.db_loaders import repository_identity_options
@@ -271,12 +272,12 @@ async def get_repo(owner: str, repo: str, db: DbSession, current_user: CurrentUs
     if repository is None:
         raise HTTPException(status_code=404, detail="Not Found")
 
-    # Private repo access check
-    if repository.private:
-        if current_user is None or (
-            current_user.id != repository.owner_id and not current_user.site_admin
-        ):
-            raise HTTPException(status_code=404, detail="Not Found")
+    # Visibility is enforced for every repository route at the authentication
+    # chokepoint. This endpoint keeps its own call because the check it used to
+    # carry tested ownership alone, which refused collaborators on a private
+    # repository they had been explicitly added to.
+    if not await repository_access.can_read(db, repository, current_user):
+        raise HTTPException(status_code=404, detail="Not Found")
 
     return _repo_json(repository, BASE)
 

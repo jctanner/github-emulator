@@ -51,11 +51,8 @@ async def test_actions_oidc_issuer_exposes_jwks(client):
     keys = await client.get("/.well-known/jwks.json")
     assert keys.status_code == 200
     assert keys.json()["keys"][0]["alg"] == "RS256"
-    token = await client.get(
-        "/actions/oidc/token?audience=fullsend-mint",
-        headers={"Authorization": "Bearer fullsend-action-request"},
-    )
-    assert token.status_code == 200
-    claims = jwt.get_unverified_claims(token.json()["value"])
-    assert claims["iss"] == "http://testserver"
-    assert claims["aud"] == "fullsend-mint"
+    # Issuing a token needs a real job to issue it for; that path lives in
+    # tests/actions/test_oidc_claims.py. What this asserts is that an
+    # unauthenticated caller gets nothing.
+    token = await client.get("/actions/oidc/token?audience=fullsend-mint")
+    assert token.status_code == 401

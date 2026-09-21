@@ -519,6 +519,22 @@ def _job_request_message(
     ref = ref or f"refs/heads/{run.head_branch if run else 'main'}"
     sha = run.head_sha if run else "0" * 40
     workflow_name = job.workflow_name or job.name
+    # Actions OIDC, as the upstream runner sees it. The runner's own plumbing
+    # for these two variables was not reverse-engineered, so they are placed
+    # directly in each step's environment, which is what actually has to hold
+    # them when the step runs. A job that did not declare "id-token: write"
+    # gets neither, matching GitHub.
+    may_mint = job.permissions is None or job.permissions.get("id-token") == "write"
+    oidc_environment = (
+        {
+            "ACTIONS_ID_TOKEN_REQUEST_URL": (
+                f"{runner_base_url}/actions/oidc/token?api-version=2.0"
+            ),
+            "ACTIONS_ID_TOKEN_REQUEST_TOKEN": access_token,
+        }
+        if may_mint
+        else {}
+    )
     body = {
         "messageType": "PipelineAgentJobRequest",
         "jobId": job_guid,
@@ -533,7 +549,10 @@ def _job_request_message(
         "timeline": {
             "id": timeline_id,
         },
-        "steps": [_job_step_message(job, step) for step in (job.steps or [])],
+        "steps": [
+            _job_step_message(job, step, oidc_environment)
+            for step in (job.steps or [])
+        ],
         "variables": {
             "system.github.token": _variable(access_token, is_secret=True),
             "system.github.job": _variable(job.name),
@@ -607,7 +626,9 @@ def _job_request_message(
     }
 
 
-def _job_step_message(job: WorkflowJob, step: dict) -> dict:
+def _job_step_message(
+    job: WorkflowJob, step: dict, extra_environment: dict | None = None
+) -> dict:
     number = int(step.get("number", 0) or 0)
     display_name = step.get("name", f"Step {number}")
     inputs = {
@@ -623,7 +644,10 @@ def _job_step_message(job: WorkflowJob, step: dict) -> dict:
         "displayName": display_name,
         "enabled": True,
         "condition": step.get("if") or "success()",
-        "environment": _template_mapping(step.get("env") or {}),
+        # The step's own env wins, so a workflow can still override these.
+        "environment": _template_mapping(
+            {**(extra_environment or {}), **(step.get("env") or {})}
+        ),
         "reference": {
             "type": "Script",
         },

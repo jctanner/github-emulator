@@ -23,7 +23,7 @@ def test_fresh_database_upgrades_to_head(tmp_path, monkeypatch):
     assert "workflow_jobs" in inspector.get_table_names()
     assert "issue_events" in inspector.get_table_names()
     with engine.connect() as connection:
-        assert connection.execute(text("SELECT version_num FROM alembic_version")).scalar_one() == "0003_issue_events"
+        assert connection.execute(text("SELECT version_num FROM alembic_version")).scalar_one() == "0004_workflow_job_outputs"
     engine.dispose()
 
 
@@ -73,5 +73,5 @@ def test_pre_alembic_database_is_upgraded_without_losing_rows(tmp_path, monkeypa
     with engine.connect() as upgraded:
         assert upgraded.execute(text("SELECT name FROM secrets WHERE id = 1")).scalar_one() == "preserve-me"
         assert upgraded.execute(text("SELECT client_id FROM github_apps WHERE id = 1")).scalar_one().startswith("Iv1.")
-        assert upgraded.execute(text("SELECT version_num FROM alembic_version")).scalar_one() == "0003_issue_events"
+        assert upgraded.execute(text("SELECT version_num FROM alembic_version")).scalar_one() == "0004_workflow_job_outputs"
     engine.dispose()

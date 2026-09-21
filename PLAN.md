@@ -21,7 +21,7 @@ Actions visibility and runner evaluation.
 
 ## Active Tasks
 
-- None.
+- `docs/tasks/current/fullsend-per-repo-dispatch-support.md`
 
 ## Completed Tasks
 

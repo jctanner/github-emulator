@@ -119,8 +119,16 @@ async def http_401_handler(request: Request, exc: Exception) -> JSONResponse:
 
 
 async def http_403_handler(request: Request, exc: Exception) -> JSONResponse:
-    """Handle 403 Forbidden."""
-    return _build_error_response(403, "Forbidden")
+    """Handle 403 Forbidden.
+
+    Real GitHub varies this message, and the variation is the whole diagnostic
+    value: "Resource not accessible by integration" names which scope a job
+    token lacked. Collapsing every refusal to "Forbidden" made three unrelated
+    causes look identical from the outside, so preserve a supplied detail.
+    """
+    detail = getattr(exc, "detail", None)
+    message = detail if isinstance(detail, str) and detail else "Forbidden"
+    return _build_error_response(403, message)
 
 
 async def http_404_handler(request: Request, exc: Exception) -> JSONResponse:
