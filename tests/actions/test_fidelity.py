@@ -1,5 +1,8 @@
 """Artifacts, permissions metadata, and cancellation contract coverage."""
 
+import io
+import zipfile
+
 import pytest
 
 from app.models.actions import Workflow, WorkflowJob, WorkflowRun
@@ -33,11 +36,95 @@ async def test_artifact_and_permissions_metadata(client, db_session, test_user, 
     )
     assert uploaded.status_code == 201
     artifact_id = uploaded.json()["id"]
+    # GitHub puts the archive format in the download URL, not the artifact name.
+    assert uploaded.json()["archive_download_url"].endswith(f"/actions/artifacts/{artifact_id}/zip")
     listed = await client.get(f"{API}/repos/testuser/init-repo/actions/runs/{run.id}/artifacts", headers=auth_headers(test_token))
     assert listed.json()["total_count"] == 1
+
+    # The row indexes the upload; the bytes come back from disk.
     fetched = await client.get(f"{API}/repos/testuser/init-repo/actions/artifacts/{artifact_id}", headers=auth_headers(test_token))
-    assert fetched.json()["files"] == {"result.json": "{}"}
+    assert fetched.json()["files"] == {"result.json": 2}
+    assert fetched.json()["size_in_bytes"] == 2
+
+    archive = await client.get(f"{API}/repos/testuser/init-repo/actions/artifacts/{artifact_id}/zip", headers=auth_headers(test_token))
+    assert archive.status_code == 200
+    with zipfile.ZipFile(io.BytesIO(archive.content)) as zf:
+        assert zf.namelist() == ["result.json"]
+        assert zf.read("result.json") == b"{}"
+
+    single = await client.get(f"{API}/repos/testuser/init-repo/actions/artifacts/{artifact_id}/files/result.json", headers=auth_headers(test_token))
+    assert single.status_code == 200
+    assert single.content == b"{}"
+
+    assert (await client.get(f"{API}/repos/testuser/init-repo/actions/artifacts/{artifact_id}/tar", headers=auth_headers(test_token))).status_code == 404
+
     assert (await client.delete(f"{API}/repos/testuser/init-repo/actions/artifacts/{artifact_id}", headers=auth_headers(test_token))).status_code == 204
+    assert (await client.get(f"{API}/repos/testuser/init-repo/actions/artifacts/{artifact_id}/zip", headers=auth_headers(test_token))).status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_artifact_zip_upload_round_trips_binary(client, db_session, test_user, test_token, test_repo_with_init):
+    """A zip upload carries binary content and directory structure intact.
+
+    This is the path a runner uses for a real upload-artifact step, and the
+    reason artifacts are stored as files rather than in a JSON column.
+    """
+    _owner, _repo, repo = test_repo_with_init
+    workflow = Workflow(repo_id=repo["id"], name="Artifacts", path=".github/workflows/artifacts.yml")
+    db_session.add(workflow)
+    await db_session.flush()
+    run = WorkflowRun(workflow_id=workflow.id, repo_id=repo["id"], head_sha="abc", head_branch="main", event="workflow_dispatch", status="queued", run_number=1, actor_id=test_user.id)
+    db_session.add(run)
+    await db_session.commit()
+    await db_session.refresh(run)
+
+    blob = bytes(range(256))
+    buffer = io.BytesIO()
+    with zipfile.ZipFile(buffer, "w") as zf:
+        zf.writestr("logs/openshell.log", "line one\nline two\n")
+        zf.writestr("nested/deep/blob.bin", blob)
+
+    uploaded = await client.post(
+        f"{API}/repos/testuser/init-repo/actions/runs/{run.id}/artifacts?name=evidence",
+        headers={**auth_headers(test_token), "Content-Type": "application/zip"},
+        content=buffer.getvalue(),
+    )
+    assert uploaded.status_code == 201, uploaded.text
+    artifact_id = uploaded.json()["id"]
+
+    fetched = await client.get(f"{API}/repos/testuser/init-repo/actions/artifacts/{artifact_id}", headers=auth_headers(test_token))
+    assert fetched.json()["files"] == {"logs/openshell.log": 18, "nested/deep/blob.bin": 256}
+
+    single = await client.get(f"{API}/repos/testuser/init-repo/actions/artifacts/{artifact_id}/files/nested/deep/blob.bin", headers=auth_headers(test_token))
+    assert single.status_code == 200
+    assert single.content == blob
+
+
+@pytest.mark.asyncio
+async def test_artifact_upload_rejects_path_escape(client, db_session, test_user, test_token, test_repo_with_init):
+    """A member path that escapes the artifact directory is refused.
+
+    Member paths come from whoever uploaded the artifact, so a stored "../"
+    would let an upload write over unrelated emulator data.
+    """
+    _owner, _repo, repo = test_repo_with_init
+    workflow = Workflow(repo_id=repo["id"], name="Escape", path=".github/workflows/escape.yml")
+    db_session.add(workflow)
+    await db_session.flush()
+    run = WorkflowRun(workflow_id=workflow.id, repo_id=repo["id"], head_sha="abc", head_branch="main", event="workflow_dispatch", status="queued", run_number=1, actor_id=test_user.id)
+    db_session.add(run)
+    await db_session.commit()
+    await db_session.refresh(run)
+
+    escaped = await client.post(
+        f"{API}/repos/testuser/init-repo/actions/runs/{run.id}/artifacts",
+        headers=auth_headers(test_token),
+        json={"name": "bad", "files": {"../../escaped.txt": "nope"}},
+    )
+    assert escaped.status_code == 400
+
+    listed = await client.get(f"{API}/repos/testuser/init-repo/actions/runs/{run.id}/artifacts", headers=auth_headers(test_token))
+    assert listed.json()["total_count"] == 0
 
 
 @pytest.mark.asyncio

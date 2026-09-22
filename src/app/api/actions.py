@@ -1,9 +1,12 @@
 """Actions endpoints -- workflows, runs, jobs, secrets, variables."""
 
+import io
 import os
+import shutil
+import zipfile
 
-from fastapi import APIRouter, HTTPException, Query
-from fastapi.responses import PlainTextResponse, Response
+from fastapi import APIRouter, HTTPException, Query, Request
+from fastapi.responses import FileResponse, PlainTextResponse, Response, StreamingResponse
 from sqlalchemy import select, func, or_
 
 from app.api.deps import AuthUser, CurrentUser, DbSession, get_repo_or_404
@@ -90,6 +93,31 @@ def _job_log_path(job_id: int) -> str:
     return os.path.join(settings.DATA_DIR, "logs", "jobs", f"{job_id}.log")
 
 
+def _artifact_dir(artifact_id: int) -> str:
+    """Where an artifact's bytes live.
+
+    Alongside logs/jobs, which is the same pattern: the database row indexes
+    the upload and the filesystem holds it. DATA_DIR is a mounted volume, so
+    this survives a restart.
+    """
+    return os.path.join(settings.DATA_DIR, "artifacts", str(artifact_id))
+
+
+def _artifact_member_path(artifact_id: int, relative: str) -> str:
+    """Resolve a path inside an artifact, refusing anything that escapes it.
+
+    An artifact's member paths come from whoever uploaded it, so "../" and
+    absolute paths have to be rejected rather than normalised away: a stored
+    path that resolves outside the artifact directory would let an upload
+    write over, or read back, unrelated emulator data.
+    """
+    base = os.path.realpath(_artifact_dir(artifact_id))
+    target = os.path.realpath(os.path.join(base, relative))
+    if target != base and not target.startswith(base + os.sep):
+        raise HTTPException(status_code=400, detail=f"Invalid artifact path: {relative}")
+    return target
+
+
 def _artifact_json(artifact: WorkflowArtifact, owner: str, repo: str) -> dict:
     api = f"{BASE}/api/v3"
     return {
@@ -97,11 +125,22 @@ def _artifact_json(artifact: WorkflowArtifact, owner: str, repo: str) -> dict:
         "node_id": _make_node_id("Artifact", artifact.id),
         "name": artifact.name,
         "size_in_bytes": artifact.size_in_bytes,
-        "archive_download_url": f"{api}/repos/{owner}/{repo}/actions/artifacts/{artifact.id}/{artifact.name}",
+        # GitHub puts the archive format in this slot, not the artifact name,
+        # and the only format it accepts is zip.
+        "archive_download_url": f"{api}/repos/{owner}/{repo}/actions/artifacts/{artifact.id}/zip",
         "expired": artifact.expired,
         "created_at": _fmt_dt(artifact.created_at),
         "workflow_run": {"id": artifact.run_id},
     }
+
+
+async def _get_artifact_or_404(owner: str, repo: str, artifact_id: int, db) -> WorkflowArtifact:
+    repository = await get_repo_or_404(owner, repo, db)
+    artifact = (await db.execute(select(WorkflowArtifact).where(
+        WorkflowArtifact.id == artifact_id, WorkflowArtifact.repo_id == repository.id))).scalar_one_or_none()
+    if artifact is None:
+        raise HTTPException(status_code=404, detail="Artifact not found")
+    return artifact
 
 
 @router.get("/repos/{owner}/{repo}/actions/runs/{run_id}/artifacts")
@@ -113,18 +152,80 @@ async def list_artifacts(owner: str, repo: str, run_id: int, user: AuthUser, db:
 
 
 @router.post("/repos/{owner}/{repo}/actions/runs/{run_id}/artifacts", status_code=201)
-async def upload_artifact(owner: str, repo: str, run_id: int, body: dict, user: AuthUser, db: DbSession):
+async def upload_artifact(
+    owner: str, repo: str, run_id: int, request: Request, user: AuthUser, db: DbSession,
+    name: str = Query("", description="Artifact name, for the application/zip form"),
+):
+    """Store an artifact for a run.
+
+    GitHub's own upload path is an internal Actions service protocol rather
+    than a documented REST endpoint, so there is no public shape to be
+    faithful to here. Two are accepted:
+
+    - ``application/zip``: the request body is the archive and ``?name=``
+      names it. This is what a runner uploading a directory should use, since
+      it carries binary content and directory structure without encoding.
+    - ``application/json``: ``{"name": ..., "files": {path: text}}``, which is
+      convenient for tests and small text payloads.
+
+    Either way the bytes land on disk and the row keeps only the index.
+    """
     repository = await get_repo_or_404(owner, repo, db)
     run = (await db.execute(select(WorkflowRun).where(WorkflowRun.id == run_id, WorkflowRun.repo_id == repository.id))).scalar_one_or_none()
     if run is None:
         raise HTTPException(status_code=404, detail="Workflow run not found")
-    name = str(body.get("name", "")).strip()
-    files = body.get("files", {})
-    if not name or not isinstance(files, dict):
-        raise HTTPException(status_code=422, detail="name and files are required")
-    import json
-    artifact = WorkflowArtifact(run_id=run_id, repo_id=repository.id, name=name, files=files, size_in_bytes=len(json.dumps(files, separators=(",", ":"))))
+
+    content_type = (request.headers.get("content-type") or "").split(";")[0].strip().lower()
+    payload: dict[str, bytes] = {}
+
+    if content_type == "application/zip":
+        artifact_name = name.strip()
+        if not artifact_name:
+            raise HTTPException(status_code=422, detail="name query parameter is required for a zip upload")
+        raw = await request.body()
+        try:
+            with zipfile.ZipFile(io.BytesIO(raw)) as archive:
+                for member in archive.infolist():
+                    if member.is_dir():
+                        continue
+                    payload[member.filename] = archive.read(member)
+        except zipfile.BadZipFile as exc:
+            raise HTTPException(status_code=422, detail=f"Invalid zip archive: {exc}") from exc
+    else:
+        body = await request.json()
+        if not isinstance(body, dict):
+            raise HTTPException(status_code=422, detail="name and files are required")
+        artifact_name = str(body.get("name", "")).strip()
+        files = body.get("files", {})
+        if not artifact_name or not isinstance(files, dict):
+            raise HTTPException(status_code=422, detail="name and files are required")
+        for path, content in files.items():
+            payload[str(path)] = content.encode() if isinstance(content, str) else bytes(content)
+
+    artifact = WorkflowArtifact(run_id=run_id, repo_id=repository.id, name=artifact_name, files={}, size_in_bytes=0)
     db.add(artifact)
+    await db.commit()
+    await db.refresh(artifact)
+
+    index: dict[str, int] = {}
+    total = 0
+    try:
+        for relative, content in payload.items():
+            target = _artifact_member_path(artifact.id, relative)
+            os.makedirs(os.path.dirname(target), exist_ok=True)
+            with open(target, "wb") as handle:
+                handle.write(content)
+            index[relative] = len(content)
+            total += len(content)
+    except Exception:
+        # Do not leave a row pointing at a half-written directory.
+        shutil.rmtree(_artifact_dir(artifact.id), ignore_errors=True)
+        await db.delete(artifact)
+        await db.commit()
+        raise
+
+    artifact.files = index
+    artifact.size_in_bytes = total
     await db.commit()
     await db.refresh(artifact)
     return _artifact_json(artifact, owner, repo)
@@ -132,19 +233,64 @@ async def upload_artifact(owner: str, repo: str, run_id: int, body: dict, user: 
 
 @router.get("/repos/{owner}/{repo}/actions/artifacts/{artifact_id}")
 async def get_artifact(owner: str, repo: str, artifact_id: int, user: AuthUser, db: DbSession):
-    repository = await get_repo_or_404(owner, repo, db)
-    artifact = (await db.execute(select(WorkflowArtifact).where(WorkflowArtifact.id == artifact_id, WorkflowArtifact.repo_id == repository.id))).scalar_one_or_none()
-    if artifact is None:
-        raise HTTPException(status_code=404, detail="Artifact not found")
+    artifact = await _get_artifact_or_404(owner, repo, artifact_id, db)
+    # "files" is an index of path -> size. GitHub does not return one; it is
+    # here because the reason this emulator stores artifacts at all is to make
+    # a failed run inspectable without unpacking an archive first.
     return {**_artifact_json(artifact, owner, repo), "files": artifact.files or {}}
+
+
+@router.get("/repos/{owner}/{repo}/actions/artifacts/{artifact_id}/files/{path:path}")
+async def download_artifact_file(owner: str, repo: str, artifact_id: int, path: str, user: AuthUser, db: DbSession):
+    """Serve one file out of an artifact.
+
+    An emulator extension, not a GitHub endpoint. Reading a single result file
+    out of a failed run is the common case here, and requiring a zip round-trip
+    for it is the kind of friction that stops people looking.
+    """
+    artifact = await _get_artifact_or_404(owner, repo, artifact_id, db)
+    if artifact.expired:
+        raise HTTPException(status_code=410, detail="Artifact expired")
+    if path not in (artifact.files or {}):
+        raise HTTPException(status_code=404, detail=f"No such file in artifact: {path}")
+    target = _artifact_member_path(artifact_id, path)
+    if not os.path.isfile(target):
+        raise HTTPException(status_code=404, detail=f"No such file in artifact: {path}")
+    return FileResponse(target, filename=os.path.basename(path))
+
+
+@router.get("/repos/{owner}/{repo}/actions/artifacts/{artifact_id}/{archive_format}")
+async def download_artifact(owner: str, repo: str, artifact_id: int, archive_format: str, user: AuthUser, db: DbSession):
+    """Serve the artifact as an archive, matching GitHub's download URL shape.
+
+    GitHub accepts only "zip" here and answers with a 302 to a signed storage
+    URL. This serves the bytes directly, which is the same thing from a
+    client's point of view and avoids inventing a signing scheme.
+    """
+    if archive_format.lower() != "zip":
+        raise HTTPException(status_code=404, detail="Only the zip archive format is supported")
+    artifact = await _get_artifact_or_404(owner, repo, artifact_id, db)
+    if artifact.expired:
+        raise HTTPException(status_code=410, detail="Artifact expired")
+
+    buffer = io.BytesIO()
+    with zipfile.ZipFile(buffer, "w", zipfile.ZIP_DEFLATED) as archive:
+        for relative in sorted((artifact.files or {}).keys()):
+            source = _artifact_member_path(artifact_id, relative)
+            if os.path.isfile(source):
+                archive.write(source, arcname=relative)
+    buffer.seek(0)
+    return StreamingResponse(
+        buffer,
+        media_type="application/zip",
+        headers={"Content-Disposition": f'attachment; filename="{artifact.name}.zip"'},
+    )
 
 
 @router.delete("/repos/{owner}/{repo}/actions/artifacts/{artifact_id}", status_code=204)
 async def delete_artifact(owner: str, repo: str, artifact_id: int, user: AuthUser, db: DbSession):
-    repository = await get_repo_or_404(owner, repo, db)
-    artifact = (await db.execute(select(WorkflowArtifact).where(WorkflowArtifact.id == artifact_id, WorkflowArtifact.repo_id == repository.id))).scalar_one_or_none()
-    if artifact is None:
-        raise HTTPException(status_code=404, detail="Artifact not found")
+    artifact = await _get_artifact_or_404(owner, repo, artifact_id, db)
+    shutil.rmtree(_artifact_dir(artifact_id), ignore_errors=True)
     await db.delete(artifact)
     await db.commit()
 

@@ -13,6 +13,8 @@ Environment variables:
   RUNNER_WORKDIR        - Working directory for job execution (default: /tmp/runner-work)
 """
 
+import glob
+import io
 import logging
 import json
 import os
@@ -24,6 +26,7 @@ import subprocess
 import sys
 import threading
 import time
+import zipfile
 from pathlib import Path
 
 import httpx
@@ -88,6 +91,7 @@ GCP_CREDENTIALS_FILE = os.environ.get(
 _ACTION_SHIMS = {
     "google-github-actions/auth": "_shim_google_auth",
     "actions/setup-go": "_shim_setup_go",
+    "actions/upload-artifact": "_shim_upload_artifact",
 }
 
 # The Go toolchain baked into the runner image. The setup-go emulation uses it
@@ -100,6 +104,55 @@ GO_DOWNLOAD_URL = os.environ.get(
 # Go gained automatic toolchain switching in 1.21: running a build in a module
 # that asks for a newer toolchain makes Go fetch that toolchain itself.
 _GO_TOOLCHAIN_SWITCHING_FROM = (1, 21)
+
+
+def _artifact_archive_root(
+    patterns: list[str], workspace: Path, files: list[Path]
+) -> Path:
+    """Pick the directory an uploaded artifact's paths are relative to.
+
+    The real action roots the archive at the least common ancestor of the
+    *search paths*, not of the files that matched. The difference is not
+    cosmetic: rooting at the matched files collapses away any directory level
+    they happen to share, so ``path: output`` would store
+    ``iteration-1/output/result.json`` instead of
+    ``<run>/iteration-1/output/result.json`` and quietly lose the run
+    directory that distinguishes one upload from the next.
+
+    A pattern contributes its leading non-wildcard portion, and a pattern
+    naming a single file contributes that file's directory, which is what
+    makes an exact path upload as a bare filename.
+    """
+    prefixes: list[str] = []
+    for pattern in patterns:
+        base = Path(pattern if os.path.isabs(pattern) else str(workspace / pattern))
+        static: list[str] = []
+        for part in base.parts:
+            if any(char in part for char in "*?["):
+                break
+            static.append(part)
+        candidate = Path(*static) if static else workspace
+        if candidate.is_file():
+            candidate = candidate.parent
+        prefixes.append(str(candidate))
+
+    try:
+        root = Path(os.path.commonpath(prefixes))
+    except ValueError:
+        # Mixed absolute and relative patterns have no common ancestor.
+        return workspace
+
+    # Every stored path is taken relative to the root, so a file outside it
+    # would raise rather than upload. Widen instead of failing.
+    for path in files:
+        try:
+            path.relative_to(root)
+        except ValueError:
+            try:
+                root = Path(os.path.commonpath([str(root), str(path.parent)]))
+            except ValueError:
+                return workspace
+    return root
 
 
 def _emulator_host() -> str:
@@ -139,10 +192,44 @@ def _lookup_context_path(context: dict, path: str):
     return value
 
 
+def _github_context(job: dict | None, github_token: str = "") -> dict:
+    """Build the ``github`` context for expressions the runner resolves.
+
+    The runner already computes every one of these for the step environment.
+    Leaving them out of the expression context meant a composite action could
+    read ``$GITHUB_WORKSPACE`` from the shell but got an empty string from
+    ``${{ github.workspace }}`` - and an empty expansion is not an error, so a
+    path like ``${{ github.workspace }}/output`` silently became ``/output``
+    and matched nothing.
+    """
+    job = job or {}
+    payload = job.get("event_payload") or {}
+    repository = str(job.get("repository") or REPO)
+    ref = str(payload.get("ref", ""))
+    return {
+        "token": github_token,
+        "workspace": WORKDIR,
+        "repository": repository,
+        "repository_owner": repository.split("/", 1)[0],
+        "run_id": str(job.get("run_id", "")),
+        "run_number": str(job.get("run_number", "")),
+        "event_name": str(job.get("event", "")),
+        "sha": str(job.get("head_sha", "")),
+        "ref": ref,
+        "ref_name": ref.removeprefix("refs/heads/").removeprefix("refs/tags/"),
+        "actor": str(payload.get("sender", {}).get("login", "")),
+        "server_url": EMULATOR_URL,
+        "api_url": API,
+        "workflow": str(job.get("workflow_name") or job.get("name") or ""),
+        "job": str(job.get("name", "")),
+    }
+
+
 def _runner_context(
     inputs: dict | None,
     step_outputs: dict[str, dict[str, str]] | None,
     github_token: str = "",
+    job: dict | None = None,
 ) -> dict:
     """Build the context the runner can resolve expressions against.
 
@@ -155,7 +242,7 @@ def _runner_context(
             for key, value in (step_outputs or {}).items()
         },
         "inputs": {str(k): v for k, v in (inputs or {}).items()},
-        "github": {"token": github_token},
+        "github": _github_context(job, github_token),
         # The runner context describes this machine, so only the runner can
         # resolve it. The server leaves it alone for that reason, which is why
         # a composite action's ``${{ runner.temp }}`` arrives here unrendered.
@@ -377,7 +464,11 @@ def _hash_files(patterns: list[str]) -> str:
     return digest.hexdigest() if matched else ""
 
 
-def _evaluate_step_if(condition: object, step_outputs: dict[str, dict[str, str]]) -> bool:
+def _evaluate_step_if(
+    condition: object,
+    step_outputs: dict[str, dict[str, str]],
+    job: dict | None = None,
+) -> bool:
     """Return whether a runner step should execute."""
     if condition is None:
         return True
@@ -390,7 +481,7 @@ def _evaluate_step_if(condition: object, step_outputs: dict[str, dict[str, str]]
         expression = expression[3:-2].strip()
     try:
         return _StepIfParser(
-            expression, _runner_context(None, step_outputs)
+            expression, _runner_context(None, step_outputs, job=job)
         ).parse()
     except ValueError as exc:
         # Treating an unevaluable condition as false silently drops the step,
@@ -406,7 +497,7 @@ def _evaluate_step_if(condition: object, step_outputs: dict[str, dict[str, str]]
 _NEEDS_PARSER_RE = re.compile(r"\|\||&&|==|!=|\(|'|\"")
 
 
-def _render_local_action(value, inputs, step_outputs, github_token=""):
+def _render_local_action(value, inputs, step_outputs, github_token="", job=None):
     """Render the expressions the runner resolves at execution time.
 
     ``github.token`` is resolved here rather than on the server so the
@@ -427,7 +518,7 @@ def _render_local_action(value, inputs, step_outputs, github_token=""):
             if expression == "github.token":
                 return github_token
             if _NEEDS_PARSER_RE.search(expression):
-                context = _runner_context(inputs, step_outputs, github_token)
+                context = _runner_context(inputs, step_outputs, github_token, job)
                 try:
                     resolved = _StepIfParser(expression, context).evaluate()
                 except ValueError as exc:
@@ -444,7 +535,7 @@ def _render_local_action(value, inputs, step_outputs, github_token=""):
                 return str(resolved)
             try:
                 resolved = _lookup_context_path(
-                    _runner_context(inputs, step_outputs, github_token),
+                    _runner_context(inputs, step_outputs, github_token, job),
                     expression,
                 )
             except ValueError:
@@ -456,12 +547,12 @@ def _render_local_action(value, inputs, step_outputs, github_token=""):
         return _EXPRESSION_RE.sub(replace, value)
     if isinstance(value, dict):
         return {
-            key: _render_local_action(item, inputs, step_outputs, github_token)
+            key: _render_local_action(item, inputs, step_outputs, github_token, job)
             for key, item in value.items()
         }
     if isinstance(value, list):
         return [
-            _render_local_action(item, inputs, step_outputs, github_token)
+            _render_local_action(item, inputs, step_outputs, github_token, job)
             for item in value
         ]
     return value
@@ -641,7 +732,7 @@ class RunnerClient:
             append_log(f"\n##[group]Step {step_num}: {step_name}\n")
 
             try:
-                should_run = _evaluate_step_if(step.get("if"), step_outputs)
+                should_run = _evaluate_step_if(step.get("if"), step_outputs, job)
             except StepConditionError as exc:
                 step["status"] = "completed"
                 step["conclusion"] = "failure"
@@ -661,7 +752,7 @@ class RunnerClient:
             step["status"] = "in_progress"
             self._report_progress(job_repository, job_id, steps)
 
-            rendered_step = _render_local_action(step, {}, step_outputs, job_token)
+            rendered_step = _render_local_action(step, {}, step_outputs, job_token, job)
             result, _step_log, step_updates = self._run_step(
                 rendered_step, job, runtime_env, log_callback=append_log,
             )
@@ -756,7 +847,7 @@ class RunnerClient:
             uses = step.get("uses", "")
             shim = _ACTION_SHIMS.get(uses.split("@", 1)[0])
             if shim:
-                result, output, updates = getattr(self, shim)(step, uses)
+                result, output, updates = getattr(self, shim)(step, uses, job)
                 if log_callback:
                     log_callback(output)
                 return result, output, updates
@@ -836,9 +927,6 @@ class RunnerClient:
             env.pop("ACTIONS_ID_TOKEN_REQUEST_URL", None)
             env.pop("ACTIONS_ID_TOKEN_REQUEST_TOKEN", None)
         env.update({str(key): str(value) for key, value in runtime_env.items()})
-        if ADMIN_TOKEN:
-            env.setdefault("GITHUB_TOKEN", ADMIN_TOKEN)
-            env.setdefault("GH_TOKEN", ADMIN_TOKEN)
         for key, value in (job.get("env") or {}).items():
             env[str(key)] = str(value)
         for key, value in (step.get("env") or {}).items():
@@ -848,6 +936,18 @@ class RunnerClient:
         # reads its credential from GH_ENTERPRISE_TOKEN, ignoring GH_TOKEN.
         # Mirror whichever token the workflow chose so gh authenticates to the
         # emulator with it rather than reporting "Requires authentication".
+        #
+        # Only a token the workflow declared is mirrored. This used to fall
+        # back to the runner's own admin credential when a step named none,
+        # which was wrong twice over. GitHub puts no credential in a step's
+        # environment unless the workflow writes one, so a step that never
+        # asked for a token was silently running as an administrator. Worse,
+        # because gh prefers GH_ENTERPRISE_TOKEN over GH_TOKEN, that ambient
+        # admin token outranked the scoped credential a step minted for
+        # itself at run time: the step appeared to use its narrow token and
+        # in fact used the broad one. Nothing in the job log distinguished
+        # the two, so the credential scoping the mint exists to enforce was
+        # defeated without a symptom.
         workflow_token = env.get("GH_TOKEN") or env.get("GITHUB_TOKEN") or ""
         if workflow_token:
             env.setdefault("GH_ENTERPRISE_TOKEN", workflow_token)
@@ -1018,7 +1118,7 @@ class RunnerClient:
         return binary, f"downloaded {name}"
 
     def _shim_setup_go(
-        self, step: dict, uses: str
+        self, step: dict, uses: str, job: dict
     ) -> tuple[str, str, dict[str, str]]:
         """Emulate actions/setup-go against the image's pinned toolchain.
 
@@ -1102,7 +1202,7 @@ class RunnerClient:
         return _use(downloaded, requested, message)
 
     def _shim_google_auth(
-        self, step: dict, uses: str
+        self, step: dict, uses: str, job: dict
     ) -> tuple[str, str, dict[str, str]]:
         """Emulate google-github-actions/auth with locally mounted credentials.
 
@@ -1193,6 +1293,114 @@ class RunnerClient:
             )
         return "success", "".join(lines), updates
 
+    def _shim_upload_artifact(
+        self, step: dict, uses: str, job: dict
+    ) -> tuple[str, str, dict[str, str]]:
+        """Emulate actions/upload-artifact by storing the files in the emulator.
+
+        This exists for a reason beyond making a workflow's last step pass.
+        Everything a failed run leaves behind to be diagnosed with - an agent's
+        own result file, the OpenShell logs a run collects - is written into the
+        job workspace, and the workspace is deleted when the job ends. Without
+        somewhere durable to put them, the evidence is gone by the time anyone
+        reads the failure.
+
+        Matching the real action where it matters: paths are globs resolved
+        against the workspace, the archive is rooted at the least common
+        ancestor of what matched so stored paths stay relative, and
+        if-no-files-found decides whether an empty match warns, fails, or is
+        ignored.
+        """
+        inputs = {str(key): str(value) for key, value in (step.get("with") or {}).items()}
+        lines = [f"Emulating {uses} locally.\n"]
+
+        name = (inputs.get("name") or "artifact").strip() or "artifact"
+        patterns = [p.strip() for p in (inputs.get("path") or "").splitlines() if p.strip()]
+        if_none = (inputs.get("if-no-files-found") or "warn").strip().lower()
+
+        if not patterns:
+            lines.append("  No 'path' input was given, so there is nothing to upload.\n")
+            return "failure", "".join(lines), {}
+
+        workspace = Path(WORKDIR)
+        matched: list[Path] = []
+        for pattern in patterns:
+            # An absolute pattern is honoured as written; anything else is
+            # relative to the workspace, as it is on a hosted runner.
+            if os.path.isabs(pattern):
+                candidates = [Path(hit) for hit in glob.glob(pattern, recursive=True)]
+            else:
+                candidates = [Path(hit) for hit in glob.glob(str(workspace / pattern), recursive=True)]
+            for candidate in candidates:
+                if candidate.is_file():
+                    matched.append(candidate)
+                elif candidate.is_dir():
+                    matched.extend(child for child in candidate.rglob("*") if child.is_file())
+
+        unique = sorted({path.resolve() for path in matched})
+        if not unique:
+            message = f"No files matched: {', '.join(patterns)}\n"
+            if if_none == "error":
+                lines.append(f"  {message}")
+                return "failure", "".join(lines), {}
+            if if_none != "ignore":
+                # The real action emits a warning annotation here rather than
+                # failing. Keep that, but make it an annotation rather than a
+                # line of prose: a step that passes while uploading nothing is
+                # exactly the kind of result that gets skimmed past.
+                lines.append(f"::warning::{message}")
+            else:
+                lines.append(f"  {message}")
+            return "success", "".join(lines), {}
+
+        root = _artifact_archive_root(patterns, workspace, unique)
+
+        buffer = io.BytesIO()
+        total = 0
+        with zipfile.ZipFile(buffer, "w", zipfile.ZIP_DEFLATED) as archive:
+            for path in unique:
+                relative = path.relative_to(root).as_posix()
+                archive.write(path, arcname=relative)
+                total += path.stat().st_size
+
+        repository = str(job.get("repository") or REPO)
+        run_id = job.get("run_id")
+        if not run_id:
+            lines.append("  The job carries no run id, so the artifact has nowhere to go.\n")
+            return "failure", "".join(lines), {}
+
+        try:
+            response = self.client.post(
+                f"{API}/repos/{repository}/actions/runs/{run_id}/artifacts",
+                params={"name": name},
+                content=buffer.getvalue(),
+                headers={
+                    "Authorization": f"token {ADMIN_TOKEN}",
+                    "Content-Type": "application/zip",
+                },
+                timeout=120.0,
+            )
+        except httpx.HTTPError as exc:
+            lines.append(f"  Upload failed: {exc}\n")
+            return "failure", "".join(lines), {}
+
+        if response.status_code not in (200, 201):
+            lines.append(f"  Upload failed: HTTP {response.status_code}: {response.text[:400]}\n")
+            return "failure", "".join(lines), {}
+
+        payload = response.json()
+        lines.append(f"  Artifact '{name}' ({len(unique)} file(s), {total} bytes) uploaded.\n")
+        lines.append(f"  Root: {root}\n")
+        for path in unique[:20]:
+            lines.append(f"    {path.relative_to(root).as_posix()}\n")
+        if len(unique) > 20:
+            lines.append(f"    ... and {len(unique) - 20} more\n")
+        lines.append(f"  Download: {payload.get('archive_download_url', '')}\n")
+        return "success", "".join(lines), {
+            "artifact-id": str(payload.get("id", "")),
+            "artifact-url": str(payload.get("archive_download_url", "")),
+        }
+
     def _composite_step(
         self, step: dict, job: dict, runtime_env: dict[str, str], log_callback=None,
         github_token: str = "",
@@ -1210,13 +1418,16 @@ class RunnerClient:
             return "failure", f"Could not load local action {action_ref}: {exc}\n", {}
 
         inputs = {str(key): str(value) for key, value in (step.get("with") or {}).items()}
+        calling_env = {
+            str(key): str(value) for key, value in (step.get("env") or {}).items()
+        }
         step_outputs: dict[str, dict[str, str]] = {}
         log_lines = [f"Running local composite action {action_ref}\n"]
         if log_callback:
             log_callback(log_lines[0])
         for index, action_step in enumerate(action_steps, start=1):
             try:
-                action_should_run = _evaluate_step_if(action_step.get("if"), step_outputs)
+                action_should_run = _evaluate_step_if(action_step.get("if"), step_outputs, job)
             except StepConditionError as exc:
                 # The caller discards the returned output when it is streaming
                 # through log_callback, so a condition error raised inside a
@@ -1232,8 +1443,15 @@ class RunnerClient:
                     "because its condition evaluated to false\n"
                 )
                 continue
-            rendered = _render_local_action(action_step, inputs, step_outputs, github_token)
+            rendered = _render_local_action(action_step, inputs, step_outputs, github_token, job)
             rendered.setdefault("number", index)
+            # GitHub applies the calling step's env to every step of the action
+            # it calls. Dropping it strands values the workflow set for the
+            # action to read, and the failure surfaces inside the action as a
+            # missing variable with no hint that a caller supplied it.
+            # The action's own env wins, so an action can still override.
+            if calling_env:
+                rendered["env"] = {**calling_env, **(rendered.get("env") or {})}
             result, output, updates = self._run_step(
                 rendered, job, runtime_env, log_callback=log_callback,
                 action_path=str(action_path),
@@ -1249,19 +1467,63 @@ class RunnerClient:
         outputs = {}
         for name, output_def in (definition.get("outputs") or {}).items():
             value = output_def.get("value", "") if isinstance(output_def, dict) else str(output_def)
-            outputs[str(name)] = _render_local_action(value, inputs, step_outputs, github_token)
+            outputs[str(name)] = _render_local_action(value, inputs, step_outputs, github_token, job)
         step["outputs"] = outputs
         return "success", "".join(log_lines), {}
 
     @staticmethod
     def _read_command_file(path: Path) -> dict[str, str]:
+        """Parse a GITHUB_OUTPUT or GITHUB_ENV file.
+
+        Two forms, both of which GitHub accepts:
+
+            name=value
+            name<<DELIMITER
+            ...any number of lines, including "=" and blank ones...
+            DELIMITER
+
+        Only the first was understood, so a step that wrote the heredoc form
+        succeeded and produced nothing. That is how a routing payload went
+        missing: the step passed, its output was silently dropped, and the
+        failure appeared later as an empty variable inside an agent.
+
+        A delimiter that is never closed is dropped rather than guessed at,
+        and said so in the log, because inventing a value from a truncated
+        file is worse than having none.
+        """
         values: dict[str, str] = {}
         if not path.is_file():
             return values
-        for line in path.read_text(errors="replace").splitlines():
+
+        lines = path.read_text(errors="replace").splitlines()
+        index = 0
+        while index < len(lines):
+            line = lines[index]
+            index += 1
+            key, delimiter, marker = line.partition("<<")
+            if delimiter and marker.strip():
+                name = key.strip()
+                terminator = marker.strip()
+                collected: list[str] = []
+                closed = False
+                while index < len(lines):
+                    current = lines[index]
+                    index += 1
+                    if current.strip() == terminator:
+                        closed = True
+                        break
+                    collected.append(current)
+                if closed:
+                    values[name] = "\n".join(collected)
+                else:
+                    log.warning(
+                        "Ignoring %r in %s: its %r delimiter is never closed",
+                        name, path.name, terminator,
+                    )
+                continue
             if "=" in line:
-                key, value = line.split("=", 1)
-                values[key] = value
+                name, _, value = line.partition("=")
+                values[name] = value
         return values
 
     def _checkout_step(self, step: dict, job: dict) -> tuple[str, str, dict[str, str]]:

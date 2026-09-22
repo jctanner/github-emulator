@@ -89,3 +89,4 @@ Actions visibility and runner evaluation.
 ## Decisions
 
 - `docs/decisions/ADR-0001-actions-runner-strategy.md`
+- `docs/decisions/ADR-0002-artifact-storage-on-disk.md`
