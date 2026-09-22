@@ -45,13 +45,36 @@ BASE = settings.BASE_URL
 # Helpers
 # ---------------------------------------------------------------------------
 
+def _repo_owner(repository: Repository):
+    """Return the namespace owner, not an organization repository's creator."""
+    if repository.owner_type == "Organization" and repository.organization:
+        return repository.organization
+    return repository.owner
+
+
+def _repo_namespace(repository: Repository) -> str:
+    owner = _repo_owner(repository)
+    return owner.login if owner else "unknown"
+
+
+def _repo_owner_json(repository: Repository, base_url: str):
+    owner = _repo_owner(repository)
+    if owner is None:
+        return None
+    if repository.owner_type == "Organization" and repository.organization:
+        return SimpleUser.from_organization(owner, base_url).model_dump()
+    return SimpleUser.from_db(owner, base_url).model_dump()
+
+
 def _pr_query(*, include_issue_labels: bool = False):
     """Return a base select for PullRequest with eager-loaded relationships."""
     options = [
         raiseload("*"),
         joinedload(PullRequest.issue).joinedload(Issue.user),
         joinedload(PullRequest.repository).joinedload(Repository.owner),
+        joinedload(PullRequest.repository).joinedload(Repository.organization),
         joinedload(PullRequest.head_repository).joinedload(Repository.owner),
+        joinedload(PullRequest.head_repository).joinedload(Repository.organization),
         joinedload(PullRequest.merged_by),
     ]
     if include_issue_labels:
@@ -66,7 +89,7 @@ def _pr_json(pr: PullRequest, base_url: str) -> dict:
     api = f"{base_url}/api/v3"
     issue = pr.issue
     repo = pr.repository
-    owner_login = repo.owner.login if repo and repo.owner else "unknown"
+    owner_login = _repo_namespace(repo) if repo else "unknown"
     repo_name = repo.name if repo else "unknown"
     repo_full = f"{owner_login}/{repo_name}"
     pr_url = f"{api}/repos/{repo_full}/pulls/{issue.number}"
@@ -76,7 +99,6 @@ def _pr_json(pr: PullRequest, base_url: str) -> dict:
     merged_by = SimpleUser.from_db(pr.merged_by, base_url).model_dump() if pr.merged_by else None
 
     head_repo = pr.head_repository or repo
-    head_owner = head_repo.owner if head_repo else None
     head_ref = getattr(pr, "resolved_head_ref", pr.head_ref)
     base_ref = getattr(pr, "resolved_base_ref", pr.base_ref)
     head_sha = getattr(pr, "resolved_head_sha", pr.head_sha)
@@ -84,7 +106,7 @@ def _pr_json(pr: PullRequest, base_url: str) -> dict:
     head_label = getattr(
         pr,
         "resolved_head_label",
-        f"{head_owner.login if head_owner else owner_login}:{head_ref}",
+        f"{_repo_namespace(head_repo) if head_repo else owner_login}:{head_ref}",
     )
 
     return {
@@ -122,14 +144,14 @@ def _pr_json(pr: PullRequest, base_url: str) -> dict:
             "label": head_label,
             "ref": head_ref,
             "sha": head_sha,
-            "user": SimpleUser.from_db(head_owner, base_url).model_dump() if head_owner else user_simple,
+            "user": _repo_owner_json(head_repo, base_url) if head_repo else user_simple,
             "repo": None,  # Simplified
         },
         "base": {
             "label": f"{owner_login}:{base_ref}",
             "ref": base_ref,
             "sha": base_sha,
-            "user": SimpleUser.from_db(repo.owner, base_url).model_dump() if repo and repo.owner else None,
+            "user": _repo_owner_json(repo, base_url) if repo else None,
             "repo": None,  # Simplified
         },
         "_links": {
@@ -158,7 +180,7 @@ def _pr_json(pr: PullRequest, base_url: str) -> dict:
 
 async def _attach_resolved_refs(pr: PullRequest, repository: Repository) -> None:
     """Attach normalized refs and SHAs for response and git operations."""
-    owner_login = repository.owner.login if repository.owner else None
+    owner_login = _repo_namespace(repository)
     head_ref = pr.head_ref
     head_sha = pr.head_sha
     base_ref = pr.base_ref
@@ -178,7 +200,7 @@ async def _attach_resolved_refs(pr: PullRequest, repository: Repository) -> None
     pr.resolved_base_ref = base_ref
     pr.resolved_head_sha = head_sha
     pr.resolved_base_sha = base_sha
-    pr.resolved_head_label = f"{owner_login or 'unknown'}:{head_ref}"
+    pr.resolved_head_label = f"{_repo_namespace(pr.head_repository or repository)}:{head_ref}"
 
 
 async def _attach_pr_stats(pr: PullRequest, repository: Repository) -> None:
@@ -630,7 +652,7 @@ async def create_pull(
 
     head_sha = body.get("head_sha", "0" * 40)
     base_sha = body.get("base_sha", "0" * 40)
-    owner_login = repository.owner.login if repository.owner else owner
+    owner_login = _repo_namespace(repository)
 
     # Try to resolve SHAs from the bare repo
     if repository.disk_path and os.path.isdir(repository.disk_path):

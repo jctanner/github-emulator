@@ -4,15 +4,92 @@ import asyncio
 import os
 
 import pytest
-from sqlalchemy import select
+from sqlalchemy import select, update
 
+from app.api.pulls import _pr_json, _pr_query
 from app.git.bare_repo import write_file
 from app.models.issue import Issue
+from app.models.organization import Organization
 from app.models.pull_request import PullRequest
 from app.models.repository import Repository
 from tests.conftest import auth_headers
 
 API = "/api/v3"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("qualified", [False, True])
+async def test_organization_pr_namespace(client, db_session, test_token, qualified):
+    response = await client.post(
+        f"{API}/user/repos",
+        json={"name": "example-repo", "auto_init": True},
+        headers=auth_headers(test_token),
+    )
+    assert response.status_code == 201
+    repo = (await db_session.execute(
+        select(Repository).where(Repository.full_name == "testuser/example-repo")
+    )).scalar_one()
+    org = Organization(login="example-org")
+    db_session.add(org)
+    await db_session.flush()
+    repo.owner_type = "Organization"
+    repo.organization_id = org.id
+    repo.organization = org
+    repo.full_name = "example-org/example-repo"
+    await db_session.commit()
+
+    proc = await asyncio.create_subprocess_exec(
+        "git", "update-ref", "refs/heads/feature", "refs/heads/main",
+        env={**os.environ, "GIT_DIR": repo.disk_path},
+        stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
+    )
+    _, stderr = await proc.communicate()
+    assert proc.returncode == 0, stderr.decode()
+
+    path = f"{API}/repos/example-org/example-repo/pulls"
+    prefix = "example-org:" if qualified else ""
+    created = await client.post(
+        path,
+        json={"title": "Org PR", "head": prefix + "feature", "base": prefix + "main"},
+        headers=auth_headers(test_token),
+    )
+    assert created.status_code == 201, created.text
+    # Imported PRs can retain qualified refs; exercise read-time normalization
+    # separately from POST's normalization.
+    if qualified:
+        await db_session.execute(
+            update(PullRequest).where(PullRequest.id == created.json()["id"]).values(
+                head_ref="example-org:feature", base_ref="example-org:main"
+            )
+        )
+        await db_session.commit()
+    detail = await client.get(path + "/1", headers=auth_headers(test_token))
+    listed = await client.get(path, headers=auth_headers(test_token))
+    updated = await client.patch(
+        path + "/1", json={"title": "Updated org PR"}, headers=auth_headers(test_token)
+    )
+    assert detail.status_code == listed.status_code == updated.status_code == 200
+    for data in [created.json(), detail.json(), listed.json()[0], updated.json()]:
+        assert data["html_url"].endswith("/example-org/example-repo/pull/1")
+        assert data["url"].endswith(path + "/1")
+        assert data["issue_url"].endswith("/repos/example-org/example-repo/issues/1")
+        assert data["head"]["label"] == "example-org:feature"
+        assert data["base"]["label"] == "example-org:main"
+        assert data["head"]["ref"] == "feature"
+        assert data["base"]["ref"] == "main"
+        assert data["head"]["sha"] != "0" * 40
+        assert data["base"]["sha"] != "0" * 40
+        assert data["user"]["login"] == "testuser"
+
+    # The response model omits these fields, but internal consumers use them.
+    pr = (await db_session.execute(
+        _pr_query().where(PullRequest.id == created.json()["id"])
+    )).scalar_one()
+    raw = _pr_json(pr, "http://testserver")
+    assert raw["_links"]["html"]["href"] == raw["html_url"]
+    for side in ("head", "base"):
+        assert raw[side]["user"]["login"] == "example-org"
+        assert raw[side]["user"]["type"] == "Organization"
 
 
 async def _create_real_pr_with_diff(
