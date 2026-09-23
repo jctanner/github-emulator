@@ -107,6 +107,12 @@ async def dispatch_ready_jobs(db: AsyncSession, run_id: int) -> list[WorkflowJob
                     context,
                 )
                 job.pending_render = None
+            # Concurrency is applied here, where the job becomes eligible to
+            # run, not when it was created: a job still waiting on `needs:`
+            # has an unevaluated `if:` and may be about to skip. Only a job
+            # that is really going to run may supersede another.
+            if job.concurrency_group:
+                await _supersede_for_concurrency(db, job)
             job.status = "queued"
             promoted.append(job)
 
@@ -200,3 +206,37 @@ async def cancel_workflow_run(db: AsyncSession, run_id: int) -> WorkflowRun | No
     run.conclusion = "cancelled"
     await db.flush()
     return run
+
+
+async def _supersede_for_concurrency(db: AsyncSession, job: WorkflowJob) -> None:
+    """Cancel earlier jobs sharing this job's concurrency group.
+
+    GitHub's `cancel-in-progress: true` means a newly eligible job supersedes
+    an in-flight one in the same group. The group is rendered from the event,
+    so for Fullsend's stages it is per repository and per issue: a new comment
+    on an issue supersedes a triage still running on that issue, and leaves
+    every other issue alone.
+
+    Only jobs from *other* runs are candidates. Superseding within the same
+    run would mean a matrix sharing a group cancelled its own siblings.
+
+    A group is recorded on the job only when `cancel-in-progress` is true, so
+    reaching here means superseding is wanted. GitHub's other half — a group
+    with `cancel-in-progress: false`, which queues a job behind its
+    predecessor rather than cancelling it — is not implemented: this emulator
+    has no queue-behind state, and pretending otherwise would run both
+    concurrently while reporting that they were serialised.
+    """
+    superseded = (await db.execute(
+        select(WorkflowJob).where(
+            WorkflowJob.concurrency_group == job.concurrency_group,
+            WorkflowJob.run_id != job.run_id,
+            WorkflowJob.id != job.id,
+            WorkflowJob.status.in_(("queued", "in_progress")),
+        )
+    )).scalars().all()
+    now = datetime.now(timezone.utc)
+    for previous in superseded:
+        previous.status = "completed"
+        previous.conclusion = "cancelled"
+        previous.completed_at = now

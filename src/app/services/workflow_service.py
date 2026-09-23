@@ -201,6 +201,8 @@ def build_job_graph(workflow_yaml: dict) -> list[dict]:
                 else {}
             ),
             "if": config.get("if"),
+            # Carried through so job-level concurrency reaches job creation.
+            "concurrency": config.get("concurrency"),
             "outputs": config.get("outputs", {}),
             "_call_inputs": config.get("_call_inputs", {}),
             "_call_secrets": config.get("_call_secrets", {}),
@@ -346,6 +348,69 @@ async def _resolve_ref_sha(repo_disk_path: str, ref: str) -> str:
     return stdout.decode().strip()
 
 
+def _declared_call_inputs(called: dict) -> dict:
+    """Return the `on.workflow_call.inputs` declaration of a called workflow."""
+    on = called.get("on") or called.get(True) or {}
+    if not isinstance(on, dict):
+        return {}
+    call = on.get("workflow_call")
+    if not isinstance(call, dict):
+        return {}
+    declared = call.get("inputs")
+    return declared if isinstance(declared, dict) else {}
+
+
+def _coerce_input(value: object, declared_type: str) -> object:
+    """Coerce a supplied input to its declared type.
+
+    Values arrive from YAML or from rendered expressions, so a boolean input
+    frequently arrives as the string "true". A condition testing it then
+    compares a string to a boolean and silently takes the wrong branch.
+    """
+    if declared_type == "boolean":
+        if isinstance(value, bool):
+            return value
+        return str(value).strip().lower() == "true"
+    if declared_type == "number":
+        try:
+            text = str(value).strip()
+            return int(text) if text.lstrip("-").isdigit() else float(text)
+        except (TypeError, ValueError):
+            return value
+    if declared_type == "string" and not isinstance(value, str):
+        return "" if value is None else str(value)
+    return value
+
+
+def apply_workflow_call_inputs(called: dict, supplied: dict) -> tuple[dict, list[str]]:
+    """Merge declared defaults into the supplied inputs and coerce types.
+
+    An unsupplied input rendered as empty rather than as its declared default,
+    so a guard like `inputs.install_mode == 'per-repo'` was comparing against
+    "" and only worked when the caller happened to pass the value. Returns the
+    resolved inputs and the names of any `required: true` inputs the caller
+    omitted, which the caller logs rather than raising on: GitHub fails the
+    run, but failing here would turn a latent workflow bug into an outage in a
+    stack whose whole point is to surface such things visibly.
+    """
+    declared = _declared_call_inputs(called)
+    resolved = dict(supplied)
+    missing_required: list[str] = []
+
+    for name, spec in declared.items():
+        if not isinstance(spec, dict):
+            continue
+        declared_type = str(spec.get("type", "string"))
+        if name in resolved and resolved[name] not in (None, ""):
+            resolved[name] = _coerce_input(resolved[name], declared_type)
+            continue
+        if "default" in spec:
+            resolved[name] = _coerce_input(spec["default"], declared_type)
+        elif spec.get("required") is True:
+            missing_required.append(name)
+    return resolved, missing_required
+
+
 async def _materialize_reusable_jobs(
     workflow_yaml: dict,
     repo_disk_path: str,
@@ -389,11 +454,25 @@ async def _materialize_reusable_jobs(
             continue
 
         call_inputs = _render_reusable_call_context(config.get("with", {}), inputs, secrets)
-        call_secrets = _render_reusable_call_context(config.get("secrets", {}), inputs, secrets)
         if not isinstance(call_inputs, dict):
             call_inputs = {}
-        if not isinstance(call_secrets, dict):
-            call_secrets = {}
+        call_inputs, missing_required = apply_workflow_call_inputs(called, call_inputs)
+        if missing_required:
+            logger.warning(
+                "reusable workflow %s called without required input(s): %s",
+                uses, ", ".join(sorted(missing_required)),
+            )
+
+        # `secrets: inherit` is a string, not a mapping. Parsing it as one and
+        # then discarding it handed the called workflow no secrets at all
+        # while looking like it had been honoured.
+        raw_secrets = config.get("secrets")
+        if isinstance(raw_secrets, str) and raw_secrets.strip() == "inherit":
+            call_secrets = dict(secrets)
+        else:
+            call_secrets = _render_reusable_call_context(raw_secrets or {}, inputs, secrets)
+            if not isinstance(call_secrets, dict):
+                call_secrets = {}
 
         materialized = await _materialize_reusable_jobs(
             called,
@@ -785,9 +864,12 @@ async def create_workflow_run(
     }
 
     concurrency = workflow_yaml.get("concurrency")
-    cancel_in_progress = True
+    # GitHub defaults cancel-in-progress to false: a group serialises runs
+    # unless the workflow explicitly asks for supersede. Defaulting it to true
+    # cancelled runs nobody asked to cancel.
+    cancel_in_progress = False
     if isinstance(concurrency, dict):
-        cancel_in_progress = concurrency.get("cancel-in-progress", True) is not False
+        cancel_in_progress = concurrency.get("cancel-in-progress", False) is True
         concurrency = concurrency.get("group")
     if concurrency:
         group = str(render_expressions(concurrency, expression_context))
@@ -856,8 +938,23 @@ async def create_workflow_run(
                     for step in steps_data
                 ]
 
+            # Job-level concurrency group, recorded here and acted on when the
+            # job becomes eligible to run. Cancelling at creation is wrong: a
+            # stage job declares `needs: route`, so its `if:` cannot be
+            # evaluated yet, and a job that is about to be skipped would
+            # supersede the one actually doing the work. Every follow-on event
+            # from an agent's own comments creates such a job, so the effect
+            # was a run cancelling itself — caught by the conformance check.
+            job_group, job_cancel = _job_concurrency(job_config, job_expression_context)
+            # Recorded only when it supersedes. A group with
+            # cancel-in-progress: false queues a job behind its predecessor on
+            # GitHub; this emulator has no queue-behind state, so storing the
+            # group would claim a serialisation it does not perform.
+            job_group = job_group if job_cancel else None
+
             job = WorkflowJob(
                 run_id=run.id,
+                concurrency_group=job_group,
                 name=display_name,
                 workflow_name=workflow.name,
                 status=initial_status,
@@ -882,6 +979,25 @@ async def create_workflow_run(
         await dispatch_ready_jobs(db, run.id)
         await check_run_completion(db, run.id)
     return run
+
+
+def _job_concurrency(job_config: dict, context: dict) -> tuple[str | None, bool]:
+    """Return a job's rendered concurrency group and whether it supersedes.
+
+    Same shape as workflow-level concurrency: a bare string is a group name,
+    a mapping carries `group` and `cancel-in-progress`. GitHub defaults
+    cancel-in-progress to false here too.
+    """
+    concurrency = job_config.get("concurrency")
+    if not concurrency:
+        return None, False
+    cancel = False
+    if isinstance(concurrency, dict):
+        cancel = concurrency.get("cancel-in-progress", False) is True
+        concurrency = concurrency.get("group")
+    if not concurrency:
+        return None, False
+    return str(render_expressions(concurrency, context)), cancel
 
 
 def _user_payload(user: User | None) -> dict | None:

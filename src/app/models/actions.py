@@ -135,6 +135,10 @@ class WorkflowJob(Base):
     steps: Mapped[list] = mapped_column(JSON, default=list)
     runner_name: Mapped[str | None] = mapped_column(String, nullable=True)
     runner_id: Mapped[int | None] = mapped_column(Integer, ForeignKey("runners.id"), nullable=True)
+    # GitHub supports concurrency at job level as well as run level. A
+    # per-role group on each stage lets a new event supersede an in-flight run
+    # of that role only; expressing it at run level would cancel every stage.
+    concurrency_group: Mapped[str | None] = mapped_column(String, nullable=True, index=True)
     labels: Mapped[list | None] = mapped_column(JSON, nullable=True)
     run_attempt: Mapped[int] = mapped_column(Integer, default=1)
     needs: Mapped[list | None] = mapped_column(JSON, nullable=True)
