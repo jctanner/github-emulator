@@ -7,6 +7,7 @@ from sqlalchemy import select
 
 from app.api.deps import AuthUser, CurrentUser, DbSession, get_repo_or_404
 from app.config import settings
+from app.models.comment import PRReviewComment
 from app.models.review import Review
 from app.models.pull_request import PullRequest
 from app.models.issue import Issue
@@ -83,6 +84,41 @@ async def create_review(
     review_body = body.get("body")
     commit_id = body.get("commit_id", pr.head_sha)
 
+    # A review may carry its inline comments in one request, which is how a
+    # client posts a multi-file review atomically rather than as N+1 calls.
+    # These were accepted and silently discarded: the review appeared with the
+    # right state and body, the caller reported success, and every inline
+    # finding vanished. Validated before the review is written so a malformed
+    # entry rejects the whole request, as it does on GitHub, rather than
+    # leaving a review behind with some of its comments.
+    raw_comments = body.get("comments") or []
+    if not isinstance(raw_comments, list):
+        raise HTTPException(status_code=422, detail="comments must be an array")
+    pending_comments = []
+    for index, entry in enumerate(raw_comments):
+        if not isinstance(entry, dict):
+            raise HTTPException(
+                status_code=422, detail=f"comments[{index}] must be an object"
+            )
+        entry_path = entry.get("path")
+        entry_body = entry.get("body")
+        if not entry_path:
+            raise HTTPException(
+                status_code=422, detail=f"comments[{index}].path is required"
+            )
+        if not entry_body:
+            raise HTTPException(
+                status_code=422, detail=f"comments[{index}].body is required"
+            )
+        # GitHub accepts either the legacy diff `position` or the newer `line`,
+        # and a review is free to mix them across entries.
+        if entry.get("position") is None and entry.get("line") is None:
+            raise HTTPException(
+                status_code=422,
+                detail=f"comments[{index}] requires either position or line",
+            )
+        pending_comments.append(entry)
+
     now = datetime.now(timezone.utc)
     state = {
         "APPROVE": "APPROVED",
@@ -104,6 +140,30 @@ async def create_review(
     db.add(review)
     await db.commit()
     await db.refresh(review)
+
+    # Attached to the review by id, so they come back from both the review's
+    # own comments endpoint and the pull request's.
+    for entry in pending_comments:
+        entry_commit = entry.get("commit_id") or commit_id or ""
+        db.add(
+            PRReviewComment(
+                pull_request_id=pr.id,
+                review_id=review.id,
+                user_id=user.id,
+                body=entry["body"],
+                path=entry["path"],
+                position=entry.get("position"),
+                line=entry.get("line"),
+                side=entry.get("side", "RIGHT"),
+                commit_id=entry_commit,
+                original_commit_id=entry_commit,
+                diff_hunk=entry.get("diff_hunk"),
+                in_reply_to_id=entry.get("in_reply_to_id"),
+            )
+        )
+    if pending_comments:
+        await db.commit()
+
     if state != "PENDING":
         from app.services.workflow_service import build_activity_payload, dispatch_event
         await dispatch_event(
