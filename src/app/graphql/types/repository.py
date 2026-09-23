@@ -321,8 +321,59 @@ class Repository:
         return None
 
     @strawberry.field
-    def assignable_users(self) -> Connection[GitHubUser]:
-        return empty_connection()
+    async def assignable_users(
+        self,
+        info: Info,
+        first: Optional[int] = 30,
+        after: Optional[str] = None,
+        last: Optional[int] = None,
+        before: Optional[str] = None,
+        query: Optional[str] = None,
+    ) -> Connection[GitHubUser]:
+        """Users who may be assigned to an issue or pull request.
+
+        This took no arguments and returned an empty connection, which failed
+        twice over. A client paginating it -- which is the normal way to read a
+        connection -- got "Unknown argument 'first'" and could not assign
+        anyone; a client that did not would have got an empty list and also
+        assigned no one, more quietly. Fullsend's post-code script asks for
+        this to hand a finished pull request to a human, and treats the failure
+        as non-fatal, so the pull request was created and simply left
+        unassigned.
+
+        On GitHub the assignable set is the repository's collaborators. The
+        owner is included: an owner is always assignable and is not necessarily
+        carried in the collaborators table.
+        """
+        from app.models.repository import Collaborator
+        from app.models.user import User
+
+        db = info.context["db"]
+        result = await db.execute(
+            select(User)
+            .join(Collaborator, Collaborator.user_id == User.id)
+            .where(Collaborator.repo_id == self.database_id)
+        )
+        users = list(result.scalars().all())
+
+        owner_result = await db.execute(select(User).where(User.id == self._owner_id))
+        owner = owner_result.scalar_one_or_none()
+        if owner is not None and not any(u.id == owner.id for u in users):
+            users.insert(0, owner)
+
+        if query:
+            needle = query.lower()
+            users = [
+                u for u in users
+                if needle in (u.login or "").lower()
+                or needle in (u.name or "").lower()
+            ]
+
+        users.sort(key=lambda u: (u.login or "").lower())
+        return build_connection(
+            users, user_from_model, len(users),
+            first=first, after=after, last=last, before=before,
+        )
 
     @strawberry.field
     def mentionable_users(self) -> Connection[GitHubUser]:
