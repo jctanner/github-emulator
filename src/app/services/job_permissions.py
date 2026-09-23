@@ -64,6 +64,9 @@ _SCOPE_BY_SEGMENT = {
     "hooks": "administration",
     "keys": "administration",
     "collaborators": "administration",
+    # Forking creates a repository from this one's contents. GitHub's
+    # fine-grained equivalent is a Contents write.
+    "forks": "contents",
 }
 
 # Segments whose reads are metadata-level even though their writes need a
@@ -141,11 +144,40 @@ def _is_metadata_read(method: str, path: str) -> bool:
     )
 
 
-def check(method: str, path: str, declared: dict | str | None) -> str | None:
+# What GitHub grants when a repository's default is "read". Not a blanket
+# read of everything: the restricted default is contents and packages, plus
+# the metadata every token carries.
+_RESTRICTED_DEFAULT = {"contents": READ, "packages": READ, "metadata": READ}
+
+
+def default_permissions_for(repo_default: str | None) -> dict[str, str] | None:
+    """Translate a repository's default_workflow_permissions into scopes.
+
+    ``None`` means permissive, which is what a repository set to "write" —
+    GitHub's own default — grants. "read" is the restricted setting, and a job
+    declaring nothing on such a repository must not be able to write.
+    """
+    if str(repo_default or "write").strip().lower() == "read":
+        return dict(_RESTRICTED_DEFAULT)
+    return None
+
+
+def check(
+    method: str,
+    path: str,
+    declared: dict | str | None,
+    repo_default: str | None = None,
+) -> str | None:
     """Return a refusal reason, or None when the request is permitted."""
     permissions = normalise_permissions(declared)
     if permissions is None:
-        # No permissions block: permissive, as described in the module docstring.
+        # No permissions block: the repository's default decides. It is
+        # permissive on a repository set to "write", which is GitHub's own
+        # default, and restricted to reads on one set to "read".
+        inherited = default_permissions_for(repo_default)
+        if inherited is not None:
+            return check(method, path, inherited)
+        # Permissive, as described in the module docstring.
         return None
 
     if _is_metadata_read(method, path):

@@ -25,6 +25,16 @@ class Repository(Base):
         Integer, ForeignKey("repositories.id"), nullable=True
     )
     default_branch: Mapped[str] = mapped_column(String, default="main")
+    # What a workflow job gets when it declares no `permissions:` block.
+    # GitHub's repository setting, served at
+    # /repos/{owner}/{repo}/actions/permissions/workflow. "write" is GitHub's
+    # permissive default; "read" restricts the token to reads.
+    default_workflow_permissions: Mapped[str | None] = mapped_column(
+        String, nullable=True, default="write"
+    )
+    can_approve_pull_request_reviews: Mapped[bool | None] = mapped_column(
+        Boolean, nullable=True, default=False
+    )
     disk_path: Mapped[str | None] = mapped_column(String, nullable=True)
 
     has_issues: Mapped[bool] = mapped_column(Boolean, default=True)

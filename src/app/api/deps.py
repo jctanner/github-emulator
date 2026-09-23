@@ -148,8 +148,17 @@ async def _resolve_user(
         # A job token is scoped by the permissions its job declared. Enforcing
         # here covers every route without touching them individually, and
         # applies only to job tokens, so other credentials are unaffected.
+        # A job declaring no permissions inherits the repository's default,
+        # so the run's repository has to be consulted rather than assuming
+        # permissive.
+        repo_default = None
+        if job.permissions in (None, {}):
+            repo = (await db.execute(
+                select(Repository).where(Repository.id == run.repo_id)
+            )).scalar_one_or_none()
+            repo_default = repo.default_workflow_permissions if repo else None
         refusal = job_permissions.check(
-            request.method, request.url.path, job.permissions
+            request.method, request.url.path, job.permissions, repo_default
         )
         if refusal is not None:
             raise HTTPException(

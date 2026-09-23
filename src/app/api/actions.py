@@ -724,6 +724,48 @@ async def delete_secret(
     await db.commit()
 
 
+# --- Workflow permissions ---
+
+@router.get("/repos/{owner}/{repo}/actions/permissions/workflow")
+async def get_workflow_permissions(
+    owner: str, repo: str, db: DbSession, user: AuthUser,
+):
+    """The default a job inherits when it declares no `permissions:` block.
+
+    Without this endpoint the setting had nowhere to live, so such a job was
+    treated as permissive — which wrongly allows writes on a repository whose
+    default is "read".
+    """
+    repository = await get_repo_or_404(owner, repo, db)
+    return {
+        "default_workflow_permissions": repository.default_workflow_permissions or "write",
+        "can_approve_pull_request_reviews": bool(
+            repository.can_approve_pull_request_reviews
+        ),
+    }
+
+
+@router.put("/repos/{owner}/{repo}/actions/permissions/workflow", status_code=204)
+async def set_workflow_permissions(
+    owner: str, repo: str, body: dict, user: AuthUser, db: DbSession,
+):
+    """Set the repository's default workflow permissions."""
+    repository = await get_repo_or_404(owner, repo, db)
+    if "default_workflow_permissions" in body:
+        value = str(body["default_workflow_permissions"]).strip().lower()
+        if value not in ("read", "write"):
+            raise HTTPException(
+                status_code=422,
+                detail="default_workflow_permissions must be 'read' or 'write'",
+            )
+        repository.default_workflow_permissions = value
+    if "can_approve_pull_request_reviews" in body:
+        repository.can_approve_pull_request_reviews = bool(
+            body["can_approve_pull_request_reviews"]
+        )
+    await db.commit()
+
+
 # --- Variables ---
 
 @router.get("/repos/{owner}/{repo}/actions/variables")
