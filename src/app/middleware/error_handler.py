@@ -137,8 +137,16 @@ async def http_404_handler(request: Request, exc: Exception) -> JSONResponse:
 
 
 async def http_422_handler(request: Request, exc: Exception) -> JSONResponse:
-    """Handle 422 Validation Failed."""
-    return _build_error_response(422, "Validation Failed")
+    """Handle 422 Validation Failed.
+
+    GitHub's 422 carries a message saying what was wrong. Flattening every
+    one to "Validation Failed" throws away the only part a caller can act on:
+    a secret sealed against the wrong key and a payload that is not a sealed
+    box at all are different problems with the same status, and the handler
+    that raised them already said which. Keep the detail when there is one.
+    """
+    detail = getattr(exc, "detail", None)
+    return _build_error_response(422, detail or "Validation Failed")
 
 
 async def http_503_handler(request: Request, exc: Exception) -> JSONResponse:

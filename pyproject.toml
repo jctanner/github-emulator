@@ -22,6 +22,9 @@ dependencies = [
     "pyyaml>=6.0",
     "python-multipart>=0.0.6",
     "asyncssh>=2.14.0",
+    # Actions secrets are libsodium sealed boxes on GitHub; the emulator
+    # generates the repository public key and opens what clients seal to it.
+    "pynacl>=1.5.0",
 ]
 
 [project.optional-dependencies]

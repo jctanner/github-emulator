@@ -13,6 +13,11 @@ from app.api.deps import AuthUser, CurrentUser, DbSession, get_repo_or_404
 from app.config import settings
 from app.models.actions import Workflow, WorkflowRun, WorkflowJob, Secret, Variable
 from app.models.artifact import WorkflowArtifact
+from app.services.secret_crypto import (
+    SecretDecryptError,
+    open_sealed_secret,
+    repo_public_key,
+)
 from app.schemas.user import SimpleUser, _fmt_dt, _make_node_id
 from app.schemas.actions import (
     WorkflowJobListResponse,
@@ -646,6 +651,20 @@ async def list_secrets(
     }
 
 
+@router.get("/repos/{owner}/{repo}/actions/secrets/public-key")
+async def get_repo_secret_public_key(
+    owner: str, repo: str, db: DbSession, user: AuthUser,
+):
+    """Return the repository public key clients seal secrets against.
+
+    Declared before /secrets/{secret_name} so the literal path wins; the
+    other order captures "public-key" as a secret name and 404s.
+    """
+    repository = await get_repo_or_404(owner, repo, db)
+    key_id, key = repo_public_key(repository.id)
+    return {"key_id": key_id, "key": key}
+
+
 @router.get("/repos/{owner}/{repo}/actions/secrets/{secret_name}")
 async def get_secret(
     owner: str, repo: str, secret_name: str, db: DbSession, user: AuthUser,
@@ -674,7 +693,16 @@ async def create_or_update_secret(
     if s is None:
         s = Secret(repo_id=repository.id, name=secret_name)
         db.add(s)
-    if "value" in body or "plaintext" in body:
+    if "encrypted_value" in body:
+        # The real path: a sealed box opened with this repository's key. The
+        # plaintext is kept so a workflow run can use the secret; it is never
+        # returned by the API.
+        try:
+            s.value = open_sealed_secret(repository.id, str(body["encrypted_value"]))
+        except SecretDecryptError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+    elif "value" in body or "plaintext" in body:
+        # The emulator's own seed path, which has no key to seal against.
         s.value = str(body.get("value", body.get("plaintext", "")))
     await db.commit()
     return {"name": secret_name}
