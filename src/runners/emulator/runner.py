@@ -264,8 +264,12 @@ class _StepIfParser:
         r"(?P<number>\d+(?:\.\d+)?)|(?P<name>[A-Za-z_][A-Za-z0-9_.-]*)"
     )
 
-    def __init__(self, expression: str, context: dict):
+    def __init__(self, expression: str, context: dict, failed: bool = False):
         self.context = context
+        # Whether an earlier step already failed. GitHub's status functions are
+        # the only way a step can run after that, so the flag has to reach the
+        # evaluator rather than being decided by the caller.
+        self.failed = failed
         self.tokens = self._tokenize(expression)
         self.position = 0
 
@@ -375,8 +379,17 @@ class _StepIfParser:
         return _lookup_context_path(self.context, token)
 
     def _call(self, name, arguments):
+        # Status functions. Without these a workflow cannot express "run this
+        # even though something failed", which is how every cleanup and
+        # evidence-collecting step is written.
         if name == "always" and not arguments:
             return True
+        if name == "success" and not arguments:
+            return not self.failed
+        if name == "failure" and not arguments:
+            return self.failed
+        if name == "cancelled" and not arguments:
+            return False
         if name == "hashFiles":
             return _hash_files([str(a) for a in arguments])
         if name == "format" and arguments:
@@ -468,10 +481,17 @@ def _evaluate_step_if(
     condition: object,
     step_outputs: dict[str, dict[str, str]],
     job: dict | None = None,
+    failed: bool = False,
 ) -> bool:
-    """Return whether a runner step should execute."""
+    """Return whether a runner step should execute.
+
+    ``failed`` says whether an earlier step in the same sequence already
+    failed. GitHub keeps running the remaining steps in that case and lets
+    each one's condition decide, which is the only way `if: always()` can
+    mean anything; a step with no condition does not run.
+    """
     if condition is None:
-        return True
+        return not failed
     if isinstance(condition, bool):
         return condition
     if not isinstance(condition, str):
@@ -481,7 +501,7 @@ def _evaluate_step_if(
         expression = expression[3:-2].strip()
     try:
         return _StepIfParser(
-            expression, _runner_context(None, step_outputs, job=job)
+            expression, _runner_context(None, step_outputs, job=job), failed
         ).parse()
     except ValueError as exc:
         # Treating an unevaluable condition as false silently drops the step,
@@ -732,7 +752,7 @@ class RunnerClient:
             append_log(f"\n##[group]Step {step_num}: {step_name}\n")
 
             try:
-                should_run = _evaluate_step_if(step.get("if"), step_outputs, job)
+                should_run = _evaluate_step_if(step.get("if"), step_outputs, job, not all_passed)
             except StepConditionError as exc:
                 step["status"] = "completed"
                 step["conclusion"] = "failure"
@@ -744,7 +764,11 @@ class RunnerClient:
             if not should_run:
                 step["status"] = "completed"
                 step["conclusion"] = "skipped"
-                append_log("Skipped because its condition evaluated to false\n")
+                append_log(
+                    "Skipped because an earlier step failed\n"
+                    if not all_passed and step.get("if") is None
+                    else "Skipped because its condition evaluated to false\n"
+                )
                 append_log("##[endgroup]\n")
                 self._report_progress(job_repository, job_id, steps)
                 continue
@@ -768,12 +792,12 @@ class RunnerClient:
             if result != "success":
                 all_passed = False
                 log.error("  Step %d FAILED", step_num)
-                # Mark remaining steps as skipped
-                for remaining in steps:
-                    if remaining.get("status") == "queued":
-                        remaining["status"] = "completed"
-                        remaining["conclusion"] = "skipped"
-                break
+                # Keep going rather than breaking. A later step may still be
+                # meant to run — that is what `if: always()` is for, and the
+                # steps written that way are the ones that collect evidence
+                # about the failure. Each remaining condition is evaluated
+                # knowing the job has already failed, so a step with no
+                # condition is skipped exactly as GitHub skips it.
             else:
                 log.info("  Step %d passed", step_num)
 
@@ -1425,9 +1449,16 @@ class RunnerClient:
         log_lines = [f"Running local composite action {action_ref}\n"]
         if log_callback:
             log_callback(log_lines[0])
+        # A failed step does not end the action. GitHub keeps going and lets
+        # each remaining condition decide, which is what makes `if: always()`
+        # mean anything — and every step that collects evidence about a failure
+        # is written that way. Returning here skipped exactly the steps whose
+        # reason for existing is that something went wrong.
+        failed = False
+        failure_result = "failure"
         for index, action_step in enumerate(action_steps, start=1):
             try:
-                action_should_run = _evaluate_step_if(action_step.get("if"), step_outputs, job)
+                action_should_run = _evaluate_step_if(action_step.get("if"), step_outputs, job, failed)
             except StepConditionError as exc:
                 # The caller discards the returned output when it is streaming
                 # through log_callback, so a condition error raised inside a
@@ -1438,10 +1469,18 @@ class RunnerClient:
                 log_lines.append(message)
                 return "failure", "".join(log_lines), {}
             if not action_should_run:
-                log_lines.append(
-                    f"Skipping composite step {action_step.get('name', f'Step {index}')} "
-                    "because its condition evaluated to false\n"
+                reason = (
+                    "because an earlier step failed"
+                    if failed and action_step.get("if") is None
+                    else "because its condition evaluated to false"
                 )
+                message = (
+                    f"Skipping composite step {action_step.get('name', f'Step {index}')} "
+                    f"{reason}\n"
+                )
+                if log_callback:
+                    log_callback(message)
+                log_lines.append(message)
                 continue
             rendered = _render_local_action(action_step, inputs, step_outputs, github_token, job)
             rendered.setdefault("number", index)
@@ -1462,7 +1501,15 @@ class RunnerClient:
             if rendered.get("id"):
                 step_outputs[str(rendered["id"])] = dict(rendered.get("outputs") or {})
             if result != "success":
-                return result, "".join(log_lines), {}
+                # Remember the first failure and carry on: a later step may
+                # still be meant to run, and the action's own result is the
+                # failure either way.
+                if not failed:
+                    failed = True
+                    failure_result = result
+
+        if failed:
+            return failure_result, "".join(log_lines), {}
 
         outputs = {}
         for name, output_def in (definition.get("outputs") or {}).items():

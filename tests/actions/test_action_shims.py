@@ -44,7 +44,7 @@ def test_service_account_key_exports_the_paths_downstream_steps_read(
         monkeypatch, tmp_path, {"type": "service_account", "project_id": "proj-from-file"}
     )
     step = {"uses": AUTH, "with": {}}
-    result, output, updates = _runner()._shim_google_auth(step, AUTH)
+    result, output, updates = _runner()._shim_google_auth(step, AUTH, {})
 
     assert result == "success"
     assert updates["GOOGLE_APPLICATION_CREDENTIALS"] == str(path)
@@ -60,7 +60,7 @@ def test_the_actions_project_id_input_wins(monkeypatch, tmp_path):
         monkeypatch, tmp_path, {"type": "service_account", "project_id": "proj-from-file"}
     )
     step = {"uses": AUTH, "with": {"project_id": "proj-from-input"}}
-    _result, _output, updates = _runner()._shim_google_auth(step, AUTH)
+    _result, _output, updates = _runner()._shim_google_auth(step, AUTH, {})
     assert updates["GOOGLE_CLOUD_PROJECT"] == "proj-from-input"
 
 
@@ -72,7 +72,7 @@ def test_authorized_user_falls_back_to_its_quota_project(monkeypatch, tmp_path):
         {"type": "authorized_user", "quota_project_id": "quota-proj"},
     )
     step = {"uses": AUTH, "with": {}}
-    _result, _output, updates = _runner()._shim_google_auth(step, AUTH)
+    _result, _output, updates = _runner()._shim_google_auth(step, AUTH, {})
     assert updates["GOOGLE_CLOUD_PROJECT"] == "quota-proj"
 
 
@@ -82,7 +82,7 @@ def test_a_credential_that_is_not_federated_satisfies_fullsends_own_script(
     """prepare-sandbox-credentials.sh no-ops for any type but external_account."""
     _with_credentials(monkeypatch, tmp_path, {"type": "authorized_user"})
     step = {"uses": AUTH, "with": {}}
-    result, _output, updates = _runner()._shim_google_auth(step, AUTH)
+    result, _output, updates = _runner()._shim_google_auth(step, AUTH, {})
     assert result == "success"
     assert json.loads(
         Path(updates["GOOGLE_APPLICATION_CREDENTIALS"]).read_text()
@@ -94,7 +94,7 @@ def test_missing_credentials_fail_rather_than_export_nothing(monkeypatch, tmp_pa
         runner_module, "GCP_CREDENTIALS_FILE", str(tmp_path / "absent.json")
     )
     step = {"uses": AUTH, "with": {}}
-    result, output, updates = _runner()._shim_google_auth(step, AUTH)
+    result, output, updates = _runner()._shim_google_auth(step, AUTH, {})
     assert result == "failure"
     assert updates == {}
     assert "No credentials file" in output
@@ -108,7 +108,7 @@ def test_a_federated_credential_is_refused_with_its_reason(monkeypatch, tmp_path
         {"type": "external_account", "credential_source": {"url": "https://example"}},
     )
     step = {"uses": AUTH, "with": {}}
-    result, output, updates = _runner()._shim_google_auth(step, AUTH)
+    result, output, updates = _runner()._shim_google_auth(step, AUTH, {})
     assert result == "failure"
     assert updates == {}
     assert "external_account" in output
@@ -118,7 +118,7 @@ def test_unreadable_credentials_fail_with_the_path(monkeypatch, tmp_path):
     path = tmp_path / "credentials.json"
     path.write_text("{not json")
     monkeypatch.setattr(runner_module, "GCP_CREDENTIALS_FILE", str(path))
-    result, output, _updates = _runner()._shim_google_auth({"uses": AUTH}, AUTH)
+    result, output, _updates = _runner()._shim_google_auth({"uses": AUTH}, AUTH, {})
     assert result == "failure"
     assert str(path) in output
 
@@ -126,7 +126,7 @@ def test_unreadable_credentials_fail_with_the_path(monkeypatch, tmp_path):
 def test_the_credentials_path_is_masked(monkeypatch, tmp_path):
     path = _with_credentials(monkeypatch, tmp_path, {"type": "service_account"})
     client = _runner()
-    client._shim_google_auth({"uses": AUTH, "with": {}}, AUTH)
+    client._shim_google_auth({"uses": AUTH, "with": {}}, AUTH, {})
     assert str(path) in client._masks
 
 

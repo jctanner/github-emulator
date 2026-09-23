@@ -121,7 +121,7 @@ def test_the_image_toolchain_is_used_when_it_satisfies_the_request(
     root = _fake_goroot(monkeypatch, tmp_path, "1.26.5")
     monkeypatch.setattr(runner_module, "WORKDIR", str(tmp_path))
     step = {"uses": SETUP_GO, "with": {"go-version": "1.26.5"}}
-    result, output, updates = _runner()._shim_setup_go(step, SETUP_GO)
+    result, output, updates = _runner()._shim_setup_go(step, SETUP_GO, {})
 
     assert result == "success"
     assert updates["PATH"].split(os.pathsep)[0] == str(root / "bin")
@@ -136,7 +136,7 @@ def test_a_newer_image_toolchain_also_satisfies_an_older_request(
     _fake_goroot(monkeypatch, tmp_path, "1.26.5")
     monkeypatch.setattr(runner_module, "WORKDIR", str(tmp_path))
     step = {"uses": SETUP_GO, "with": {"go-version": "1.24.0"}}
-    result, _output, updates = _runner()._shim_setup_go(step, SETUP_GO)
+    result, _output, updates = _runner()._shim_setup_go(step, SETUP_GO, {})
     assert result == "success"
     assert "GOROOT" in updates
 
@@ -154,7 +154,7 @@ def test_a_newer_request_is_delegated_to_go_and_said_out_loud(
         lambda self, version: downloads.append(version) or (None, "should not run"),
     )
     step = {"uses": SETUP_GO, "with": {"go-version": "1.27.0"}}
-    result, output, _updates = _runner()._shim_setup_go(step, SETUP_GO)
+    result, output, _updates = _runner()._shim_setup_go(step, SETUP_GO, {})
 
     assert result == "success"
     assert downloads == [], "toolchain switching should avoid the download"
@@ -175,7 +175,7 @@ def test_a_toolchain_too_old_to_switch_falls_back_to_downloading(
         lambda self, version: (fetched, f"downloaded go{version}"),
     )
     step = {"uses": SETUP_GO, "with": {"go-version": "1.26.5"}}
-    result, output, updates = _runner()._shim_setup_go(step, SETUP_GO)
+    result, output, updates = _runner()._shim_setup_go(step, SETUP_GO, {})
 
     assert result == "success"
     assert updates["PATH"].split(os.pathsep)[0] == str(fetched)
@@ -188,7 +188,7 @@ def test_no_image_toolchain_and_no_request_fails_rather_than_guessing(
     monkeypatch.setattr(runner_module, "GO_ROOT", str(tmp_path / "absent"))
     monkeypatch.setattr(runner_module, "WORKDIR", str(tmp_path))
     result, output, updates = _runner()._shim_setup_go(
-        {"uses": SETUP_GO, "with": {}}, SETUP_GO
+        {"uses": SETUP_GO, "with": {}}, SETUP_GO, {}
     )
     assert result == "failure"
     assert updates == {}
@@ -204,7 +204,7 @@ def test_a_failed_download_is_reported_not_swallowed(monkeypatch, tmp_path):
         lambda self, version: (None, "could not download https://example: boom"),
     )
     result, output, updates = _runner()._shim_setup_go(
-        {"uses": SETUP_GO, "with": {"go-version": "1.26.5"}}, SETUP_GO
+        {"uses": SETUP_GO, "with": {"go-version": "1.26.5"}}, SETUP_GO, {}
     )
     assert result == "failure"
     assert updates == {}
@@ -217,6 +217,7 @@ def test_the_missing_go_mod_case_fails_with_the_path(monkeypatch, tmp_path):
     result, output, _updates = _runner()._shim_setup_go(
         {"uses": SETUP_GO, "with": {"go-version-file": "fullsend-src/go.mod"}},
         SETUP_GO,
+        {},
     )
     assert result == "failure"
     assert "go-version-file not found" in output
