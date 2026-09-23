@@ -133,3 +133,58 @@ async def test_a_malformed_comment_rejects_the_whole_request(
         headers=auth_headers(test_token),
     )
     assert reviews.json() == [], "a rejected request still created a review"
+
+
+@pytest.mark.asyncio
+async def test_a_file_level_comment_needs_no_line(client, test_user, test_token):
+    """Fullsend's own payload shape, which an anchor requirement would reject.
+
+    internal/forge/github/github.go omits `line` when it is 0 and sets
+    subject_type="file". Rejecting that entry is worse than it sounds: the
+    client's 422 fallback resubmits the review with *no* inline comments at
+    all, so one unplaceable finding costs every placed one.
+    """
+    pr = await _create_pr(client, test_token, "rwc-file")
+    number = pr["number"]
+
+    resp = await client.post(
+        f"{API}/repos/testuser/rwc-file/pulls/{number}/reviews",
+        json={
+            "event": "REQUEST_CHANGES",
+            "body": "Mixed findings.",
+            "commit_id": "dd048cf6ee190ff0d221bd38f79aeb57e2e5bc06",
+            "comments": [
+                {"path": "scripts/retry.py", "subject_type": "file",
+                 "body": "Protected path requires authorization."},
+                {"path": "scripts/retry.py", "line": 6,
+                 "body": "Mutable default argument."},
+            ],
+        },
+        headers=auth_headers(test_token),
+    )
+    assert resp.status_code == 201, resp.text
+
+    comments = (await client.get(
+        f"{API}/repos/testuser/rwc-file/pulls/{number}/comments",
+        headers=auth_headers(test_token),
+    )).json()
+    assert len(comments) == 2
+    by_type = {c["subject_type"]: c for c in comments}
+    assert by_type["file"]["line"] is None
+    assert by_type["file"]["path"] == "scripts/retry.py"
+    assert by_type["line"]["line"] == 6
+
+
+@pytest.mark.asyncio
+async def test_an_unknown_subject_type_is_refused(client, test_user, test_token):
+    """Only the two GitHub defines; anything else is a client bug, said loudly."""
+    pr = await _create_pr(client, test_token, "rwc-subj")
+    number = pr["number"]
+    resp = await client.post(
+        f"{API}/repos/testuser/rwc-subj/pulls/{number}/reviews",
+        json={"event": "COMMENT", "body": "x", "comments": [
+            {"path": "a.py", "subject_type": "paragraph", "body": "?"}]},
+        headers=auth_headers(test_token),
+    )
+    assert resp.status_code == 422
+    assert "subject_type must be line or file" in str(resp.json())

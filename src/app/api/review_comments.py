@@ -48,6 +48,7 @@ def _review_comment_json(
         "author_association": "OWNER",
         "line": comment.line,
         "side": comment.side or "RIGHT",
+        "subject_type": comment.subject_type or "line",
         "_links": {
             "self": {"href": f"{api}/repos/{repo_full}/pulls/comments/{comment.id}"},
             "html": {"href": f"{base_url}/{repo_full}/pull/{pr_number}#discussion_r{comment.id}"},

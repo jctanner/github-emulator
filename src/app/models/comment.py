@@ -45,6 +45,11 @@ class PRReviewComment(Base):
     original_commit_id: Mapped[str | None] = mapped_column(String, nullable=True)
     diff_hunk: Mapped[str | None] = mapped_column(Text, nullable=True)
     in_reply_to_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    # GitHub's subject_type: "line" (the default) or "file" for a comment on a
+    # whole file, which legitimately carries no line or position. A client
+    # sends subject_type="file" with line omitted, so without this a file-level
+    # comment cannot be told apart from a malformed one.
+    subject_type: Mapped[str | None] = mapped_column(String, nullable=True)
 
     created_at: Mapped[datetime] = mapped_column(
         DateTime, server_default=func.now()

@@ -111,12 +111,28 @@ async def create_review(
                 status_code=422, detail=f"comments[{index}].body is required"
             )
         # GitHub accepts either the legacy diff `position` or the newer `line`,
-        # and a review is free to mix them across entries.
-        if entry.get("position") is None and entry.get("line") is None:
+        # and a review is free to mix them across entries. A comment on a whole
+        # file carries neither and says so with subject_type="file" - which is
+        # what Fullsend sends for a file-level finding, omitting `line`
+        # entirely. Requiring an anchor unconditionally would reject exactly
+        # those, and the client's 422 fallback drops every inline comment in
+        # the review rather than the one it could not place.
+        subject_type = (entry.get("subject_type") or "line").lower()
+        if subject_type not in ("line", "file"):
+            raise HTTPException(
+                status_code=422,
+                detail=f"comments[{index}].subject_type must be line or file",
+            )
+        if (
+            subject_type == "line"
+            and entry.get("position") is None
+            and entry.get("line") is None
+        ):
             raise HTTPException(
                 status_code=422,
                 detail=f"comments[{index}] requires either position or line",
             )
+        entry["subject_type"] = subject_type
         pending_comments.append(entry)
 
     now = datetime.now(timezone.utc)
@@ -159,6 +175,7 @@ async def create_review(
                 original_commit_id=entry_commit,
                 diff_hunk=entry.get("diff_hunk"),
                 in_reply_to_id=entry.get("in_reply_to_id"),
+                subject_type=entry.get("subject_type", "line"),
             )
         )
     if pending_comments:
