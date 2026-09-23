@@ -30,9 +30,22 @@ def _issue_json(issue: Issue, base_url: str) -> dict:
     """Build a GitHub-compatible issue JSON object."""
     api = f"{base_url}/api/v3"
     repo = issue.repository
-    owner_login = repo.owner.login if repo and repo.owner else "unknown"
+    # full_name is the repository's own identity and is what every URL here
+    # must be built from. Reconstructing it as owner.login + "/" + name names
+    # the *user* who created the repository, which for an organisation-owned
+    # one is the wrong owner: an issue in fullsend-dev/triage-target reported
+    # https://.../admin/triage-target/issues/38, a link that 404s. owner_id
+    # points at a user and organization_id is separate, so the two disagree
+    # whenever a repository belongs to an org.
     repo_name = repo.name if repo else "unknown"
-    repo_full = f"{owner_login}/{repo_name}"
+    if repo and repo.full_name:
+        repo_full = repo.full_name
+    else:
+        creator = repo.owner.login if repo and repo.owner else "unknown"
+        repo_full = f"{creator}/{repo_name}"
+    # Derived from repo_full so label URLs below name the same owner the issue
+    # URL does; they had the same bug for the same reason.
+    owner_login, _, _ = repo_full.partition("/")
     issue_url = f"{api}/repos/{repo_full}/issues/{issue.number}"
 
     user_simple = SimpleUser.from_db(issue.user, base_url).model_dump() if issue.user else None

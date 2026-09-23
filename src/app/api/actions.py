@@ -754,10 +754,48 @@ async def create_variable(
     if not name:
         raise HTTPException(status_code=422, detail="name is required")
 
+    # GitHub answers 409 when the variable already exists, and clients branch
+    # on that to decide between POST and PATCH. Letting the unique constraint
+    # surface as a 500 turns "already there" into "the server is broken", and
+    # a client that would have updated instead gives up.
+    existing = (await db.execute(
+        select(Variable).where(Variable.repo_id == repository.id, Variable.name == name)
+    )).scalar_one_or_none()
+    if existing is not None:
+        raise HTTPException(
+            status_code=409,
+            detail=f"Variable {name} already exists. Use PATCH to update it.",
+        )
+
     v = Variable(repo_id=repository.id, name=name, value=value)
     db.add(v)
     await db.commit()
     return {"name": name, "value": value}
+
+
+# E3: declared before the PATCH/DELETE routes that share this path so the
+# method table for it is complete; without a GET, FastAPI answers 405 for a
+# route that exists in GitHub and clients read that as "wrong method" rather
+# than "not implemented here".
+@router.get("/repos/{owner}/{repo}/actions/variables/{variable_name}")
+async def get_variable(
+    owner: str, repo: str, variable_name: str, db: DbSession, user: AuthUser,
+):
+    """Get a single repository variable."""
+    repository = await get_repo_or_404(owner, repo, db)
+    v = (await db.execute(
+        select(Variable).where(
+            Variable.repo_id == repository.id, Variable.name == variable_name
+        )
+    )).scalar_one_or_none()
+    if v is None:
+        raise HTTPException(status_code=404, detail="Not Found")
+    return {
+        "name": v.name,
+        "value": v.value,
+        "created_at": _fmt_dt(v.created_at),
+        "updated_at": _fmt_dt(v.updated_at),
+    }
 
 
 @router.patch("/repos/{owner}/{repo}/actions/variables/{variable_name}")

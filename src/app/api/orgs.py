@@ -117,6 +117,34 @@ async def update_org(org: str, body: dict, user: AuthUser, db: DbSession):
     return _org_json(organisation, BASE)
 
 
+@router.get("/organizations", response_model=list[OrganizationResponse])
+async def list_all_organizations(
+    db: DbSession,
+    current_user: CurrentUser,
+    since: int = Query(0, description="Only organizations with an id greater than this"),
+    per_page: int = Query(30, ge=1, le=100),
+):
+    """List every organization, in id order.
+
+    GitHub's list-all-organizations endpoint. It is how a client enumerates
+    organizations without already knowing their names — `/orgs/{org}` only
+    answers when you can name it, and `/user/orgs` only lists ones the caller
+    belongs to. The admin frontend has its own `/organizations`, but that is a
+    different router with a different response shape and is not what an API
+    client reaches.
+
+    Paginated with `since` rather than `page`, as GitHub does here: the cursor
+    is the last id seen.
+    """
+    result = await db.execute(
+        select(Organization)
+        .where(Organization.id > since)
+        .order_by(Organization.id)
+        .limit(per_page)
+    )
+    return [_org_json(o, BASE) for o in result.scalars().all()]
+
+
 @router.get("/user/orgs", response_model=list[OrganizationResponse])
 async def list_user_orgs(user: AuthUser, db: DbSession):
     """List organizations for the authenticated user."""
