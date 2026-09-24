@@ -257,6 +257,17 @@ async def delete_ref(
         raise HTTPException(status_code=404, detail="Repository not found on disk")
 
     full_ref = ref if ref.startswith("refs/") else f"refs/{ref}"
+
+    # `git update-ref -d` exits 0 for a ref that is not there, so deleting
+    # something that does not exist reported 204 and looked like a deletion.
+    # GitHub answers 422 "Reference does not exist", and callers rely on that
+    # to tell "I removed it" from "it was already gone" — a cleanup routine
+    # that cannot tell those apart reports work it did not do.
+    try:
+        await _git(repository.disk_path, "rev-parse", "--verify", full_ref)
+    except RuntimeError:
+        raise ValidationError(message="Reference does not exist")
+
     branch = await _get_branch_record(db, repository, full_ref)
     if (
         branch is not None
