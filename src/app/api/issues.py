@@ -84,7 +84,7 @@ def _issue_json(issue: Issue, base_url: str) -> dict:
     if issue.closed_by:
         closed_by = SimpleUser.from_db(issue.closed_by, base_url).model_dump()
 
-    return {
+    payload = {
         "url": issue_url,
         "repository_url": f"{api}/repos/{repo_full}",
         "labels_url": f"{issue_url}/labels{{/name}}",
@@ -125,8 +125,15 @@ def _issue_json(issue: Issue, base_url: str) -> dict:
         },
         "timeline_url": f"{issue_url}/timeline",
         "performed_via_github_app": None,
-        "pull_request": pull_request_info,
     }
+    # GitHub omits `pull_request` entirely on a plain issue and includes it on
+    # a pull request, which is how clients tell the two apart in an issues
+    # listing -- `jq 'has("pull_request")'` and the equivalent in every SDK.
+    # Emitting it as null made every issue look like a pull request to that
+    # test; the key is therefore added only when there is one.
+    if pull_request_info is not None:
+        payload["pull_request"] = pull_request_info
+    return payload
 
 
 def _pagination_links(request: Request, page: int, per_page: int, total: int) -> str:
@@ -212,7 +219,12 @@ async def list_issues(
 
 
 @router.post(
-    "/repos/{owner}/{repo}/issues", status_code=201, response_model=IssueResponse
+    "/repos/{owner}/{repo}/issues",
+    status_code=201,
+    response_model=IssueResponse,
+    # A plain issue omits pull_request; without this the model would put
+    # it back as null and clients could not tell issues from PRs.
+    response_model_exclude_unset=True,
 )
 async def create_issue(
     owner: str, repo: str, body: dict, user: AuthUser, db: DbSession
@@ -288,6 +300,7 @@ async def create_issue(
 @router.get(
     "/repos/{owner}/{repo}/issues/{issue_number}",
     response_model=IssueResponse,
+    response_model_exclude_unset=True,
 )
 async def get_issue(
     owner: str, repo: str, issue_number: int, db: DbSession, current_user: CurrentUser
@@ -308,7 +321,9 @@ async def get_issue(
 
 
 @router.patch(
-    "/repos/{owner}/{repo}/issues/{issue_number}", response_model=IssueResponse
+    "/repos/{owner}/{repo}/issues/{issue_number}",
+    response_model=IssueResponse,
+    response_model_exclude_unset=True,
 )
 async def update_issue(
     owner: str,

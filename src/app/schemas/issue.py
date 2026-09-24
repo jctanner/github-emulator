@@ -58,6 +58,12 @@ class IssueResponse(BaseModel):
     body: Optional[str] = None
     state_reason: Optional[str] = None
     closed_by: Optional[SimpleUser] = None
+    # Present only on a pull request. Undeclared, FastAPI stripped it from
+    # every response filtered through this model, so a pull request fetched
+    # through the issues API came back indistinguishable from an issue. The
+    # routes pair this with response_model_exclude_unset so a plain issue,
+    # whose payload omits the key, does not regain it as null here.
+    pull_request: Optional[dict] = None
 
     model_config = ConfigDict(from_attributes=True)
 
