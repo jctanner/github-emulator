@@ -71,6 +71,11 @@ def _pr_query(*, include_issue_labels: bool = False):
     options = [
         raiseload("*"),
         joinedload(PullRequest.issue).joinedload(Issue.user),
+        # Issue.assignees is lazy="raise", so the serializer cannot reach it
+        # unless it is loaded here. It is part of every pull-request response
+        # on GitHub, and leaving it out is what made an assigned pull request
+        # still read as unassigned.
+        joinedload(PullRequest.issue).selectinload(Issue.assignees),
         joinedload(PullRequest.repository).joinedload(Repository.owner),
         joinedload(PullRequest.repository).joinedload(Repository.organization),
         joinedload(PullRequest.head_repository).joinedload(Repository.owner),
@@ -97,6 +102,10 @@ def _pr_json(pr: PullRequest, base_url: str) -> dict:
 
     user_simple = SimpleUser.from_db(issue.user, base_url).model_dump() if issue.user else None
     merged_by = SimpleUser.from_db(pr.merged_by, base_url).model_dump() if pr.merged_by else None
+    _pr_assignees = [
+        SimpleUser.from_db(u, base_url).model_dump()
+        for u in (getattr(issue, "assignees", None) or [])
+    ]
 
     head_repo = pr.head_repository or repo
     head_ref = getattr(pr, "resolved_head_ref", pr.head_ref)
@@ -128,8 +137,12 @@ def _pr_json(pr: PullRequest, base_url: str) -> dict:
         "closed_at": _fmt_dt(issue.closed_at),
         "merged_at": _fmt_dt(pr.merged_at),
         "merge_commit_sha": pr.merge_commit_sha,
-        "assignee": None,
-        "assignees": [],
+        # A pull request is an issue underneath, and its assignees live there.
+        # These were hardcoded empty, so a pull request assigned through the
+        # API still came back unassigned — the handoff looked as though it had
+        # not happened even once it had.
+        "assignee": _pr_assignees[0] if _pr_assignees else None,
+        "assignees": _pr_assignees,
         "requested_reviewers": [],
         "requested_teams": [],
         "labels": [],

@@ -121,6 +121,12 @@ class PRResponse(BaseModel):
     additions: int = 0
     deletions: int = 0
     changed_files: int = 0
+    # FastAPI filters the response through this model, so a field missing here
+    # is dropped from the payload no matter what the serializer produced. That
+    # is why an assigned pull request still read as unassigned: the assignment
+    # persisted, the serializer emitted it, and the response model removed it.
+    assignee: Optional[SimpleUser] = None
+    assignees: list[SimpleUser] = []
 
     model_config = ConfigDict(from_attributes=True)
 

@@ -150,6 +150,10 @@ class UpdatePullRequestInput:
     title: Optional[str] = None
     body: Optional[str] = None
     base_ref_name: Optional[str] = None
+    # `gh pr edit --add-assignee` sets assignees through this mutation rather
+    # than the REST endpoint. Without the field the whole mutation is rejected
+    # by the schema, so the assignment fails before it is attempted.
+    assignee_ids: Optional[list[strawberry.ID]] = None
     client_mutation_id: Optional[str] = None
 
 
@@ -1150,10 +1154,42 @@ class Mutation:
             issue.body = input.body
         if input.base_ref_name is not None:
             pr.base_ref = input.base_ref_name
+        if input.assignee_ids is not None:
+            # GitHub replaces the assignee set wholesale here; `gh` reads the
+            # current assignees first and sends the union, so replacing is
+            # what makes --add-assignee add rather than clobber.
+            #
+            # The relationship has to be loaded before it is replaced: assigning
+            # to it lazily loads the current rows, and a lazy load inside the
+            # async resolver raises MissingGreenlet rather than doing IO.
+            from app.models.user import User as UserModel
+
+            await db.refresh(issue, attribute_names=["assignees"])
+
+            user_ids = [_decode_node_id(node_id) for node_id in input.assignee_ids]
+            if user_ids:
+                users = (await db.execute(
+                    select(UserModel).where(UserModel.id.in_(user_ids))
+                )).scalars().all()
+                found = {u.id for u in users}
+                missing = [str(i) for i in user_ids if i not in found]
+                if missing:
+                    raise ValueError(
+                        "assigneeIds refers to users that do not exist: "
+                        + ", ".join(missing)
+                    )
+                issue.assignees = list(users)
+            else:
+                issue.assignees = []
 
         await db.commit()
-        await db.refresh(pr)
-        await db.refresh(issue)
+        # refresh() expires the instance, so the relationships the payload
+        # serializer reads have to be named here. Without that, building the
+        # payload lazily loads issue.repository inside the async resolver and
+        # raises MissingGreenlet — which is why this mutation failed for every
+        # field, not just the new one, until it had a test.
+        await db.refresh(pr, attribute_names=["issue"])
+        await db.refresh(issue, attribute_names=["repository", "assignees"])
 
         return UpdatePullRequestPayload(
             pull_request=pull_request_from_model(pr),

@@ -123,3 +123,79 @@ async def test_pagination_actually_pages(client, test_user, test_token):
     )
     conn = data["data"]["repository"]["assignableUsers"]
     assert len(conn["nodes"]) <= 1
+
+
+@pytest.mark.asyncio
+async def test_update_pull_request_sets_assignees(client, test_user, test_token):
+    """`gh pr edit --add-assignee` assigns through this mutation, not REST.
+
+    Resolving assignableUsers was only half the handoff: the call that follows
+    it was rejected by the schema with "Field 'assigneeIds' is not defined by
+    type 'UpdatePullRequestInput'", so the pull request still ended up
+    unassigned. Fixing the lookup alone would have moved the failure one step
+    later without fixing anything.
+    """
+    await _repo(client, test_token, "au-assign")
+    await client.post(
+        f"{API}/repos/testuser/au-assign/issues",
+        json={"title": "backing issue"},
+        headers=auth_headers(test_token),
+    )
+    pr = (await client.post(
+        f"{API}/repos/testuser/au-assign/pulls",
+        json={"title": "PR", "head": "feature", "base": "main"},
+        headers=auth_headers(test_token),
+    )).json()
+
+    ids = await _gql(client, test_token, """
+      query { repository(owner:"testuser", name:"au-assign") {
+        pullRequest(number: %d) { id }
+        assignableUsers(first: 5) { nodes { id login } }
+      } }
+    """ % pr["number"])
+    repo = ids["data"]["repository"]
+    pr_node_id = repo["pullRequest"]["id"]
+    user_node_id = [u["id"] for u in repo["assignableUsers"]["nodes"]
+                    if u["login"] == "testuser"][0]
+
+    out = await _gql(client, test_token, """
+      mutation($input: UpdatePullRequestInput!) {
+        updatePullRequest(input: $input) {
+          pullRequest { number }
+        }
+      }
+    """, {"input": {"pullRequestId": pr_node_id, "assigneeIds": [user_node_id]}})
+    assert "errors" not in out, out["errors"]
+
+    detail = (await client.get(
+        f"{API}/repos/testuser/au-assign/pulls/{pr['number']}",
+        headers=auth_headers(test_token),
+    )).json()
+    assert [a["login"] for a in detail.get("assignees") or []] == ["testuser"]
+
+
+@pytest.mark.asyncio
+async def test_assigning_an_unknown_user_is_refused(client, test_user, test_token):
+    """A bad id fails loudly rather than silently assigning nobody."""
+    await _repo(client, test_token, "au-badassign")
+    await client.post(
+        f"{API}/repos/testuser/au-badassign/issues",
+        json={"title": "backing issue"}, headers=auth_headers(test_token))
+    pr = (await client.post(
+        f"{API}/repos/testuser/au-badassign/pulls",
+        json={"title": "PR", "head": "feature", "base": "main"},
+        headers=auth_headers(test_token))).json()
+    pr_node_id = (await _gql(client, test_token, """
+      query { repository(owner:"testuser", name:"au-badassign") {
+        pullRequest(number: %d) { id } } }
+    """ % pr["number"]))["data"]["repository"]["pullRequest"]["id"]
+
+    import base64
+    ghost = base64.b64encode(b"User:999999").decode()
+    out = await _gql(client, test_token, """
+      mutation($input: UpdatePullRequestInput!) {
+        updatePullRequest(input: $input) { pullRequest { number } }
+      }
+    """, {"input": {"pullRequestId": pr_node_id, "assigneeIds": [ghost]}})
+    assert "errors" in out
+    assert "do not exist" in str(out["errors"])
