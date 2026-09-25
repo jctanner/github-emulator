@@ -24,13 +24,43 @@ def _require_enterprise(enterprise: str, user: AuthUser) -> None:
         raise HTTPException(status_code=403, detail="Site administrator required")
 
 
+def _effective_status(runner: Runner) -> str:
+    """Report a runner that has stopped heartbeating as offline.
+
+    The stored `status` is only ever written back to "offline" by
+    `_requeue_stale_jobs`, which reaches a runner solely when it is holding an
+    in-progress job. A runner that goes away while idle keeps whatever it was
+    last set to, so a stack that has restarted its runners a few times serves a
+    list of runners all claiming to be online, some with heartbeats weeks old.
+    That is not what GitHub does: a runner that stops polling goes offline.
+
+    Derived on read rather than reconciled on write, so no background sweep is
+    needed and a runner cannot be left misreporting because nothing happened to
+    touch it. The threshold is the one `_requeue_stale_jobs` already uses, so
+    the two agree by construction rather than by coincidence.
+    """
+    if runner.status == "offline" or runner.last_heartbeat is None:
+        return "offline"
+    heartbeat = runner.last_heartbeat
+    if heartbeat.tzinfo is None:
+        # SQLite hands back naive datetimes; they are stored as UTC.
+        heartbeat = heartbeat.replace(tzinfo=timezone.utc)
+    cutoff = datetime.now(timezone.utc) - timedelta(
+        seconds=settings.RUNNER_STALE_THRESHOLD_SECONDS
+    )
+    return "offline" if heartbeat < cutoff else runner.status
+
+
 def _runner_payload(runner: Runner) -> dict:
+    status = _effective_status(runner)
     return {
         "id": runner.id,
         "name": runner.name,
         "os": runner.os,
-        "status": runner.status,
-        "busy": runner.busy,
+        "status": status,
+        # A runner that is not online cannot be busy. Leaving busy=True on a
+        # dead runner is how a phantom appears to be occupied forever.
+        "busy": runner.busy and status == "online",
         "labels": [
             {"id": index, "name": label, "type": "custom"}
             for index, label in enumerate(runner.labels or [])
@@ -162,16 +192,7 @@ async def list_runners(
     )
     runners = result.scalars().all()
     api = f"{BASE}/api/v3"
-    items = []
-    for r in runners:
-        items.append({
-            "id": r.id,
-            "name": r.name,
-            "os": r.os,
-            "status": r.status,
-            "busy": r.busy,
-            "labels": [{"id": i, "name": lbl, "type": "custom"} for i, lbl in enumerate(r.labels or [])],
-        })
+    items = [_runner_payload(r) for r in runners]
     return {"total_count": len(items), "runners": items}
 
 
@@ -205,14 +226,7 @@ async def get_runner(
     r = result.scalar_one_or_none()
     if r is None:
         raise HTTPException(status_code=404, detail="Not Found")
-    return {
-        "id": r.id,
-        "name": r.name,
-        "os": r.os,
-        "status": r.status,
-        "busy": r.busy,
-        "labels": [{"id": i, "name": lbl, "type": "custom"} for i, lbl in enumerate(r.labels or [])],
-    }
+    return _runner_payload(r)
 
 
 @router.delete("/repos/{owner}/{repo}/actions/runners/{runner_id}", status_code=204)
