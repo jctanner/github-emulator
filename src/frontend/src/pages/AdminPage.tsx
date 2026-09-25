@@ -54,7 +54,10 @@ const APP_PERMISSION_FIELDS: {
   },
 ];
 
-function defaultAppPermissions(): Record<AppPermissionName, AppPermissionLevel> {
+function defaultAppPermissions(): Record<
+  AppPermissionName,
+  AppPermissionLevel
+> {
   return {contents: "", issues: "", pull_requests: "", metadata: "read"};
 }
 
@@ -460,7 +463,9 @@ function AppDetails({
             </div>
             <div>
               <dt>Private key</dt>
-              <dd>{value.data.has_private_key ? "Configured" : "Not configured"}</dd>
+              <dd>
+                {value.data.has_private_key ? "Configured" : "Not configured"}
+              </dd>
             </div>
             <div>
               <dt>Created</dt>
@@ -539,8 +544,8 @@ function Apps() {
           ...new Set([
             ...users.map((user) => user.login),
             ...organizations.map((organization) => organization.login),
-            ...repositories.map((repository) =>
-              repository.full_name.split("/", 1)[0],
+            ...repositories.map(
+              (repository) => repository.full_name.split("/", 1)[0],
             ),
           ]),
         ].sort((left, right) => left.localeCompare(right)),
@@ -552,7 +557,9 @@ function Apps() {
   const [slug, setSlug] = useState("");
   const [registrationAppId, setRegistrationAppId] = useState("");
   const [permissions, setPermissions] = useState(defaultAppPermissions);
-  const [registrationError, setRegistrationError] = useState<string | null>(null);
+  const [registrationError, setRegistrationError] = useState<string | null>(
+    null,
+  );
   const [registrationOpen, setRegistrationOpen] = useState(false);
   const [owner, setOwner] = useState("");
   const [repo, setRepo] = useState("");
@@ -642,7 +649,8 @@ function Apps() {
         <div
           className="app-registration-backdrop"
           onMouseDown={(event) => {
-            if (event.target === event.currentTarget) setRegistrationOpen(false);
+            if (event.target === event.currentTarget)
+              setRegistrationOpen(false);
           }}
           onKeyDown={(event) => {
             if (event.key === "Escape") setRegistrationOpen(false);
@@ -706,7 +714,9 @@ function Apps() {
                   <input
                     placeholder="Generated automatically"
                     value={registrationAppId}
-                    onChange={(event) => setRegistrationAppId(event.target.value)}
+                    onChange={(event) =>
+                      setRegistrationAppId(event.target.value)
+                    }
                   />
                 </label>
               </div>
@@ -748,7 +758,10 @@ function Apps() {
                 </div>
               </fieldset>
               <div className="app-registration-actions">
-                <button type="button" onClick={() => setRegistrationOpen(false)}>
+                <button
+                  type="button"
+                  onClick={() => setRegistrationOpen(false)}
+                >
                   Cancel
                 </button>
                 <button className="button">Create GitHub App</button>
@@ -807,7 +820,9 @@ function Apps() {
             autoComplete="off"
             disabled={!owner}
             list="app-installation-repositories"
-            placeholder={owner ? "Search repositories..." : "Select account first"}
+            placeholder={
+              owner ? "Search repositories..." : "Select account first"
+            }
             value={repo}
             onChange={(event) => {
               setRepo(event.target.value);
@@ -842,7 +857,9 @@ function Apps() {
                   )
                 }
               >
-                {selectedAppId === value.app_id ? "Hide details" : "View details"}
+                {selectedAppId === value.app_id
+                  ? "Hide details"
+                  : "View details"}
               </button>
               <button onClick={() => void remove(value.app_id)}>Delete</button>
             </div>

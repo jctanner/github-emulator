@@ -61,42 +61,46 @@ export function BranchSelector({
         <Octicon name="branch" /> {currentRef}
         <span className="dropdown-caret" aria-hidden="true" />
       </button>
-      {open ? <div className="branch-selector-popover">
-        <strong>Switch branches</strong>
-        <input
-          aria-label="Filter branches"
-          placeholder="Filter branches..."
-          ref={filterInput}
-          type="search"
-          value={query}
-          onChange={(event) => setQuery(event.target.value)}
-        />
-        <div className="branch-selector-list">
-          {branches.loading ? <span className="muted">Loading...</span> : null}
-          {branches.error ? (
-            <span className="flash-error">{branches.error}</span>
-          ) : null}
-          {visibleBranches?.map((branch) => (
-            <Link
-              className={branch.name === currentRef ? "selected" : undefined}
-              key={branch.name}
-              to={`/${owner}/${repo}/tree/${encodeURIComponent(branch.name)}`}
-              onClick={() => {
-                setOpen(false);
-                setQuery("");
-              }}
-            >
-              <span aria-hidden="true">
-                {branch.name === currentRef ? "✓" : ""}
-              </span>
-              {branch.name}
-            </Link>
-          ))}
-          {!branches.loading && visibleBranches?.length === 0 ? (
-            <span className="muted">No branches found</span>
-          ) : null}
+      {open ? (
+        <div className="branch-selector-popover">
+          <strong>Switch branches</strong>
+          <input
+            aria-label="Filter branches"
+            placeholder="Filter branches..."
+            ref={filterInput}
+            type="search"
+            value={query}
+            onChange={(event) => setQuery(event.target.value)}
+          />
+          <div className="branch-selector-list">
+            {branches.loading ? (
+              <span className="muted">Loading...</span>
+            ) : null}
+            {branches.error ? (
+              <span className="flash-error">{branches.error}</span>
+            ) : null}
+            {visibleBranches?.map((branch) => (
+              <Link
+                className={branch.name === currentRef ? "selected" : undefined}
+                key={branch.name}
+                to={`/${owner}/${repo}/tree/${encodeURIComponent(branch.name)}`}
+                onClick={() => {
+                  setOpen(false);
+                  setQuery("");
+                }}
+              >
+                <span aria-hidden="true">
+                  {branch.name === currentRef ? "✓" : ""}
+                </span>
+                {branch.name}
+              </Link>
+            ))}
+            {!branches.loading && visibleBranches?.length === 0 ? (
+              <span className="muted">No branches found</span>
+            ) : null}
+          </div>
         </div>
-      </div> : null}
+      ) : null}
     </div>
   );
 }

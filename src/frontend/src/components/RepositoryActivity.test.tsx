@@ -29,9 +29,7 @@ describe("RepositoryActivity", () => {
       "href",
       "/octo/demo/commits/feature%2Ftest",
     );
-    const requested = new URL(
-      (fetchMock.mock.calls[0][0] as Request).url,
-    );
+    const requested = new URL((fetchMock.mock.calls[0][0] as Request).url);
     expect(requested.searchParams.get("ref")).toBe("feature/test");
   });
 });

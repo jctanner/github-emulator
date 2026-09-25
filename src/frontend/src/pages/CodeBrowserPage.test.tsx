@@ -34,7 +34,11 @@ describe("CodeBrowserPage", () => {
         }
         if (url.pathname.endsWith("/readme")) {
           return Promise.resolve(
-            Response.json({type: "file", path: "README.md", content: "IyBGZWF0dXJlIFJFQURNRQ=="}),
+            Response.json({
+              type: "file",
+              path: "README.md",
+              content: "IyBGZWF0dXJlIFJFQURNRQ==",
+            }),
           );
         }
         return Promise.resolve(
@@ -70,6 +74,8 @@ describe("CodeBrowserPage", () => {
       ),
     );
     expect(refRequests.length).toBeGreaterThanOrEqual(3);
-    expect(refRequests.every((url) => url.searchParams.get("ref") === "feature/one")).toBe(true);
+    expect(
+      refRequests.every((url) => url.searchParams.get("ref") === "feature/one"),
+    ).toBe(true);
   });
 });

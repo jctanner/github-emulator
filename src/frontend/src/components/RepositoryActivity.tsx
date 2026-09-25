@@ -26,7 +26,11 @@ export function RepositoryActivity({
         "/api/_ui/repos/{owner}/{repo}/summary",
         {params: {path: {owner, repo}, query: {ref}}},
       );
-      return requireApiData(data, response, "Could not load repository counts.");
+      return requireApiData(
+        data,
+        response,
+        "Could not load repository counts.",
+      );
     },
   );
 

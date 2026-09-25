@@ -1,4 +1,9 @@
-import {type FormEvent, type PropsWithChildren, useEffect, useState} from "react";
+import {
+  type FormEvent,
+  type PropsWithChildren,
+  useEffect,
+  useState,
+} from "react";
 import {Link, useLocation, useNavigate} from "react-router-dom";
 
 import {useSession} from "../auth/SessionContext";
@@ -11,7 +16,7 @@ export function AppShell({children}: PropsWithChildren) {
   const [menuOpen, setMenuOpen] = useState(false);
   const routeQuery =
     location.pathname === "/search"
-      ? new URLSearchParams(location.search).get("q") ?? ""
+      ? (new URLSearchParams(location.search).get("q") ?? "")
       : "";
   const [search, setSearch] = useState(routeQuery);
 

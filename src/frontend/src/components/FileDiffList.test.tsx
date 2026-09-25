@@ -28,7 +28,11 @@ describe("FileDiffList", () => {
     );
     expect(screen.getByText("+1")).toBeInTheDocument();
     expect(screen.getByText("-1")).toBeInTheDocument();
-    expect(container.querySelector("code.addition")).toHaveTextContent("+after");
-    expect(container.querySelector("code.deletion")).toHaveTextContent("-before");
+    expect(container.querySelector("code.addition")).toHaveTextContent(
+      "+after",
+    );
+    expect(container.querySelector("code.deletion")).toHaveTextContent(
+      "-before",
+    );
   });
 });

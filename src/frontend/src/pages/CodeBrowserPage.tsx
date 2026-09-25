@@ -52,7 +52,8 @@ export function CodeBrowserPage({blob = false}: {blob?: boolean}) {
 
   const loadedContent = result.data?.content;
   const items = Array.isArray(loadedContent) ? loadedContent : null;
-  const file = loadedContent && !Array.isArray(loadedContent) ? loadedContent : null;
+  const file =
+    loadedContent && !Array.isArray(loadedContent) ? loadedContent : null;
   const sortedItems = items
     ? [...items].sort((left, right) => {
         if (left.type !== right.type) return left.type === "dir" ? -1 : 1;

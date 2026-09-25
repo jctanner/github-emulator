@@ -132,14 +132,18 @@ describe("App", () => {
             ]),
           );
         }
-        return Promise.resolve(Response.json({detail: "Not Found"}, {status: 404}));
+        return Promise.resolve(
+          Response.json({detail: "Not Found"}, {status: 404}),
+        );
       }),
     );
     window.history.replaceState({}, "", "/ui/_admin/apps");
 
     render(<App />);
 
-    expect(await screen.findByRole("heading", {name: "GitHub Apps"})).toBeVisible();
+    expect(
+      await screen.findByRole("heading", {name: "GitHub Apps"}),
+    ).toBeVisible();
     const account = screen.getByLabelText("Account");
     const repository = screen.getByLabelText("Repository");
     expect(account).toHaveAttribute("list", "app-installation-accounts");
@@ -154,7 +158,9 @@ describe("App", () => {
       ).map((option) => option.value),
     ).toEqual(["ansible-agent-harness"]);
     fireEvent.click(screen.getByText("Register new GitHub App"));
-    expect(screen.getByRole("dialog", {name: "Register a GitHub App"})).toBeVisible();
+    expect(
+      screen.getByRole("dialog", {name: "Register a GitHub App"}),
+    ).toBeVisible();
     expect(screen.getByLabelText(/GitHub App name/)).toBeVisible();
     expect(screen.getByLabelText("Repository contents")).toHaveValue("");
     expect(screen.getByLabelText("Issues")).toHaveValue("");
