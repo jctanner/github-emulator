@@ -142,7 +142,19 @@ export function PullDetailPage() {
             <main className="conversation-main">
               <article className="timeline-item">
                 <header className="timeline-item-header">
-                  <strong>{page.data.pull.user.login}</strong>
+                  <span className="timeline-item-author">
+                    <strong>{page.data.pull.user.login}</strong>
+                    <time
+                      dateTime={page.data.pull.created_at}
+                      title={new Date(
+                        page.data.pull.created_at,
+                      ).toLocaleString()}
+                    >
+                      {new Date(
+                        page.data.pull.created_at,
+                      ).toLocaleString()}
+                    </time>
+                  </span>
                   {user &&
                   (user.login === page.data.pull.user.login ||
                     user.site_admin) ? (

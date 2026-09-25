@@ -100,7 +100,15 @@ export function IssueComments({
         ) : (
           <article className="timeline-item" key={entry.item.id}>
             <header className="timeline-item-header">
-              <strong>{entry.item.user.login}</strong>
+              <span className="timeline-item-author">
+                <strong>{entry.item.user.login}</strong>
+                <time
+                  dateTime={entry.item.created_at}
+                  title={new Date(entry.item.created_at).toLocaleString()}
+                >
+                  {new Date(entry.item.created_at).toLocaleString()}
+                </time>
+              </span>
               {user &&
               (user.login === entry.item.user.login || user.site_admin) ? (
                 <details className="comment-actions-menu">

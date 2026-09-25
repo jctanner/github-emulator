@@ -78,6 +78,7 @@ Actions visibility and runner evaluation.
 
 ## Fixed Bugs
 
+- `docs/bugs/fixed/conversation-description-and-comment-timestamps.md`
 - `docs/bugs/fixed/merged-pr-does-not-close-linked-issues.md`
 - `docs/bugs/fixed/busy-real-runner-claims-second-job.md`
 - `docs/bugs/fixed/graphql-pull-request-create-does-not-dispatch-actions.md`

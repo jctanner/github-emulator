@@ -1929,6 +1929,17 @@ a:hover {
   background: #f6f8fa;
 }
 
+.timeline-item-author {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+}
+
+.timeline-item-author time {
+  color: #656d76;
+  font-size: 12px;
+}
+
 .comment-actions-menu {
   position: relative;
 }

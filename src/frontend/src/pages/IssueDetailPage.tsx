@@ -125,7 +125,19 @@ export function IssueDetailPage() {
             <main className="conversation-main">
               <article className="timeline-item">
                 <header className="timeline-item-header">
-                  <strong>{page.data.issue.user.login}</strong>
+                  <span className="timeline-item-author">
+                    <strong>{page.data.issue.user.login}</strong>
+                    <time
+                      dateTime={page.data.issue.created_at}
+                      title={new Date(
+                        page.data.issue.created_at,
+                      ).toLocaleString()}
+                    >
+                      {new Date(
+                        page.data.issue.created_at,
+                      ).toLocaleString()}
+                    </time>
+                  </span>
                   {user &&
                   (user.login === page.data.issue.user.login ||
                     user.site_admin) ? (
