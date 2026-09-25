@@ -308,3 +308,46 @@ async def test_admin_runners_name_their_scope(client, admin_token, db_session):
     assert ghost["scope_kind"] == "repository"
     assert "999999" in ghost["scope"] and "deleted" in ghost["scope"]
     assert ghost["scope_url"] is None
+
+
+@pytest.mark.asyncio
+async def test_admin_can_remove_a_site_scoped_runner(client, admin_token, db_session):
+    """A site-scoped runner had no delete route at any scope.
+
+    The Actions API deletes repository and enterprise runners; a site runner
+    carries none of those keys, so a shim replaced a month ago stayed listed
+    with nothing able to remove it. Deletion detaches the jobs that ran on it
+    instead of orphaning rows at an unenforced foreign key.
+    """
+    from app.models.actions import Runner, WorkflowJob
+
+    headers = auth_headers(admin_token)
+    runner = Runner(name="retired-shim", os="linux", status="offline", labels=[])
+    db_session.add(runner)
+    await db_session.flush()
+    job = WorkflowJob(
+        run_id=1, name="ran-here", status="completed", conclusion="success",
+        runner_id=runner.id, runner_name="retired-shim",
+    )
+    db_session.add(job)
+    await db_session.commit()
+    runner_id, job_id = runner.id, job.id
+
+    removed = await client.delete(f"/admin/api/runners/{runner_id}", headers=headers)
+    assert removed.status_code == 204, removed.text
+
+    listed = await client.get("/admin/api/runners", headers=headers)
+    assert "retired-shim" not in {r["name"] for r in listed.json()}
+
+    # The job survives and still says which runner ran it; only the pointer
+    # to the removed row is gone.
+    kept = (await db_session.execute(
+        select(WorkflowJob).where(WorkflowJob.id == job_id)
+    )).scalar_one()
+    await db_session.refresh(kept)
+    assert kept.runner_name == "retired-shim"
+    assert kept.runner_id is None
+
+    assert (await client.delete(
+        f"/admin/api/runners/{runner_id}", headers=headers
+    )).status_code == 404

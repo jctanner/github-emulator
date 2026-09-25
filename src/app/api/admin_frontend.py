@@ -6,7 +6,9 @@ from fastapi import APIRouter, HTTPException, Response
 from sqlalchemy import func, select
 
 from app.api.deps import AuthUser, DbSession
-from app.api.actions_runners import _effective_status
+from app.api.actions_runners import (
+    _delete_runner_and_detach_history, _effective_status,
+)
 from app.models.actions import Runner, WorkflowRun
 from app.models.import_job import ImportJob
 from app.models.issue import Issue
@@ -265,6 +267,28 @@ async def runners(user: AuthUser, db: DbSession):
         )).all()
     ) if org_ids else {}
     return [_runner(item, repo_names, org_logins) for item in values]
+
+
+@router.delete("/runners/{runner_id}", status_code=204)
+async def delete_runner(runner_id: int, user: AuthUser, db: DbSession):
+    """Remove a runner registration at any scope.
+
+    The Actions API can delete a repository or enterprise runner, but a
+    site-scoped one has none of those keys and so had no route at all — which
+    is how a shim runner replaced a month ago stayed listed with nothing able
+    to remove it.
+
+    This reuses the Actions helper rather than deleting the row: jobs
+    referencing the runner are detached (they keep runner_name, so the history
+    still says what ran where), its sessions are removed, and a runner that is
+    currently executing something is refused instead of stranded.
+    """
+    _require_admin(user)
+    value = (await db.execute(select(Runner).where(Runner.id == runner_id))).scalar_one_or_none()
+    if value is None:
+        raise HTTPException(status_code=404, detail="Not Found")
+    await _delete_runner_and_detach_history(db, value)
+    return Response(status_code=204)
 
 
 @router.get("/imports", response_model=list[AdminImportResponse])

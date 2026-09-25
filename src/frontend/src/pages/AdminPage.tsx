@@ -881,6 +881,12 @@ function Runners() {
     const {data, response} = await api.GET("/admin/api/runners");
     return requireApiData(data, response, "Could not load runners.");
   });
+  async function remove(id: number) {
+    await api.DELETE("/admin/api/runners/{runner_id}", {
+      params: {path: {runner_id: id}},
+    });
+    values.reload();
+  }
   return (
     <>
       <h1>Actions runners</h1>
@@ -914,6 +920,12 @@ function Runners() {
                 ? `last seen ${value.last_heartbeat}`
                 : "never seen"}
             </span>
+            {/* A registration outlives the worker that made it, so dead rows
+                accumulate. Removing one detaches the jobs that ran on it
+                rather than orphaning them. */}
+            <button type="button" onClick={() => void remove(value.id)}>
+              Remove
+            </button>
           </div>
         )}
       />

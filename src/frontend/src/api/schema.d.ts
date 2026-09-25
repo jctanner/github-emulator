@@ -949,6 +949,36 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/admin/api/runners/{runner_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        /**
+         * Delete Runner
+         * @description Remove a runner registration at any scope.
+         *
+         *     The Actions API can delete a repository or enterprise runner, but a
+         *     site-scoped one has none of those keys and so had no route at all — which
+         *     is how a shim runner replaced a month ago stayed listed with nothing able
+         *     to remove it.
+         *
+         *     This reuses the Actions helper rather than deleting the row: jobs
+         *     referencing the runner are detached (they keep runner_name, so the history
+         *     still says what ran where), its sessions are removed, and a runner that is
+         *     currently executing something is refused instead of stranded.
+         */
+        delete: operations["delete_runner_admin_api_runners__runner_id__delete"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/admin/api/summary": {
         parameters: {
             query?: never;
@@ -9116,6 +9146,35 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["AdminRunnerResponse"][];
+                };
+            };
+        };
+    };
+    delete_runner_admin_api_runners__runner_id__delete: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                runner_id: number;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
                 };
             };
         };
