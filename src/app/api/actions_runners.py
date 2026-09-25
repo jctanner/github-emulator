@@ -24,6 +24,33 @@ def _require_enterprise(enterprise: str, user: AuthUser) -> None:
         raise HTTPException(status_code=403, detail="Site administrator required")
 
 
+def normalise_runner_os(value: str | None) -> str:
+    """Reduce whatever a runner reports to the token GitHub's API returns.
+
+    GitHub reports a runner's `os` as linux, macos or windows. The upstream
+    Actions runner registers with .NET's RuntimeInformation.OSDescription,
+    which on Linux is the full uname string — kernel version, distribution
+    build and build date. Stored verbatim, that put the *host's* kernel into
+    an API response and onto the admin page, since containers share it.
+
+    The description itself is not kept: nothing reads it, and it describes the
+    machine underneath the cluster rather than the runner.
+    """
+    text = (value or "").strip()
+    if not text:
+        return "linux"
+    lowered = text.lower()
+    if "windows" in lowered or "microsoft" in lowered:
+        return "windows"
+    if "darwin" in lowered or "mac os" in lowered or "macos" in lowered:
+        return "macos"
+    if "linux" in lowered:
+        return "linux"
+    # Something unrecognised: keep the first token rather than guessing a
+    # platform, so an unexpected runner is visible instead of mislabelled.
+    return lowered.split()[0]
+
+
 def _effective_status(runner: Runner) -> str:
     """Report a runner that has stopped heartbeating as offline.
 

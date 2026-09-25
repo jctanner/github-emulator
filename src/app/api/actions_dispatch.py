@@ -18,6 +18,7 @@ from app.models.repository import Repository
 from app.services.auth_service import hash_token
 from app.services.job_token_service import issue_job_token
 from app.services.workflow_service import check_run_completion, dispatch_ready_jobs, resolve_job_outputs
+from app.api.actions_runners import normalise_runner_os
 
 router = APIRouter(tags=["actions-dispatch"])
 
@@ -111,7 +112,7 @@ async def _create_runner_from_registration(
     runner_token = f"ghp_runner_{secrets.token_urlsafe(32)}"
     runner = Runner(
         name=body.get("name", body.get("agentName", "unnamed-runner")),
-        os=body.get("os", body.get("osDescription", "linux")),
+        os=normalise_runner_os(body.get("os", body.get("osDescription"))),
         status="online",
         labels=labels,
         busy=False,
@@ -238,7 +239,7 @@ async def register_site_wide_runner(body: dict, user: AuthUser, db: DbSession):
         runner = Runner(name=name, repo_id=None, org_id=None)
         db.add(runner)
 
-    runner.os = str(body.get("os") or "linux")
+    runner.os = normalise_runner_os(body.get("os"))
     runner.status = "online"
     runner.labels = _runner_labels(body)
     runner.busy = False

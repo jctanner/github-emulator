@@ -15,6 +15,7 @@ from app.api.deps import DbSession, get_repo_or_404
 from app.config import settings
 from app.models.actions import EnterpriseRunnerRegistrationToken, Runner, RegistrationToken
 from app.services.auth_service import hash_token
+from app.api.actions_runners import normalise_runner_os
 
 router = APIRouter(tags=["actions-pipelines"])
 
@@ -58,7 +59,7 @@ async def pipelines_register_enterprise_runner(
     runner_token = f"ghp_runner_{secrets.token_urlsafe(32)}"
     runner = Runner(
         name=body.get("name", body.get("agentName", "runner")),
-        os=body.get("os", "linux"),
+        os=normalise_runner_os(body.get("os")),
         status="online",
         labels=labels,
         busy=False,
@@ -148,7 +149,7 @@ async def pipelines_register_runner(
 
     runner = Runner(
         name=runner_name,
-        os=body.get("os", "linux"),
+        os=normalise_runner_os(body.get("os")),
         status="online",
         labels=labels,
         busy=False,

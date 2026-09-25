@@ -128,6 +128,7 @@ def _request_base(request: Request) -> str:
     return _runner_reachable_base_url(configured)
 
 
+from app.api.actions_runners import normalise_runner_os
 from app.api.actions_runner_protocol import (
     EMULATOR_INSTANCE_ID,
     EMULATOR_USER_ID,
@@ -354,8 +355,9 @@ async def dt_register_pool_agent(
     if not reg_token:
         runner = await _get_runner_from_token(request, db)
         runner.name = body.get("name", body.get("Name", runner.name))
-        runner.os = body.get(
-            "osDescription", body.get("OSDescription", body.get("os", runner.os))
+        runner.os = normalise_runner_os(
+            body.get("osDescription", body.get("OSDescription", body.get("os")))
+            or runner.os
         )
         runner.labels = _labels_from_body(body) or runner.labels
         runner.status = "online"
@@ -385,8 +387,8 @@ async def dt_register_pool_agent(
     runner_token = f"ghp_runner_{secrets.token_urlsafe(32)}"
     runner = Runner(
         name=body.get("name", body.get("Name", body.get("agentName", "runner"))),
-        os=body.get(
-            "os", body.get("osDescription", body.get("OSDescription", "linux"))
+        os=normalise_runner_os(
+            body.get("os", body.get("osDescription", body.get("OSDescription")))
         ),
         status="online",
         labels=_labels_from_body(body),
@@ -440,8 +442,9 @@ async def dt_update_pool_agent(
         raise HTTPException(status_code=404, detail="Agent not found")
 
     runner.name = body.get("name", body.get("Name", runner.name))
-    runner.os = body.get(
-        "osDescription", body.get("OSDescription", body.get("os", runner.os))
+    runner.os = normalise_runner_os(
+        body.get("osDescription", body.get("OSDescription", body.get("os")))
+        or runner.os
     )
     runner.labels = _labels_from_body(body) or runner.labels
     runner.status = "online"
