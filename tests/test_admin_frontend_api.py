@@ -351,3 +351,215 @@ async def test_admin_can_remove_a_site_scoped_runner(client, admin_token, db_ses
     assert (await client.delete(
         f"/admin/api/runners/{runner_id}", headers=headers
     )).status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_admin_actions_lists_unfinished_runs_across_repos(
+    client, admin_token, db_session
+):
+    """Every in-flight run in one place, newest activity first.
+
+    Actions state was only readable one repository at a time, which is the
+    wrong shape for "what is running, and what is stuck": a run queued behind
+    a label no runner registers looks exactly like one about to start until
+    they are seen together.
+    """
+    from datetime import datetime, timedelta
+
+    from app.models.actions import Workflow, WorkflowJob, WorkflowRun
+
+    headers = auth_headers(admin_token)
+
+    # Every HTTP call first: the ORM work below holds a transaction open, and
+    # interleaving the two deadlocks SQLite ("Database is busy").
+    repos = {}
+    for name in ("actions-a", "actions-b"):
+        created = await client.post(
+            "/api/v3/user/repos", json={"name": name}, headers=headers
+        )
+        assert created.status_code in (200, 201), created.text
+        repos[name] = (created.json()["id"], created.json()["full_name"])
+
+    actor_id = (await db_session.execute(select(User))).scalars().first().id
+    base = datetime(2026, 9, 25, 12, 0, 0)
+    made = []
+    workflow_ids = []
+    for index, name in enumerate(("actions-a", "actions-b")):
+        repo_id, full_name = repos[name]
+        workflow = Workflow(repo_id=repo_id, name=f"wf-{name}", path=".github/x.yml")
+        db_session.add(workflow)
+        await db_session.flush()
+        run = WorkflowRun(
+            workflow_id=workflow.id, repo_id=repo_id, head_sha="a" * 40,
+            head_branch="main", event="push", status="queued",
+            run_number=1, run_attempt=1, actor_id=actor_id,
+            created_at=base, updated_at=base + timedelta(minutes=index),
+        )
+        db_session.add(run)
+        await db_session.flush()
+        made.append((full_name, run.id))
+        workflow_ids.append(workflow.id)
+        db_session.add_all([
+            WorkflowJob(run_id=run.id, name="done", status="completed",
+                        conclusion="success"),
+            WorkflowJob(run_id=run.id, name="stuck", status="queued",
+                        labels=["self-hosted", "nonexistent-label"]),
+        ])
+
+    # A finished run must not appear, however recently it was touched.
+    finished = WorkflowRun(
+        workflow_id=workflow_ids[0], repo_id=repos["actions-a"][0], head_sha="b" * 40,
+        head_branch="main", event="push", status="completed",
+        conclusion="success", run_number=99, run_attempt=1, actor_id=actor_id,
+        created_at=base, updated_at=base + timedelta(hours=1),
+    )
+    db_session.add(finished)
+    await db_session.commit()
+
+    listed = await client.get("/admin/api/actions", headers=headers)
+    assert listed.status_code == 200, listed.text
+    body = listed.json()
+    ids = [row["id"] for row in body]
+
+    assert made[0][1] in ids and made[1][1] in ids
+    assert 99 not in [row["run_number"] for row in body], "a completed run was listed"
+
+    # Most recent activity first: actions-b was updated a minute later.
+    assert ids.index(made[1][1]) < ids.index(made[0][1])
+
+    row = next(r for r in body if r["id"] == made[1][1])
+    assert row["repository"] == made[1][0]
+    assert row["status"] == "queued"
+    assert row["jobs_total"] == 2 and row["jobs_completed"] == 1
+    # Only the unfinished job is listed, with the labels it is waiting on --
+    # which is what explains a run that never starts.
+    assert [j["name"] for j in row["active_jobs"]] == ["stuck"]
+    assert row["active_jobs"][0]["labels"] == ["self-hosted", "nonexistent-label"]
+    assert row["url"] == f"/ui/{made[1][0]}/actions/runs/{made[1][1]}"
+
+
+@pytest.mark.asyncio
+async def test_admin_actions_keeps_runs_whose_repository_is_gone(
+    client, admin_token, db_session
+):
+    """A deleted repository must not hide its still-queued runs.
+
+    The first version of this endpoint inner-joined Repository, which dropped
+    every run whose repository had been removed. On the development stack that
+    was 43 of 73 in-flight runs: the page reported 30 and looked complete.
+    Deleting a repository does not delete its runs, so those are precisely the
+    rows nobody knows about.
+    """
+    from datetime import datetime
+
+    from app.models.actions import Workflow, WorkflowJob, WorkflowRun
+    from app.models.repository import Repository
+
+    headers = auth_headers(admin_token)
+    created = await client.post(
+        "/api/v3/user/repos", json={"name": "doomed"}, headers=headers
+    )
+    assert created.status_code in (200, 201), created.text
+    repo_id = created.json()["id"]
+
+    actor_id = (await db_session.execute(select(User))).scalars().first().id
+    workflow = Workflow(repo_id=repo_id, name="wf", path=".github/x.yml")
+    db_session.add(workflow)
+    await db_session.flush()
+    run = WorkflowRun(
+        workflow_id=workflow.id, repo_id=repo_id, head_sha="c" * 40,
+        head_branch="main", event="push", status="queued", run_number=1,
+        run_attempt=1, actor_id=actor_id,
+        created_at=datetime(2026, 9, 25, 12, 0, 0),
+        updated_at=datetime(2026, 9, 25, 12, 0, 0),
+    )
+    db_session.add(run)
+    await db_session.flush()
+    db_session.add(WorkflowJob(run_id=run.id, name="orphaned", status="queued"))
+    await db_session.commit()
+    run_id = run.id
+
+    # Remove the repository row the way a deletion would, leaving the run.
+    await db_session.execute(
+        Repository.__table__.delete().where(Repository.id == repo_id)
+    )
+    await db_session.commit()
+
+    listed = await client.get("/admin/api/actions", headers=headers)
+    assert listed.status_code == 200, listed.text
+    row = next((r for r in listed.json() if r["id"] == run_id), None)
+    assert row is not None, "a run whose repository was deleted vanished from the list"
+    assert str(repo_id) in row["repository"] and "deleted" in row["repository"]
+    # No link, because there is nowhere to go.
+    assert row["url"] is None
+    assert [j["name"] for j in row["active_jobs"]] == ["orphaned"]
+
+
+@pytest.mark.asyncio
+async def test_admin_can_cancel_a_run_whose_repository_is_gone(
+    client, admin_token, db_session
+):
+    """The stale backlog is mostly runs the Actions cancel route cannot reach.
+
+    That route is addressed by owner and repository; deleting a repository
+    leaves its runs behind, so the runs most in need of cancelling are exactly
+    the ones it cannot name. Cancelling by run id reaches them, and keeps the
+    history: the run and its jobs stay, marked cancelled.
+    """
+    from datetime import datetime
+
+    from app.models.actions import Workflow, WorkflowJob, WorkflowRun
+    from app.models.repository import Repository
+
+    headers = auth_headers(admin_token)
+    created = await client.post(
+        "/api/v3/user/repos", json={"name": "cancel-me"}, headers=headers
+    )
+    assert created.status_code in (200, 201), created.text
+    repo_id = created.json()["id"]
+
+    actor_id = (await db_session.execute(select(User))).scalars().first().id
+    workflow = Workflow(repo_id=repo_id, name="wf", path=".github/x.yml")
+    db_session.add(workflow)
+    await db_session.flush()
+    run = WorkflowRun(
+        workflow_id=workflow.id, repo_id=repo_id, head_sha="d" * 40,
+        head_branch="main", event="push", status="queued", run_number=1,
+        run_attempt=1, actor_id=actor_id,
+        created_at=datetime(2026, 9, 25, 12, 0, 0),
+        updated_at=datetime(2026, 9, 25, 12, 0, 0),
+    )
+    db_session.add(run)
+    await db_session.flush()
+    db_session.add(WorkflowJob(run_id=run.id, name="stranded", status="queued"))
+    await db_session.commit()
+    run_id = run.id
+
+    await db_session.execute(
+        Repository.__table__.delete().where(Repository.id == repo_id)
+    )
+    await db_session.commit()
+
+    cancelled = await client.post(
+        f"/admin/api/actions/{run_id}/cancel", headers=headers
+    )
+    assert cancelled.status_code == 204, cancelled.text
+
+    listed = await client.get("/admin/api/actions", headers=headers)
+    assert run_id not in [r["id"] for r in listed.json()], "still listed as in flight"
+
+    # The record survives, marked cancelled rather than removed.
+    after = (await db_session.execute(
+        select(WorkflowRun).where(WorkflowRun.id == run_id)
+    )).scalar_one()
+    await db_session.refresh(after)
+    assert after.status == "completed" and after.conclusion == "cancelled"
+    job = (await db_session.execute(
+        select(WorkflowJob).where(WorkflowJob.run_id == run_id)
+    )).scalars().one()
+    await db_session.refresh(job)
+    assert job.status == "completed" and job.conclusion == "cancelled"
+
+    assert (await client.post(
+        "/admin/api/actions/999999/cancel", headers=headers
+    )).status_code == 404

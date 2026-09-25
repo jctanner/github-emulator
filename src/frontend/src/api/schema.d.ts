@@ -705,6 +705,60 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/admin/api/actions": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Active Actions
+         * @description Every unfinished workflow run, newest activity first.
+         *
+         *     Actions state was only visible one repository at a time, which is the
+         *     wrong shape for the question people actually have: what is running right
+         *     now, and what is stuck. A run queued behind a missing runner label looks
+         *     identical to one about to start unless you can see them together.
+         */
+        get: operations["active_actions_admin_api_actions_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/admin/api/actions/{run_id}/cancel": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Cancel Active Run
+         * @description Cancel an unfinished run from the admin view.
+         *
+         *     The Actions cancel endpoint is addressed by owner and repository, so it
+         *     cannot reach a run whose repository was deleted — and those are most of
+         *     the stale ones, because deleting a repository leaves its runs behind.
+         *     Addressing by run id reaches all of them.
+         *
+         *     Cancelling rather than deleting: the run and its jobs keep their history
+         *     and simply stop being in flight, which is what GitHub does and what makes
+         *     this safe to run over a backlog.
+         */
+        post: operations["cancel_active_run_admin_api_actions__run_id__cancel_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/admin/api/apps": {
         parameters: {
             query?: never;
@@ -5676,6 +5730,69 @@ export interface paths {
 export type webhooks = Record<string, never>;
 export interface components {
     schemas: {
+        /** AdminActiveJobResponse */
+        AdminActiveJobResponse: {
+            /** Id */
+            id: number;
+            /**
+             * Labels
+             * @default []
+             */
+            labels: string[];
+            /** Name */
+            name: string;
+            /** Runner Name */
+            runner_name?: string | null;
+            /** Started At */
+            started_at?: string | null;
+            /** Status */
+            status: string;
+        };
+        /**
+         * AdminActiveRunResponse
+         * @description A workflow run that has not finished, across every repository.
+         */
+        AdminActiveRunResponse: {
+            /**
+             * Active Jobs
+             * @default []
+             */
+            active_jobs: components["schemas"]["AdminActiveJobResponse"][];
+            /** Actor */
+            actor?: string | null;
+            /** Created At */
+            created_at?: string | null;
+            /** Event */
+            event: string;
+            /** Head Branch */
+            head_branch: string;
+            /** Id */
+            id: number;
+            /**
+             * Jobs Completed
+             * @default 0
+             */
+            jobs_completed: number;
+            /**
+             * Jobs Total
+             * @default 0
+             */
+            jobs_total: number;
+            /** Repository */
+            repository: string;
+            /** Run Attempt */
+            run_attempt: number;
+            /** Run Number */
+            run_number: number;
+            /** Status */
+            status: string;
+            /** Updated At */
+            updated_at?: string | null;
+            /** Url */
+            url?: string | null;
+            /** Workflow */
+            workflow: string;
+        };
         /** AdminAppResponse */
         AdminAppResponse: {
             /** App Id */
@@ -8561,6 +8678,66 @@ export interface operations {
                 content: {
                     "application/json": unknown;
                 };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    active_actions_admin_api_actions_get: {
+        parameters: {
+            query?: {
+                limit?: number;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AdminActiveRunResponse"][];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    cancel_active_run_admin_api_actions__run_id__cancel_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                run_id: number;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
             };
             /** @description Validation Error */
             422: {

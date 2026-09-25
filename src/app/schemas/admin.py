@@ -119,3 +119,34 @@ class AdminAppResponse(BaseModel):
     installations: list[AdminInstallationResponse] | None = None
     has_private_key: bool | None = None
     private_key: str | None = None
+
+
+class AdminActiveJobResponse(BaseModel):
+    id: int
+    name: str
+    status: str
+    runner_name: str | None = None
+    labels: list[str] = []
+    started_at: str | None = None
+
+
+class AdminActiveRunResponse(BaseModel):
+    """A workflow run that has not finished, across every repository."""
+
+    id: int
+    repository: str
+    workflow: str
+    event: str
+    status: str
+    head_branch: str
+    run_number: int
+    run_attempt: int
+    actor: str | None = None
+    created_at: str | None = None
+    updated_at: str | None = None
+    # Counted rather than listed in full: a stuck run's shape is the question,
+    # and the jobs below are only those not yet finished.
+    jobs_total: int = 0
+    jobs_completed: int = 0
+    active_jobs: list[AdminActiveJobResponse] = []
+    url: str | None = None

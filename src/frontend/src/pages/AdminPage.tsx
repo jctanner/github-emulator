@@ -12,6 +12,7 @@ type Organization = components["schemas"]["AdminOrganizationResponse"];
 type Repository = components["schemas"]["AdminRepositoryResponse"];
 type Token = components["schemas"]["AdminTokenResponse"];
 type Runner = components["schemas"]["AdminRunnerResponse"];
+type ActiveRun = components["schemas"]["AdminActiveRunResponse"];
 type Import = components["schemas"]["AdminImportResponse"];
 type Issue = components["schemas"]["AdminIssueResponse"];
 type App = components["schemas"]["AdminAppResponse"];
@@ -882,6 +883,85 @@ function Apps() {
   );
 }
 
+function Actions() {
+  const values = useApiData<ActiveRun[]>("admin-actions", async () => {
+    const {data, response} = await api.GET("/admin/api/actions");
+    return requireApiData(data, response, "Could not load actions.");
+  });
+  async function cancel(id: number) {
+    await api.POST("/admin/api/actions/{run_id}/cancel", {
+      params: {path: {run_id: id}},
+    });
+    values.reload();
+  }
+  return (
+    <>
+      <h1>Actions in flight</h1>
+      <p className="muted">
+        Every workflow run that has not finished, across all repositories, most
+        recent activity first.
+      </p>
+      <AdminList
+        {...values}
+        values={values.data}
+        row={(value) => (
+          <div className="list-row" key={value.id}>
+            <div>
+              <strong>
+                <a href={value.url ?? "#"}>
+                  {value.repository} #{value.run_number}
+                </a>
+              </strong>{" "}
+              <span className="muted">
+                {value.workflow} · {value.event} · {value.head_branch}
+                {value.run_attempt > 1 ? ` · attempt ${value.run_attempt}` : ""}
+              </span>
+            </div>
+            <div>
+              <span>{value.status}</span>{" "}
+              <span className="muted">
+                {value.jobs_completed}/{value.jobs_total} jobs done · updated{" "}
+                {value.updated_at ?? "never"}
+              </span>
+            </div>
+            {/* The unfinished jobs are what explain a stuck run: which one is
+                waiting, on which runner, and on which labels. A job queued on
+                a label no runner registers is the common case, and it is
+                invisible from the run's status alone. */}
+            {value.active_jobs.length > 0 ? (
+              <ul className="muted">
+                {value.active_jobs.map((job) => (
+                  <li key={job.id}>
+                    {job.name} — {job.status}
+                    {job.runner_name ? ` on ${job.runner_name}` : ""}
+                    {job.labels.length > 0
+                      ? ` · needs [${job.labels.join(", ")}]`
+                      : ""}
+                  </li>
+                ))}
+              </ul>
+            ) : (
+              <span className="muted">no unfinished jobs recorded</span>
+            )}
+            {/* Cancelling keeps the run and its jobs and stops them being in
+                flight, which is what GitHub does. Deleting would lose the
+                record of what was attempted. */}
+            <button type="button" onClick={() => void cancel(value.id)}>
+              Cancel
+            </button>
+          </div>
+        )}
+      />
+      {values.data?.length === 0 ? (
+        <div className="settings-empty">
+          <h2>Nothing in flight</h2>
+          <p className="muted">Every workflow run has finished.</p>
+        </div>
+      ) : null}
+    </>
+  );
+}
+
 function scopeLabel(kind: string): string {
   return (
     {
@@ -1137,6 +1217,8 @@ export function AdminPage() {
       <Tokens />
     ) : current === "apps" ? (
       <Apps />
+    ) : current === "actions" ? (
+      <Actions />
     ) : current === "runners" ? (
       <Runners />
     ) : current === "imports" ? (
@@ -1153,6 +1235,7 @@ export function AdminPage() {
     ["repositories", "Repositories"],
     ["tokens", "Tokens"],
     ["apps", "GitHub Apps"],
+    ["actions", "Actions"],
     ["runners", "Runners"],
     ["issues", "Issues"],
     ["imports", "Imports"],
