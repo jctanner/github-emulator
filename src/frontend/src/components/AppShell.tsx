@@ -49,6 +49,11 @@ export function AppShell({children}: PropsWithChildren) {
           <Octicon name="mark-github" size={32} />
           <span>GitHub Emulator</span>
         </Link>
+        <nav className="global-nav" aria-label="Global navigation">
+          <Link to="/">Dashboard</Link>
+          <Link to="/search">Explore</Link>
+          <Link to="/_admin/">Admin</Link>
+        </nav>
         <form
           aria-label="Global search"
           className="global-search"
@@ -70,11 +75,6 @@ export function AppShell({children}: PropsWithChildren) {
             onChange={(event) => setSearch(event.target.value)}
           />
         </form>
-        <nav className="global-nav" aria-label="Global navigation">
-          <Link to="/">Dashboard</Link>
-          <Link to="/search">Explore</Link>
-          <Link to="/_admin/">Admin</Link>
-        </nav>
         {user ? (
           <Link className="header-create" to="/new" aria-label="New repository">
             <Octicon name="plus" />
