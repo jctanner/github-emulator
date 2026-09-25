@@ -50,15 +50,47 @@ def _token(value: PersonalAccessToken) -> dict:
     return {"id": value.id, "user_id": value.user_id, "owner": value.user.login, "name": value.name, "token_prefix": value.token_prefix, "scopes": value.scopes or [], "created_at": _fmt_dt(value.created_at), "last_used_at": _fmt_dt(value.last_used_at)}
 
 
-def _runner(value: Runner) -> dict:
-    scope = value.enterprise_slug or (f"repository:{value.repo_id}" if value.repo_id else f"organization:{value.org_id}" if value.org_id else "site")
+def _runner(
+    value: Runner,
+    repo_names: dict[int, str] | None = None,
+    org_logins: dict[int, str] | None = None,
+) -> dict:
+    # The scope used to be built from the foreign key: "repository:418". That
+    # is the one thing about a runner an operator cannot look up in their head,
+    # and it is the question this page exists to answer - which repository or
+    # organization is this runner attached to. Resolve it to the name.
+    #
+    # A key pointing at something deleted says so rather than rendering a bare
+    # number or, worse, an empty string that reads as "not attached".
+    repo_names = repo_names or {}
+    org_logins = org_logins or {}
+    if value.enterprise_slug:
+        scope_kind, scope_name, scope_url = "enterprise", value.enterprise_slug, None
+    elif value.repo_id:
+        scope_kind = "repository"
+        resolved = repo_names.get(value.repo_id)
+        scope_name = resolved or f"#{value.repo_id} (deleted repository)"
+        scope_url = f"/ui/{resolved}" if resolved else None
+    elif value.org_id:
+        scope_kind = "organization"
+        resolved = org_logins.get(value.org_id)
+        scope_name = resolved or f"#{value.org_id} (deleted organization)"
+        scope_url = f"/ui/orgs/{resolved}" if resolved else None
+    else:
+        scope_kind, scope_name, scope_url = "site", "All repositories", None
+    scope = scope_name
     # Derived, not the stored column: a runner that stopped heartbeating is
     # offline whichever endpoint is asked. Serving value.status here is what
     # made this page report dozens of phantoms as online while the Actions
     # runner API, fixed first, reported them correctly — the same field
     # serialized from two places disagreeing with itself.
     status = _effective_status(value)
-    return {"id": value.id, "name": value.name, "os": value.os, "status": status, "busy": value.busy and status == "online", "labels": value.labels or [], "scope": scope, "last_heartbeat": _fmt_dt(value.last_heartbeat)}
+    return {
+        "id": value.id, "name": value.name, "os": value.os, "status": status,
+        "busy": value.busy and status == "online", "labels": value.labels or [],
+        "scope": scope, "scope_kind": scope_kind, "scope_name": scope_name,
+        "scope_url": scope_url, "last_heartbeat": _fmt_dt(value.last_heartbeat),
+    }
 
 
 def _import(value: ImportJob) -> dict:
@@ -217,7 +249,22 @@ async def remove_token(token_id: int, user: AuthUser, db: DbSession):
 @router.get("/runners", response_model=list[AdminRunnerResponse])
 async def runners(user: AuthUser, db: DbSession):
     _require_admin(user)
-    return [_runner(item) for item in (await db.execute(select(Runner).order_by(Runner.id))).scalars().all()]
+    values = (await db.execute(select(Runner).order_by(Runner.id))).scalars().all()
+    # Resolved in two queries rather than one per runner, and only for the ids
+    # actually referenced.
+    repo_ids = {r.repo_id for r in values if r.repo_id}
+    org_ids = {r.org_id for r in values if r.org_id}
+    repo_names = dict(
+        (await db.execute(
+            select(Repository.id, Repository.full_name).where(Repository.id.in_(repo_ids))
+        )).all()
+    ) if repo_ids else {}
+    org_logins = dict(
+        (await db.execute(
+            select(Organization.id, Organization.login).where(Organization.id.in_(org_ids))
+        )).all()
+    ) if org_ids else {}
+    return [_runner(item, repo_names, org_logins) for item in values]
 
 
 @router.get("/imports", response_model=list[AdminImportResponse])

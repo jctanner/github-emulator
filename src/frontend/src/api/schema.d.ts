@@ -686,7 +686,16 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** Actions Token */
+        /**
+         * Actions Token
+         * @description Issue an OIDC token for the job whose request token is presented.
+         *
+         *     The caller chooses only the audience, as on GitHub. Everything that
+         *     identifies the run - repository, workflow, ref, event, actor - is derived
+         *     from the job the request token belongs to. Letting a caller name its own
+         *     subject would let any workflow request a token for any repository, which
+         *     makes claim validation downstream meaningless.
+         */
         get: operations["actions_token_actions_oidc_token_get"];
         put?: never;
         post?: never;
@@ -1661,6 +1670,32 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v3/installation/repositories": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List Token Installation Repositories
+         * @description List repositories reachable by the installation token making the call.
+         *
+         *     GitHub scopes this endpoint to installation access tokens. Clients probe it
+         *     to decide whether their credential is an installation token, and treat
+         *     401/403 as "this is an ordinary token" while treating any other status as a
+         *     hard error. Returning 404 here made that probe fatal for such clients, so a
+         *     personal access token must be refused with 403 rather than a missing route.
+         */
+        get: operations["list_token_installation_repositories_api_v3_installation_repositories_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v3/licenses": {
         parameters: {
             query?: never;
@@ -1810,6 +1845,36 @@ export interface paths {
          * @description Mark a notification thread as read.
          */
         patch: operations["mark_thread_read_api_v3_notifications_threads__thread_id__patch"];
+        trace?: never;
+    };
+    "/api/v3/organizations": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List All Organizations
+         * @description List every organization, in id order.
+         *
+         *     GitHub's list-all-organizations endpoint. It is how a client enumerates
+         *     organizations without already knowing their names — `/orgs/{org}` only
+         *     answers when you can name it, and `/user/orgs` only lists ones the caller
+         *     belongs to. The admin frontend has its own `/organizations`, but that is a
+         *     different router with a different response shape and is not what an API
+         *     client reaches.
+         *
+         *     Paginated with `since` rather than `page`, as GitHub does here: the cursor
+         *     is the last id seen.
+         */
+        get: operations["list_all_organizations_api_v3_organizations_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
         trace?: never;
     };
     "/api/v3/orgs": {
@@ -2010,6 +2075,54 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v3/repos/{owner}/{repo}/actions/artifacts/{artifact_id}/files/{path}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Download Artifact File
+         * @description Serve one file out of an artifact.
+         *
+         *     An emulator extension, not a GitHub endpoint. Reading a single result file
+         *     out of a failed run is the common case here, and requiring a zip round-trip
+         *     for it is the kind of friction that stops people looking.
+         */
+        get: operations["download_artifact_file_api_v3_repos__owner___repo__actions_artifacts__artifact_id__files__path__get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v3/repos/{owner}/{repo}/actions/artifacts/{artifact_id}/{archive_format}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Download Artifact
+         * @description Serve the artifact as an archive, matching GitHub's download URL shape.
+         *
+         *     GitHub accepts only "zip" here and answers with a 302 to a signed storage
+         *     URL. This serves the bytes directly, which is the same thing from a
+         *     client's point of view and avoids inventing a signing scheme.
+         */
+        get: operations["download_artifact_api_v3_repos__owner___repo__actions_artifacts__artifact_id___archive_format__get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v3/repos/{owner}/{repo}/actions/jobs/{job_id}": {
         parameters: {
             query?: never;
@@ -2043,6 +2156,34 @@ export interface paths {
          */
         get: operations["get_job_logs_api_v3_repos__owner___repo__actions_jobs__job_id__logs_get"];
         put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v3/repos/{owner}/{repo}/actions/permissions/workflow": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get Workflow Permissions
+         * @description The default a job inherits when it declares no `permissions:` block.
+         *
+         *     Without this endpoint the setting had nowhere to live, so such a job was
+         *     treated as permissive — which wrongly allows writes on a repository whose
+         *     default is "read".
+         */
+        get: operations["get_workflow_permissions_api_v3_repos__owner___repo__actions_permissions_workflow_get"];
+        /**
+         * Set Workflow Permissions
+         * @description Set the repository's default workflow permissions.
+         */
+        put: operations["set_workflow_permissions_api_v3_repos__owner___repo__actions_permissions_workflow_put"];
         post?: never;
         delete?: never;
         options?: never;
@@ -2284,7 +2425,22 @@ export interface paths {
         /** List Artifacts */
         get: operations["list_artifacts_api_v3_repos__owner___repo__actions_runs__run_id__artifacts_get"];
         put?: never;
-        /** Upload Artifact */
+        /**
+         * Upload Artifact
+         * @description Store an artifact for a run.
+         *
+         *     GitHub's own upload path is an internal Actions service protocol rather
+         *     than a documented REST endpoint, so there is no public shape to be
+         *     faithful to here. Two are accepted:
+         *
+         *     - ``application/zip``: the request body is the archive and ``?name=``
+         *       names it. This is what a runner uploading a directory should use, since
+         *       it carries binary content and directory structure without encoding.
+         *     - ``application/json``: ``{"name": ..., "files": {path: text}}``, which is
+         *       convenient for tests and small text payloads.
+         *
+         *     Either way the bytes land on disk and the row keeps only the index.
+         */
         post: operations["upload_artifact_api_v3_repos__owner___repo__actions_runs__run_id__artifacts_post"];
         delete?: never;
         options?: never;
@@ -2372,6 +2528,29 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v3/repos/{owner}/{repo}/actions/secrets/public-key": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get Repo Secret Public Key
+         * @description Return the repository public key clients seal secrets against.
+         *
+         *     Declared before /secrets/{secret_name} so the literal path wins; the
+         *     other order captures "public-key" as a secret name and 404s.
+         */
+        get: operations["get_repo_secret_public_key_api_v3_repos__owner___repo__actions_secrets_public_key_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v3/repos/{owner}/{repo}/actions/secrets/{secret_name}": {
         parameters: {
             query?: never;
@@ -2431,7 +2610,11 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        get?: never;
+        /**
+         * Get Variable
+         * @description Get a single repository variable.
+         */
+        get: operations["get_variable_api_v3_repos__owner___repo__actions_variables__variable_name__get"];
         put?: never;
         post?: never;
         /**
@@ -5439,6 +5622,26 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/{owner}/{repo}/raw/{ref}/{path}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Raw File
+         * @description Serve one file's bytes at a ref.
+         */
+        get: operations["raw_file__owner___repo__raw__ref___path__get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
 }
 export type webhooks = Record<string, never>;
 export interface components {
@@ -5580,6 +5783,18 @@ export interface components {
             os: string;
             /** Scope */
             scope: string;
+            /**
+             * Scope Kind
+             * @default site
+             */
+            scope_kind: string;
+            /**
+             * Scope Name
+             * @default
+             */
+            scope_name: string;
+            /** Scope Url */
+            scope_url?: string | null;
             /** Status */
             status: string;
         };
@@ -6080,6 +6295,10 @@ export interface components {
             node_id: string;
             /** Number */
             number: number;
+            /** Pull Request */
+            pull_request?: {
+                [key: string]: unknown;
+            } | null;
             /** Repository Url */
             repository_url: string;
             /**
@@ -6341,6 +6560,12 @@ export interface components {
              * @default 0
              */
             additions: number;
+            assignee?: components["schemas"]["SimpleUser"] | null;
+            /**
+             * Assignees
+             * @default []
+             */
+            assignees: components["schemas"]["SimpleUser"][];
             base: components["schemas"]["PRBranchRef"];
             /** Body */
             body?: string | null;
@@ -8290,8 +8515,7 @@ export interface operations {
     actions_token_actions_oidc_token_get: {
         parameters: {
             query?: {
-                audience?: string;
-                subject?: string;
+                audience?: string | null;
             };
             header?: never;
             path?: never;
@@ -10302,6 +10526,26 @@ export interface operations {
             };
         };
     };
+    list_token_installation_repositories_api_v3_installation_repositories_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+        };
+    };
     list_licenses_api_v3_licenses_get: {
         parameters: {
             query?: never;
@@ -10554,6 +10798,39 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content?: never;
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    list_all_organizations_api_v3_organizations_get: {
+        parameters: {
+            query?: {
+                /** @description Only organizations with an id greater than this */
+                since?: number;
+                per_page?: number;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["OrganizationResponse"][];
+                };
             };
             /** @description Validation Error */
             422: {
@@ -11064,6 +11341,74 @@ export interface operations {
             };
         };
     };
+    download_artifact_file_api_v3_repos__owner___repo__actions_artifacts__artifact_id__files__path__get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                owner: string;
+                repo: string;
+                artifact_id: number;
+                path: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    download_artifact_api_v3_repos__owner___repo__actions_artifacts__artifact_id___archive_format__get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                owner: string;
+                repo: string;
+                artifact_id: number;
+                archive_format: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     get_job_api_v3_repos__owner___repo__actions_jobs__job_id__get: {
         parameters: {
             query?: never;
@@ -11118,6 +11463,74 @@ export interface operations {
                 content: {
                     "application/json": unknown;
                 };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_workflow_permissions_api_v3_repos__owner___repo__actions_permissions_workflow_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                owner: string;
+                repo: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    set_workflow_permissions_api_v3_repos__owner___repo__actions_permissions_workflow_put: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                owner: string;
+                repo: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": {
+                    [key: string]: unknown;
+                };
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
             };
             /** @description Validation Error */
             422: {
@@ -11571,7 +11984,10 @@ export interface operations {
     };
     upload_artifact_api_v3_repos__owner___repo__actions_runs__run_id__artifacts_post: {
         parameters: {
-            query?: never;
+            query?: {
+                /** @description Artifact name, for the application/zip form */
+                name?: string;
+            };
             header?: never;
             path: {
                 owner: string;
@@ -11580,13 +11996,7 @@ export interface operations {
             };
             cookie?: never;
         };
-        requestBody: {
-            content: {
-                "application/json": {
-                    [key: string]: unknown;
-                };
-            };
-        };
+        requestBody?: never;
         responses: {
             /** @description Successful Response */
             201: {
@@ -11708,6 +12118,38 @@ export interface operations {
         };
     };
     list_secrets_api_v3_repos__owner___repo__actions_secrets_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                owner: string;
+                repo: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_repo_secret_public_key_api_v3_repos__owner___repo__actions_secrets_public_key_get: {
         parameters: {
             query?: never;
             header?: never;
@@ -11894,6 +12336,39 @@ export interface operations {
         responses: {
             /** @description Successful Response */
             201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_variable_api_v3_repos__owner___repo__actions_variables__variable_name__get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                owner: string;
+                repo: string;
+                variable_name: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -18708,6 +19183,40 @@ export interface operations {
             };
             header?: never;
             path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    raw_file__owner___repo__raw__ref___path__get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                owner: string;
+                repo: string;
+                ref: string;
+                path: string;
+            };
             cookie?: never;
         };
         requestBody?: never;

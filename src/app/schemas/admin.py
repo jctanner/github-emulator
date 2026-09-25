@@ -66,7 +66,12 @@ class AdminRunnerResponse(BaseModel):
     status: str
     busy: bool
     labels: list[str]
+    # scope is the resolved display name; scope_kind says what kind of thing it
+    # names, so the UI can label it without parsing the string.
     scope: str
+    scope_kind: str = "site"
+    scope_name: str = ""
+    scope_url: str | None = None
     last_heartbeat: str | None = None
 
 

@@ -865,6 +865,17 @@ function Apps() {
   );
 }
 
+function scopeLabel(kind: string): string {
+  return (
+    {
+      repository: "Repository",
+      organization: "Organization",
+      enterprise: "Enterprise",
+      site: "Scope",
+    }[kind] ?? "Scope"
+  );
+}
+
 function Runners() {
   const values = useApiData<Runner[]>("admin-runners", async () => {
     const {data, response} = await api.GET("/admin/api/runners");
@@ -880,10 +891,29 @@ function Runners() {
           <div className="list-row label-row" key={value.id}>
             <strong>{value.name}</strong>
             <span>
-              {value.scope} · {value.status}
-              {value.busy ? " · busy" : ""}
+              {scopeLabel(value.scope_kind)}:{" "}
+              {value.scope_url ? (
+                <a href={value.scope_url}>{value.scope}</a>
+              ) : (
+                value.scope
+              )}
             </span>
-            <span>{value.os}</span>
+            <span>
+              {value.status}
+              {value.busy ? " · busy" : ""} · {value.os}
+            </span>
+            {/* Labels decide which jobs a runner will accept. A job whose
+                runs-on matches nothing sits queued with nothing reporting
+                why, so they belong on the page that is consulted when that
+                happens. */}
+            <span className="muted">
+              {value.labels.length > 0 ? value.labels.join(", ") : "no labels"}
+            </span>
+            <span className="muted">
+              {value.last_heartbeat
+                ? `last seen ${value.last_heartbeat}`
+                : "never seen"}
+            </span>
           </div>
         )}
       />

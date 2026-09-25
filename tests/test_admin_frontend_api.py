@@ -244,3 +244,67 @@ async def test_admin_issues_uses_one_projection_query(
     assert len(inventory_queries) == 1, statements
     assert "join repositories" in inventory_queries[0]
     assert "join pull_requests" in inventory_queries[0]
+
+
+@pytest.mark.asyncio
+async def test_admin_runners_name_their_scope(client, admin_token, db_session):
+    """A runner's scope names the repository or org, not its foreign key.
+
+    The admin runners page existed to answer "what is this runner attached
+    to", and answered "repository:418" — the one form of the answer an
+    operator cannot resolve without a database. Repository and organization
+    runners now carry the full name, and a link to it.
+    """
+    from app.models.actions import Runner
+    from app.models.repository import Repository
+
+    headers = auth_headers(admin_token)
+    created = await client.post(
+        "/api/v3/user/repos", json={"name": "runner-scope"}, headers=headers
+    )
+    assert created.status_code in (200, 201), created.text
+    repo_full = created.json()["full_name"]
+    repo_id = created.json()["id"]
+
+    org = Organization(login="runner-org", name="Runner Org")
+    db_session.add(org)
+    await db_session.flush()
+
+    db_session.add_all([
+        Runner(name="repo-runner", os="linux", status="online", repo_id=repo_id,
+               labels=["self-hosted", "fullsend"]),
+        Runner(name="org-runner", os="linux", status="online", org_id=org.id, labels=[]),
+        Runner(name="site-runner", os="linux", status="online", labels=[]),
+        Runner(name="ghost-runner", os="linux", status="online", repo_id=999999, labels=[]),
+    ])
+    await db_session.commit()
+
+    listed = await client.get("/admin/api/runners", headers=headers)
+    assert listed.status_code == 200, listed.text
+    by_name = {r["name"]: r for r in listed.json()}
+
+    repo_runner = by_name["repo-runner"]
+    assert repo_runner["scope"] == repo_full
+    assert repo_runner["scope_kind"] == "repository"
+    assert repo_runner["scope_url"] == f"/ui/{repo_full}"
+    # Labels decide which jobs a runner accepts; the page shows them, so the
+    # payload has to carry them.
+    assert repo_runner["labels"] == ["self-hosted", "fullsend"]
+
+    org_runner = by_name["org-runner"]
+    assert org_runner["scope"] == "runner-org"
+    assert org_runner["scope_kind"] == "organization"
+    assert org_runner["scope_url"] == "/ui/orgs/runner-org"
+
+    site_runner = by_name["site-runner"]
+    assert site_runner["scope_kind"] == "site"
+    assert site_runner["scope"] == "All repositories"
+    assert site_runner["scope_url"] is None
+
+    # A key pointing at something deleted says so. Rendering a bare number is
+    # what this change removes; rendering nothing would read as "not attached",
+    # which is worse than the number was.
+    ghost = by_name["ghost-runner"]
+    assert ghost["scope_kind"] == "repository"
+    assert "999999" in ghost["scope"] and "deleted" in ghost["scope"]
+    assert ghost["scope_url"] is None
