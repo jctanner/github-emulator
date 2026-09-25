@@ -82,3 +82,31 @@ def test_a_live_busy_runner_is_still_busy():
 def test_labels_survive_the_payload():
     payload = _runner_payload(_runner(labels=["self-hosted", "linux", "fullsend"]))
     assert [l["name"] for l in payload["labels"]] == ["self-hosted", "linux", "fullsend"]
+
+
+def test_the_admin_endpoint_derives_status_too():
+    """Every serializer must agree, or one page contradicts another.
+
+    The Actions runner API was fixed first and reported these correctly while
+    /_admin/runners still showed dozens of month-old registrations as online,
+    because the admin endpoint had its own copy emitting the stored column.
+    """
+    from app.api.admin_frontend import _runner as admin_runner
+
+    stale = settings.RUNNER_STALE_THRESHOLD_SECONDS + 60
+    dead = _runner(status="online", busy=True, last_heartbeat=_ago(stale))
+    payload = admin_runner(dead)
+    assert payload["status"] == "offline"
+    assert payload["busy"] is False
+
+    live = _runner(status="online", busy=True, last_heartbeat=_ago(1))
+    assert admin_runner(live)["status"] == "online"
+    assert admin_runner(live)["busy"] is True
+
+
+def test_both_serializers_agree_on_the_same_runner():
+    from app.api.admin_frontend import _runner as admin_runner
+
+    for age in (1, settings.RUNNER_STALE_THRESHOLD_SECONDS + 60, 35 * 24 * 3600):
+        r = _runner(last_heartbeat=_ago(age))
+        assert admin_runner(r)["status"] == _runner_payload(r)["status"], age

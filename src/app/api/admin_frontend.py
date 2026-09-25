@@ -6,6 +6,7 @@ from fastapi import APIRouter, HTTPException, Response
 from sqlalchemy import func, select
 
 from app.api.deps import AuthUser, DbSession
+from app.api.actions_runners import _effective_status
 from app.models.actions import Runner, WorkflowRun
 from app.models.import_job import ImportJob
 from app.models.issue import Issue
@@ -51,7 +52,13 @@ def _token(value: PersonalAccessToken) -> dict:
 
 def _runner(value: Runner) -> dict:
     scope = value.enterprise_slug or (f"repository:{value.repo_id}" if value.repo_id else f"organization:{value.org_id}" if value.org_id else "site")
-    return {"id": value.id, "name": value.name, "os": value.os, "status": value.status, "busy": value.busy, "labels": value.labels or [], "scope": scope, "last_heartbeat": _fmt_dt(value.last_heartbeat)}
+    # Derived, not the stored column: a runner that stopped heartbeating is
+    # offline whichever endpoint is asked. Serving value.status here is what
+    # made this page report dozens of phantoms as online while the Actions
+    # runner API, fixed first, reported them correctly — the same field
+    # serialized from two places disagreeing with itself.
+    status = _effective_status(value)
+    return {"id": value.id, "name": value.name, "os": value.os, "status": status, "busy": value.busy and status == "online", "labels": value.labels or [], "scope": scope, "last_heartbeat": _fmt_dt(value.last_heartbeat)}
 
 
 def _import(value: ImportJob) -> dict:
