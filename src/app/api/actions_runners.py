@@ -8,7 +8,7 @@ from sqlalchemy import select
 
 from app.api.deps import AuthUser, DbSession, get_repo_or_404
 from app.config import settings
-from app.models.actions import EnterpriseRunnerRegistrationToken, Runner, RegistrationToken
+from app.models.actions import EnterpriseRunnerRegistrationToken, Runner, RegistrationToken, RunnerSession, WorkflowJob
 from app.schemas.user import _fmt_dt
 from app.schemas.actions import RunnerListResponse, RunnerResponse
 
@@ -132,6 +132,62 @@ async def get_enterprise_runner(
     return _runner_payload(runner)
 
 
+async def _delete_runner_and_detach_history(db, runner: Runner) -> None:
+    """Delete a runner, detaching the jobs that record having used it.
+
+    `workflow_jobs.runner_id` is a foreign key to `runners.id`, and SQLite does
+    not enforce it, so deleting a runner that any job referenced silently left
+    rows pointing at nothing. The practical effect was that the dead
+    registrations a restarted stack accumulates could not be removed safely:
+    the only ones it was safe to delete were those no job had ever used.
+
+    Jobs keep `runner_name`, which is denormalised for exactly this reason, so
+    detaching loses nothing a reader of the history needs — it still says which
+    runner ran the job. What goes is a pointer to a row that is being removed.
+
+    A runner still executing something is refused rather than detached. Nulling
+    `runner_id` on an in-progress job would strand it: `_requeue_stale_jobs`
+    finds work to requeue by joining jobs to their runner, so a detached live
+    job would never be recovered by anything.
+    """
+    live = (await db.execute(
+        select(WorkflowJob).where(
+            WorkflowJob.runner_id == runner.id,
+            WorkflowJob.status == "in_progress",
+        )
+    )).scalars().first()
+    if live is not None:
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                f"runner {runner.name!r} is running job {live.id}; "
+                "wait for it to finish or let it go stale first"
+            ),
+        )
+
+    referencing = (await db.execute(
+        select(WorkflowJob).where(WorkflowJob.runner_id == runner.id)
+    )).scalars().all()
+    for job in referencing:
+        job.runner_id = None
+
+    # runner_sessions is the other table with a foreign key to runners, and its
+    # runner_id is NOT NULL — so it cannot be detached the way jobs can. The
+    # first version of this function handled only workflow_jobs and returned a
+    # 500 for any runner that had ever opened a session: SQLAlchemy tried to
+    # null a non-nullable column on cascade. A session is live connection
+    # state, not history, so removing it alongside the runner is correct rather
+    # than a compromise.
+    sessions = (await db.execute(
+        select(RunnerSession).where(RunnerSession.runner_id == runner.id)
+    )).scalars().all()
+    for session in sessions:
+        await db.delete(session)
+
+    await db.delete(runner)
+    await db.commit()
+
+
 @router.delete("/enterprises/{enterprise}/actions/runners/{runner_id}", status_code=204)
 async def delete_enterprise_runner(
     enterprise: str, runner_id: int, db: DbSession, user: AuthUser,
@@ -144,8 +200,7 @@ async def delete_enterprise_runner(
     runner = result.scalar_one_or_none()
     if runner is None:
         raise HTTPException(status_code=404, detail="Not Found")
-    await db.delete(runner)
-    await db.commit()
+    await _delete_runner_and_detach_history(db, runner)
 
 
 @router.post("/repos/{owner}/{repo}/actions/runners/registration-token")
@@ -241,5 +296,4 @@ async def delete_runner(
     r = result.scalar_one_or_none()
     if r is None:
         raise HTTPException(status_code=404, detail="Not Found")
-    await db.delete(r)
-    await db.commit()
+    await _delete_runner_and_detach_history(db, r)
