@@ -8,7 +8,9 @@ leaves a report; these pin the two decisions that make that report useful
 
 import time
 
-from app.services.memory_watch import InFlight, MemoryWatch
+import tracemalloc
+
+from app.services.memory_watch import InFlight, MemoryWatch, _site
 
 MIB = 1048576
 
@@ -53,3 +55,25 @@ def test_enter_and_leave_track_requests():
     w.leave(k)
     assert w.in_flight == {}
     w.leave(999)  # unknown keys are ignored
+
+
+def test_a_site_is_named_by_our_innermost_frame_then_the_allocator():
+    """A traceback iterates oldest frame first, so the allocation is last.
+
+    The constructor takes frames the other way round, newest first, which is
+    how the C side stores them; what matters here is the iteration order.
+    """
+    tb = tracemalloc.Traceback([
+        ("/usr/local/lib/python3.12/json/decoder.py", 354),
+        ("/usr/local/lib/python3.12/site-packages/sqlalchemy/sql/sqltypes.py", 2700),
+        ("/app/src/app/services/workflow_service.py", 700),
+        ("/app/src/app/api/actions.py", 212),
+        ("/usr/local/lib/python3.12/asyncio/events.py", 80),
+    ])
+    assert [f.lineno for f in tb] == [80, 212, 700, 2700, 354]
+    assert _site(tb) == "src/app/services/workflow_service.py:700  <- decoder.py:354"
+
+
+def test_a_site_with_no_application_frame_falls_back_to_the_allocator():
+    tb = tracemalloc.Traceback([("/usr/local/lib/python3.12/json/decoder.py", 354)])
+    assert _site(tb) == "/usr/local/lib/python3.12/json/decoder.py:354"

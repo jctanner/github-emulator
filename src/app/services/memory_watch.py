@@ -48,6 +48,24 @@ def rss_bytes() -> int:
         return 0
 
 
+def _site(traceback: tracemalloc.Traceback) -> str:
+    """Name an allocation by our innermost frame, then by the allocating one.
+
+    tracemalloc orders a traceback oldest frame first, so the allocation
+    itself is the last frame and the application frame nearest to it is the
+    first match walking backwards.
+    """
+    frames = list(traceback)
+    allocating = frames[-1]
+    for frame in reversed(frames):
+        if "/app/" in frame.filename and "memory_watch" not in frame.filename:
+            return (
+                f"{frame.filename.split('/app/', 1)[1]}:{frame.lineno}"
+                f"  <- {allocating.filename.rsplit('/', 1)[-1]}:{allocating.lineno}"
+            )
+    return f"{allocating.filename}:{allocating.lineno}"
+
+
 @dataclass
 class InFlight:
     method: str
@@ -104,20 +122,22 @@ class MemoryWatch:
                 f"  tracemalloc: traced={traced / 1048576:.0f}MiB "
                 f"traced_peak={traced_peak / 1048576:.0f}MiB"
             )
-            for stat in current.statistics("lineno")[: self.top]:
-                frame = stat.traceback[0]
+            # Grouped by the full traceback, so two callers of json.loads
+            # stay two rows, and named by the innermost frame in our own
+            # code: "json/decoder.py:354" says what allocated, "_job_json
+            # in actions.py:212" says who asked for it.
+            for stat in current.statistics("traceback")[: self.top]:
                 lines.append(
                     f"  top: {stat.size / 1048576:7.1f}MiB {stat.count:>7} blocks  "
-                    f"{frame.filename}:{frame.lineno}"
+                    f"{_site(stat.traceback)}"
                 )
             if self._previous is not None:
-                for stat in current.compare_to(self._previous, "lineno")[: self.top]:
+                for stat in current.compare_to(self._previous, "traceback")[: self.top]:
                     if stat.size_diff <= 0:
                         continue
-                    frame = stat.traceback[0]
                     lines.append(
                         f"  grew: {stat.size_diff / 1048576:+7.1f}MiB "
-                        f"{stat.count_diff:+8} blocks  {frame.filename}:{frame.lineno}"
+                        f"{stat.count_diff:+8} blocks  {_site(stat.traceback)}"
                     )
             self._previous = current
         else:
@@ -157,7 +177,10 @@ class MemoryWatch:
                 rss = rss_bytes()
                 reason = self.check(rss)
                 if reason:
-                    self.report(rss, reason)
+                    # A snapshot over a few hundred thousand live blocks
+                    # takes seconds; off the loop, so a report never stalls
+                    # the requests it is trying to describe.
+                    await asyncio.to_thread(self.report, rss, reason)
             except Exception:  # never let the watchdog take the app down
                 logger.exception("memory-watch: sampler error")
             await asyncio.sleep(self.interval)

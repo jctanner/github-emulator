@@ -47,7 +47,7 @@ class Settings(BaseSettings):
     MEMORY_WATCH_INTERVAL_SECONDS: float = 2.0
     MEMORY_WATCH_THRESHOLDS_MIB: str = "512,768,1024,1280"
     MEMORY_WATCH_GROWTH_MIB: int = 200
-    MEMORY_WATCH_FRAMES: int = 3
+    MEMORY_WATCH_FRAMES: int = 12
 
     # Resettable Actions OIDC issuer.  The key is generated in-process by the
     # emulator; this is intentionally not a production identity provider.
