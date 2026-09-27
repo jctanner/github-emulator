@@ -15,7 +15,7 @@ from datetime import datetime, timedelta, timezone
 from urllib.parse import parse_qs, urlsplit, urlunsplit
 
 from fastapi import APIRouter, HTTPException, Query, Request
-from fastapi.responses import Response
+from fastapi.responses import FileResponse, JSONResponse, Response
 from sqlalchemy import select
 from sqlalchemy.orm.attributes import flag_modified
 
@@ -30,6 +30,12 @@ from app.models.actions import (
     WorkflowRun,
 )
 from app.models.repository import Repository
+from app.services.action_download_service import (
+    UpstreamActionError,
+    fetch_action_archive,
+    parse_uses,
+    resolve_action_sha,
+)
 from app.services.auth_service import hash_token
 from app.services.job_token_service import issue_job_token
 from app.services.workflow_service import check_run_completion, dispatch_ready_jobs
@@ -210,6 +216,11 @@ async def connection_data(request: Request):
                 "timeline records",
                 "_apis/distributedtask/hubs/{hubName}/plans/{planId}/timelines/{timelineId}/records",
             ),
+            _service_definition(
+                "27d7f831-88c1-4719-8ca1-6a061dad90eb",
+                "action download info",
+                "_apis/distributedtask/hubs/{hubName}/plans/{planId}/actionsdownloadinfo",
+            ),
         ],
     }
     location_service_data.update(
@@ -320,8 +331,31 @@ async def _get_job_from_job_token(request: Request, db) -> WorkflowJob:
             detail="Authentication required",
             headers=challenge,
         )
+    return await _job_from_token_value(auth[7:], db, challenge)
 
-    token = auth[7:]
+
+async def _get_job_from_download_credential(request: Request, db) -> WorkflowJob:
+    """The runner downloads an action archive with Basic `x-access-token:<token>`.
+
+    That token is the job's own (ActionManager fills it from `github.token`
+    when the download info names none), so the archive proxy authenticates
+    the same way as every other job-server call.
+    """
+    auth = request.headers.get("Authorization", "")
+    challenge = {"WWW-Authenticate": "Basic"}
+    if auth.startswith("Bearer "):
+        return await _job_from_token_value(auth[7:], db, challenge)
+    if not auth.startswith("Basic "):
+        raise HTTPException(status_code=401, detail="Authentication required", headers=challenge)
+    try:
+        decoded = base64.b64decode(auth[6:]).decode("utf-8")
+    except (ValueError, UnicodeDecodeError):
+        raise HTTPException(status_code=401, detail="Invalid credential", headers=challenge) from None
+    _user, _sep, token = decoded.partition(":")
+    return await _job_from_token_value(token, db, challenge)
+
+
+async def _job_from_token_value(token: str, db, challenge: dict) -> WorkflowJob:
     try:
         payload_part = token.split(".")[1]
         payload_part += "=" * (-len(payload_part) % 4)
@@ -635,16 +669,24 @@ def _job_step_message(
     number = int(step.get("number", 0) or 0)
     display_name = step.get("name", f"Step {number}")
     uses = step.get("uses")
+    reference: dict = {"type": "Script"}
     if uses:
-        # Every step reaches the upstream runner as a Script reference: this
-        # surface has no action-download endpoint, so an action cannot be
-        # fetched and run. Until it can, a `uses:` step must fail where it
-        # stands rather than become an empty script that reports success.
-        inputs = {
-            "script": _unsupported_uses_script(uses),
-            "shell": "bash",
-            "workingDirectory": step.get("working-directory"),
-        }
+        parsed = parse_uses(uses)
+        if parsed is None:
+            # docker:// images and values the runner's own grammar rejects.
+            # Fail where the step stands rather than as an empty script
+            # that reports success.
+            inputs = {
+                "script": _unsupported_uses_script(uses),
+                "shell": "bash",
+                "workingDirectory": step.get("working-directory"),
+            }
+        else:
+            # The shape PipelineTemplateConverter produces. The runner asks
+            # for download info on the GitHub ones before the job starts and
+            # takes "self" ones from the checked-out workspace.
+            reference = parsed.as_step_reference()
+            inputs = dict(step.get("with") or {})
     else:
         inputs = {
             "script": step.get("run", ""),
@@ -663,9 +705,7 @@ def _job_step_message(
         "environment": _template_mapping(
             {**(extra_environment or {}), **(step.get("env") or {})}
         ),
-        "reference": {
-            "type": "Script",
-        },
+        "reference": reference,
         "inputs": _template_mapping(inputs),
     }
 
@@ -676,19 +716,17 @@ def _unsupported_uses_script(uses: str) -> str:
     The `::error::` line becomes an annotation on the run, so the refusal is
     visible from the UI and not only from the step log.
     """
-    quoted = "'" + uses.replace("'", "'\\''") + "'"
-    return "\n".join(
-        [
-            f"echo ::error::uses: {quoted} was not run: this runner path cannot "
-            "fetch actions >&2",
-            "echo 'The job reached an upstream actions/runner through the "
-            "distributed-task protocol, which renders every step as a script "
-            "and serves no action downloads. The action was NOT executed.' >&2",
-            "echo 'Use a run: step here, or send the job to the emulator runner, "
-            "which emulates a fixed set of actions.' >&2",
-            "exit 1",
-        ]
-    )
+    if uses.startswith("docker://"):
+        why = ("container actions are not supported on this runner path; "
+               "the action was NOT executed")
+    else:
+        why = ("expected {owner}/{repo}[/path]@ref or ./path, so the action "
+               "was NOT executed")
+    message = f"::error::uses: {uses} was not run: {why}"
+    # One single-quoted word, so nothing in the action name or the reason
+    # is read by the shell.
+    quoted = "'" + message.replace("'", "'\\''") + "'"
+    return f"echo {quoted} >&2\nexit 1"
 
 
 def _job_request_response(job: WorkflowJob, runner: Runner, result: str | None = None) -> dict:
@@ -1223,6 +1261,88 @@ async def dt_append_timeline_record_feed(
             f.write(str(line).encode("utf-8") + b"\n")
 
     return Response(status_code=204)
+
+
+def _wrapped_exception(status: int, type_key: str, message: str) -> JSONResponse:
+    """An error body in the shape the runner's VssHttpClient unwraps.
+
+    `typeKey` selects the exception class on the runner side, which is how a
+    missing action becomes UnresolvableActionDownloadInfoException (no
+    retries) rather than a generic failure retried three times with backoff.
+    """
+    return JSONResponse(
+        status_code=status,
+        content={
+            "$id": "1",
+            "innerException": None,
+            "message": message,
+            "typeName": f"GitHub.DistributedTask.WebApi.{type_key}, GitHub.DistributedTask.WebApi",
+            "typeKey": type_key,
+            "errorCode": 0,
+            "eventId": 3000,
+        },
+    )
+
+
+@router.post("/_apis/distributedtask/hubs/{hub_name}/plans/{plan_id}/actionsdownloadinfo")
+@router.post("/{owner}/{repo}/_apis/distributedtask/hubs/{hub_name}/plans/{plan_id}/actionsdownloadinfo")
+async def dt_resolve_action_download_info(
+    hub_name: str, plan_id: str, request: Request, db: DbSession,
+):
+    """Resolve every `uses:` action in the job to a commit and an archive URL.
+
+    Called once by ActionManager before the first step runs, with the
+    repository references it found in the job. The archive URL points back
+    here: the runner downloads it with the job token as a Basic credential,
+    which GitHub would reject and this service can verify.
+    """
+    job = await _get_job_from_job_token(request, db)
+    body = await request.json()
+    references = body.get("actions") or body.get("Actions") or []
+    base = _runner_reachable_base_url(_request_base(request))
+
+    resolved: dict[str, dict] = {}
+    for reference in references:
+        name = reference.get("nameWithOwner") or reference.get("NameWithOwner") or ""
+        ref = reference.get("ref") or reference.get("Ref") or ""
+        if not name or not ref:
+            return _wrapped_exception(
+                400, "NonRetryableActionDownloadInfoException",
+                f"action reference needs nameWithOwner and ref: {reference!r}",
+            )
+        try:
+            sha = await resolve_action_sha(name, ref)
+        except UpstreamActionError as exc:
+            if exc.not_found:
+                return _wrapped_exception(
+                    404, "UnresolvableActionDownloadInfoException", str(exc)
+                )
+            return _wrapped_exception(502, "DistributedTaskException", str(exc))
+        archive = f"{base}/_apis/distributedtask/actions/archives/{name}/{sha}/archive"
+        resolved[f"{name}@{ref}"] = {
+            "nameWithOwner": name,
+            "ref": ref,
+            "resolvedNameWithOwner": name,
+            "resolvedSha": sha,
+            "tarballUrl": f"{archive}.tar.gz",
+            "zipballUrl": f"{archive}.zip",
+        }
+    return {"actions": resolved}
+
+
+@router.get("/_apis/distributedtask/actions/archives/{owner}/{repo}/{sha}/archive.{fmt}")
+@router.get("/{owner_}/{repo_}/_apis/distributedtask/actions/archives/{owner}/{repo}/{sha}/archive.{fmt}")
+async def dt_action_archive(
+    owner: str, repo: str, sha: str, fmt: str, request: Request, db: DbSession,
+):
+    """Serve an action archive, fetched from upstream once per SHA."""
+    await _get_job_from_download_credential(request, db)
+    try:
+        path = await fetch_action_archive(f"{owner}/{repo}", sha, fmt)
+    except UpstreamActionError as exc:
+        raise HTTPException(status_code=404 if exc.not_found else 502, detail=str(exc)) from exc
+    media = "application/gzip" if fmt == "tar.gz" else "application/zip"
+    return FileResponse(path, media_type=media, filename=f"{repo}-{sha[:7]}.{fmt}")
 
 
 @router.post("/_apis/distributedtask/hubs/{hub_name}/plans/{plan_id}/logs")

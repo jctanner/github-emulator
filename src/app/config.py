@@ -27,6 +27,15 @@ class Settings(BaseSettings):
     # Hostname for Caddy TLS / gh CLI integration
     HOSTNAME: str = "ghemu.local"
 
+    # Where the upstream runner's `uses:` actions are resolved and fetched
+    # from. The emulator does both on the runner's behalf: it resolves the
+    # ref through the API and proxies the archive, so the runner needs no
+    # route to github.com and never sends its job token there. The token is
+    # optional and only raises the unauthenticated API rate limit.
+    ACTIONS_UPSTREAM_API_URL: str = "https://api.github.com"
+    ACTIONS_UPSTREAM_ARCHIVE_URL: str = "https://codeload.github.com"
+    ACTIONS_UPSTREAM_TOKEN: str = ""
+
     # Resettable Actions OIDC issuer.  The key is generated in-process by the
     # emulator; this is intentionally not a production identity provider.
     OIDC_ISSUER: str = ""
