@@ -18,6 +18,7 @@ import io
 import logging
 import json
 import os
+import hashlib
 import platform
 import re
 import shutil
@@ -100,6 +101,9 @@ _ACTION_SHIMS = {
     "google-github-actions/auth": "_shim_google_auth",
     "actions/setup-go": "_shim_setup_go",
     "actions/upload-artifact": "_shim_upload_artifact",
+    "actions/cache": "_shim_cache",
+    "actions/cache/restore": "_shim_cache",
+    "actions/cache/save": "_shim_cache",
 }
 
 # The Go toolchain baked into the runner image. The setup-go emulation uses it
@@ -812,6 +816,9 @@ class RunnerClient:
             self._report_progress(job_repository, job_id, steps)
 
         conclusion = "success" if all_passed else "failure"
+        # The combined actions/cache form saves in its post step, after the
+        # job body and before the workspace is removed.
+        self._flush_deferred_cache_saves(job)
         self._complete_job(job_repository, job_id, conclusion, steps, step_outputs)
         log.info("=== Job #%d finished: %s ===", job_id, conclusion)
 
@@ -1341,6 +1348,141 @@ class RunnerClient:
                 "none, so GOOGLE_CLOUD_PROJECT is unset.\n"
             )
         return "success", "".join(lines), updates
+
+    # -- actions/cache --------------------------------------------------------
+    #
+    # A per-runner directory cache, which is what a self-hosted runner has:
+    # entries live under the workdir and survive as long as the pod does.
+    # Fullsend's reusable dispatch wraps its CLI install in
+    # actions/cache/restore and /save once a repository registers agents in
+    # config.yaml; without this the whole harness-dispatch job failed as an
+    # unsupported action (2026-09-27, run 1707). The key is stored beside the
+    # entry so restore-keys prefix matching works on the original text.
+
+    def _cache_root(self) -> Path:
+        # A sibling of the workspace, like RUNNER_TEMP: the workspace is
+        # removed after every job, and a cache that went with it would
+        # never hit.
+        return Path(os.environ.get("RUNNER_CACHE_DIR") or (Path(WORKDIR).parent / "_cache"))
+
+    @staticmethod
+    def _cache_slot(key: str) -> str:
+        return hashlib.sha256(key.encode()).hexdigest()[:24]
+
+    def _cache_lookup(self, key: str, restore_keys: list[str]) -> tuple[Path | None, str]:
+        root = self._cache_root()
+        exact = root / self._cache_slot(key)
+        if (exact / "manifest.json").is_file():
+            return exact, key
+        if root.is_dir():
+            # Most recently saved entry whose key starts with a restore key,
+            # in restore-keys order - the real action's rule.
+            for prefix in restore_keys:
+                best: tuple[float, Path, str] | None = None
+                for slot in root.iterdir():
+                    manifest = slot / "manifest.json"
+                    if not manifest.is_file():
+                        continue
+                    stored = json.loads(manifest.read_text()).get("key", "")
+                    if stored.startswith(prefix):
+                        mtime = manifest.stat().st_mtime
+                        if best is None or mtime > best[0]:
+                            best = (mtime, slot, stored)
+                if best is not None:
+                    return best[1], best[2]
+        return None, ""
+
+    def _cache_save(self, key: str, paths: list[str], lines: list[str]) -> bool:
+        workspace = Path(WORKDIR)
+        slot = self._cache_root() / self._cache_slot(key)
+        if (slot / "manifest.json").is_file():
+            lines.append(f"Cache already exists for key {key}; not saving again\n")
+            return True
+        entries = []
+        staged = slot.with_name(slot.name + ".partial")
+        if staged.exists():
+            shutil.rmtree(staged)
+        for index, pattern in enumerate(paths):
+            source = Path(pattern) if os.path.isabs(pattern) else workspace / pattern
+            if not source.exists():
+                lines.append(f"Path does not exist and is not cached: {pattern}\n")
+                continue
+            dest = staged / str(index)
+            if source.is_dir():
+                shutil.copytree(source, dest, symlinks=True)
+            else:
+                dest.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(source, dest / source.name)
+            entries.append({"index": index, "path": pattern, "is_dir": source.is_dir(), "name": source.name})
+        if not entries:
+            lines.append("::warning::None of the paths exist; nothing cached\n")
+            shutil.rmtree(staged, ignore_errors=True)
+            return True
+        staged.mkdir(parents=True, exist_ok=True)
+        (staged / "manifest.json").write_text(json.dumps({"key": key, "entries": entries}))
+        os.replace(staged, slot)
+        lines.append(f"Cache saved with key: {key}\n")
+        return True
+
+    def _cache_restore_into(self, slot: Path, lines: list[str]) -> None:
+        workspace = Path(WORKDIR)
+        manifest = json.loads((slot / "manifest.json").read_text())
+        for entry in manifest.get("entries", []):
+            pattern = entry["path"]
+            target = Path(pattern) if os.path.isabs(pattern) else workspace / pattern
+            stored = slot / str(entry["index"])
+            if entry.get("is_dir"):
+                if target.exists():
+                    shutil.rmtree(target)
+                shutil.copytree(stored, target, symlinks=True)
+            else:
+                target.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(stored / entry["name"], target)
+        lines.append(f"Cache restored from key: {manifest.get('key', '')}\n")
+
+    def _shim_cache(self, step: dict, uses: str, job: dict) -> tuple[str, str, dict[str, str]]:
+        """Emulate actions/cache, actions/cache/restore and actions/cache/save.
+
+        The combined form restores now and saves after the job when there
+        was no hit, as the real action's post step does.
+        """
+        inputs = {str(k): str(v) for k, v in (step.get("with") or {}).items()}
+        action = uses.split("@", 1)[0]
+        key = (inputs.get("key") or "").strip()
+        paths = [p.strip() for p in (inputs.get("path") or "").splitlines() if p.strip()]
+        restore_keys = [k.strip() for k in (inputs.get("restore-keys") or "").splitlines() if k.strip()]
+        lines: list[str] = []
+        if not key or not paths:
+            lines.append("::error::actions/cache needs both 'key' and 'path'\n")
+            return "failure", "".join(lines), {}
+        if action == "actions/cache/save":
+            self._cache_save(key, paths, lines)
+            return "success", "".join(lines), {}
+        slot, matched = self._cache_lookup(key, restore_keys)
+        hit = slot is not None and matched == key
+        if slot is not None:
+            self._cache_restore_into(slot, lines)
+        else:
+            lines.append(f"Cache not found for input keys: {', '.join([key, *restore_keys])}\n")
+            if (inputs.get("fail-on-cache-miss") or "false").strip().lower() == "true":
+                return "failure", "".join(lines), {}
+        step["outputs"] = {
+            "cache-hit": "true" if hit else "false",
+            "cache-primary-key": key,
+            "cache-matched-key": matched,
+        }
+        if action == "actions/cache" and not hit:
+            job.setdefault("_deferred_cache_saves", []).append((key, paths))
+        return "success", "".join(lines), {}
+
+    def _flush_deferred_cache_saves(self, job: dict) -> None:
+        for key, paths in job.pop("_deferred_cache_saves", []) or []:
+            lines: list[str] = []
+            try:
+                self._cache_save(key, paths, lines)
+            except Exception as exc:  # noqa: BLE001 - a cache save must not fail the job
+                lines.append(f"::warning::cache save for {key} failed: {exc}\n")
+            log.info("post-job cache: %s", "".join(lines).strip())
 
     def _shim_upload_artifact(
         self, step: dict, uses: str, job: dict
