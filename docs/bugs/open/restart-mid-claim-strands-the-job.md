@@ -41,12 +41,18 @@ running it until the run was cancelled by hand.
    just before the kill (four seconds now) reads as a process already
    under memory pressure, so the growth preceded that window.
 
-   The cause is therefore unidentified and does not reproduce on demand.
-   `app/services/memory_watch.py` now samples RSS, tracks in-flight
-   requests, and on threshold crossings writes them with tracemalloc's
-   largest allocation sites to `DATA_DIR/memory-watch.log`; the next
-   occurrence should name a file and line. Until it does, raising the
-   limit only moves the ceiling.
+   **Found the same evening and fixed (7b43453).** The watchdog's first
+   live report caught a 220 MiB rise with one application request in
+   flight - a pull-request creation - and 412k freshly decoded JSON
+   objects. `Workflow.runs` and `WorkflowRun.jobs` were `lazy="selectin"`,
+   so loading one workflow loaded every run and every job of every run
+   (5,077 rows, 22.6 MiB of `steps` JSON), and loading one job chained
+   back to the same; event dispatch loads a repository's workflows to
+   match triggers, so every issue, pull request and comment paid for the
+   repository's whole Actions history. Both collections are `lazy="raise"`
+   now, with `tests/test_workflow_history_is_not_eager_loaded.py`.
+   Measured: pull-request creation 12.4 s / +176 MiB before, 0.8 s /
+   +3 MiB after. Defect 2 is closed; defect 1 stays open.
 
 ## Workaround
 
