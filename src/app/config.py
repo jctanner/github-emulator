@@ -40,10 +40,13 @@ class Settings(BaseSettings):
     # been OOM-killed at 1.5 GiB three times with nothing naming a cause; it
     # now reports in-flight requests and the largest allocation sites when
     # RSS crosses these thresholds or grows by the step, to the log and to
-    # DATA_DIR/memory-watch.log. TRACE=0 keeps the sampler but drops the
-    # allocation sites, which is the part that costs memory.
+    # DATA_DIR/memory-watch.log. Tracing is off by default: with a few
+    # hundred thousand live blocks tracemalloc's per-allocation cost and its
+    # snapshots (which hold the GIL, thread or not) stalled the process for
+    # tens of seconds per report, and a one-row listing took 59 seconds.
+    # Turn it on for a bounded investigation, not for a running stack.
     MEMORY_WATCH: bool = True
-    MEMORY_WATCH_TRACE: bool = True
+    MEMORY_WATCH_TRACE: bool = False
     MEMORY_WATCH_INTERVAL_SECONDS: float = 2.0
     MEMORY_WATCH_THRESHOLDS_MIB: str = "512,768,1024,1280"
     MEMORY_WATCH_GROWTH_MIB: int = 200
