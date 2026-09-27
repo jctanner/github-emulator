@@ -28,6 +28,11 @@ async def lifespan(app: FastAPI):
         await _ensure_admin_user()
 
     logger.info("GitHub Emulator started at %s", settings.BASE_URL)
+    memory_watch = None
+    if settings.MEMORY_WATCH:
+        from app.services.memory_watch import configure_from_settings
+        memory_watch = configure_from_settings()
+        memory_watch.start()
 
     # Start SSH server
     ssh_server = None
@@ -39,6 +44,8 @@ async def lifespan(app: FastAPI):
 
     yield
 
+    if memory_watch is not None:
+        memory_watch.stop()
     # Stop SSH server
     if ssh_server is not None:
         try:
@@ -149,6 +156,9 @@ def create_app() -> FastAPI:
     app.add_middleware(ApiVersionMiddleware)
     app.add_middleware(RateLimitMiddleware)
     app.add_middleware(ETagMiddleware)
+    if settings.MEMORY_WATCH:
+        from app.middleware.memory_watch import MemoryWatchMiddleware
+        app.add_middleware(MemoryWatchMiddleware)
     register_error_handlers(app)
 
     # -- REST API routers -----------------------------------------------------

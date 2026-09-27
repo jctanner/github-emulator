@@ -36,6 +36,19 @@ class Settings(BaseSettings):
     ACTIONS_UPSTREAM_ARCHIVE_URL: str = "https://codeload.github.com"
     ACTIONS_UPSTREAM_TOKEN: str = ""
 
+    # The memory watchdog (app/services/memory_watch.py). The process has
+    # been OOM-killed at 1.5 GiB three times with nothing naming a cause; it
+    # now reports in-flight requests and the largest allocation sites when
+    # RSS crosses these thresholds or grows by the step, to the log and to
+    # DATA_DIR/memory-watch.log. TRACE=0 keeps the sampler but drops the
+    # allocation sites, which is the part that costs memory.
+    MEMORY_WATCH: bool = True
+    MEMORY_WATCH_TRACE: bool = True
+    MEMORY_WATCH_INTERVAL_SECONDS: float = 2.0
+    MEMORY_WATCH_THRESHOLDS_MIB: str = "512,768,1024,1280"
+    MEMORY_WATCH_GROWTH_MIB: int = 200
+    MEMORY_WATCH_FRAMES: int = 3
+
     # Resettable Actions OIDC issuer.  The key is generated in-process by the
     # emulator; this is intentionally not a production identity provider.
     OIDC_ISSUER: str = ""

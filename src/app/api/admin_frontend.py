@@ -250,6 +250,21 @@ async def remove_token(token_id: int, user: AuthUser, db: DbSession):
     await db.delete(value); await db.commit(); return Response(status_code=204)
 
 
+@router.get("/memory")
+async def memory(user: AuthUser):
+    """The process's memory and in-flight requests, on demand.
+
+    The watchdog writes the same on threshold crossings; this is for looking
+    while something is slow rather than after it has died.
+    """
+    _require_admin(user)
+    from app.services.memory_watch import rss_bytes, watch
+    status = watch.status()
+    status["rss_bytes"] = rss_bytes()
+    status["report"] = watch.snapshot_report(status["rss_bytes"], "on demand")
+    return status
+
+
 @router.get("/runners", response_model=list[AdminRunnerResponse])
 async def runners(user: AuthUser, db: DbSession):
     _require_admin(user)
