@@ -84,7 +84,16 @@ class Workflow(Base):
     )
 
     # Relationships
-    runs = relationship("WorkflowRun", back_populates="workflow", lazy="selectin")
+    # Never loaded implicitly. With lazy="selectin" here and on
+    # WorkflowRun.jobs, loading one Workflow loaded every run it ever had
+    # and every job of every run - steps JSON included - and loading one
+    # job chained back through its run and workflow to the same. Event
+    # dispatch loads a repository's workflows to match triggers, so every
+    # issue, pull request and comment on the conformance target decoded
+    # 1,600 runs and 5,000 jobs (~200 MiB, 412k objects), and the process
+    # was OOM-killed at 1.5 GiB three times. Nothing reads this collection;
+    # a query that needs runs selects WorkflowRun by workflow_id.
+    runs = relationship("WorkflowRun", back_populates="workflow", lazy="raise")
 
 
 class WorkflowRun(Base):
@@ -116,7 +125,9 @@ class WorkflowRun(Base):
     # Relationships
     workflow = relationship("Workflow", back_populates="runs", lazy="selectin")
     actor = relationship("User", lazy="selectin")
-    jobs = relationship("WorkflowJob", back_populates="run", lazy="selectin")
+    # Never loaded implicitly, for the reason on Workflow.runs. Jobs are
+    # selected by run_id where they are needed.
+    jobs = relationship("WorkflowJob", back_populates="run", lazy="raise")
 
 
 class WorkflowJob(Base):
