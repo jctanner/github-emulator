@@ -563,3 +563,49 @@ async def test_admin_can_cancel_a_run_whose_repository_is_gone(
     assert (await client.post(
         "/admin/api/actions/999999/cancel", headers=headers
     )).status_code == 404
+
+
+async def test_admin_can_delete_an_organization_someone_joined(client, admin_token, db_session):
+    """Deleting an organization must take its memberships and teams with it.
+
+    An organization created through the public route records its creator as
+    a member. The admin delete removed only the organization row; SQLAlchemy
+    then nulled the membership's org_id, which is NOT NULL, and every such
+    delete answered 500 - seen live on 2026-09-27 cleaning up a throwaway
+    organization. An organization that still owns repositories is refused
+    with 409 rather than orphaning them.
+    """
+    from sqlalchemy import select
+    from app.models.organization import OrgMembership
+
+    headers = auth_headers(admin_token)
+    created = await client.post(
+        "/api/v3/orgs", json={"login": "joined-org", "name": "joined-org"}, headers=headers
+    )
+    assert created.status_code == 201, created.text
+    org_id = created.json()["id"]
+    assert (await db_session.execute(
+        select(OrgMembership).where(OrgMembership.org_id == org_id)
+    )).scalars().first() is not None, "the creator should be a member"
+
+    resp = await client.delete(f"/admin/api/organizations/{org_id}", headers=headers)
+    assert resp.status_code == 204, resp.text
+    db_session.expire_all()
+    assert (await db_session.execute(
+        select(OrgMembership).where(OrgMembership.org_id == org_id)
+    )).scalars().first() is None
+    assert (await client.get("/api/v3/orgs/joined-org", headers=headers)).status_code == 404
+
+
+async def test_admin_cannot_delete_an_organization_that_owns_repositories(client, admin_token):
+    headers = auth_headers(admin_token)
+    created = await client.post(
+        "/api/v3/orgs", json={"login": "busy-org", "name": "busy-org"}, headers=headers
+    )
+    assert created.status_code == 201
+    repo = await client.post(
+        "/api/v3/orgs/busy-org/repos", json={"name": "kept"}, headers=headers
+    )
+    assert repo.status_code == 201, repo.text
+    resp = await client.delete(f"/admin/api/organizations/{created.json()['id']}", headers=headers)
+    assert resp.status_code == 409

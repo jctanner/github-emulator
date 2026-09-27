@@ -212,6 +212,16 @@ async def remove_org(org_id: int, user: AuthUser, db: DbSession):
     _require_admin(user)
     value = (await db.execute(select(Organization).where(Organization.id == org_id))).scalar_one_or_none()
     if value is None: raise HTTPException(status_code=404, detail="Not Found")
+    if (await db.execute(select(func.count(Repository.id)).where(Repository.organization_id == org_id))).scalar():
+        raise HTTPException(status_code=409, detail="Organization still owns repositories")
+    # Memberships and teams carry a non-null org_id with no cascade, so
+    # deleting the organization alone nulled them and failed with 500 on
+    # any organization anyone had ever joined. They go first.
+    from sqlalchemy import delete as sql_delete
+    from app.models.organization import OrgMembership
+    from app.models.team import Team
+    await db.execute(sql_delete(OrgMembership).where(OrgMembership.org_id == org_id))
+    await db.execute(sql_delete(Team).where(Team.org_id == org_id))
     await db.delete(value); await db.commit(); return Response(status_code=204)
 
 
