@@ -10,7 +10,7 @@ import time
 
 import tracemalloc
 
-from app.services.memory_watch import InFlight, MemoryWatch, _site
+from app.services.memory_watch import InFlight, MemoryWatch, _site, route_key
 
 MIB = 1048576
 
@@ -77,3 +77,27 @@ def test_a_site_is_named_by_our_innermost_frame_then_the_allocator():
 def test_a_site_with_no_application_frame_falls_back_to_the_allocator():
     tb = tracemalloc.Traceback([("/usr/local/lib/python3.12/json/decoder.py", 354)])
     assert _site(tb) == "/usr/local/lib/python3.12/json/decoder.py:354"
+
+
+def test_route_key_collapses_ids():
+    assert route_key("POST", "/api/v3/repos/o/r/actions/runner/jobs/5356/logs") == \
+        "POST /api/v3/repos/o/r/actions/runner/jobs/{id}/logs"
+    assert route_key("GET", "/enterprises/b/_apis/distributedtask/pools/1/messages") == \
+        "GET /enterprises/b/_apis/distributedtask/pools/{id}/messages"
+    assert route_key("GET", "/api/v3/repos/o/r") == "GET /api/v3/repos/o/r"
+
+
+def test_report_counts_completed_requests_by_endpoint(tmp_path):
+    """The invisible shape: many quick requests, none in flight at report time."""
+    w = MemoryWatch(report_path=str(tmp_path / "memory-watch.log"))
+    for i in range(300):
+        w.leave(w.enter("POST", f"/api/v3/repos/o/r/actions/runner/jobs/{i}/logs"))
+    for _ in range(3):
+        w.leave(w.enter("GET", "/api/v3/repos/o/r"))
+    w.report(600 * MIB, "crossed 512MiB")
+    text = (tmp_path / "memory-watch.log").read_text()
+    assert "since last report: 303 requests completed" in text
+    assert "by count:    300" in text and "POST /api/v3/repos/o/r/actions/runner/jobs/{id}/logs" in text
+    # Counters reset, so the next report describes only its own interval.
+    w.report(700 * MIB, "crossed 640MiB")
+    assert "since last report" not in (tmp_path / "memory-watch.log").read_text().split("crossed 640MiB")[1]

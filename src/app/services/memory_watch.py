@@ -28,8 +28,10 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+import re
 import time
 import tracemalloc
+from collections import Counter
 from dataclasses import dataclass, field
 
 from app.config import settings
@@ -66,6 +68,18 @@ def _site(traceback: tracemalloc.Traceback) -> str:
     return f"{allocating.filename}:{allocating.lineno}"
 
 
+_ID = re.compile(r"/(?:\d+|[0-9a-f]{32,}|[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})(?=/|$)")
+
+
+def route_key(method: str, path: str) -> str:
+    """`GET /repos/o/r/actions/jobs/5356/logs` -> `GET /repos/o/r/actions/jobs/{id}/logs`.
+
+    Numbers, hex ids and GUIDs collapse so a thousand log appends for one
+    job count as one endpoint, which is the whole point of counting.
+    """
+    return f"{method} {_ID.sub('/{id}', path)}"
+
+
 @dataclass
 class InFlight:
     method: str
@@ -94,6 +108,12 @@ class MemoryWatch:
     _task: asyncio.Task | None = None
     peak: int = 0
     reports: int = 0
+    # Requests completed since the last report, by endpoint: how many and
+    # how much wall time. The in-flight list names what is slow *now*; a
+    # process that grows 100 MiB a minute under requests that each finish
+    # in a second is invisible to it, and was, on 2026-09-27 19:40-19:52.
+    _counts: Counter = field(default_factory=Counter)
+    _seconds: Counter = field(default_factory=Counter)
 
     # -- request tracking ---------------------------------------------------
 
@@ -103,7 +123,11 @@ class MemoryWatch:
         return self._next_key
 
     def leave(self, key: int) -> None:
-        self.in_flight.pop(key, None)
+        item = self.in_flight.pop(key, None)
+        if item is not None:
+            route = route_key(item.method, item.path)
+            self._counts[route] += 1
+            self._seconds[route] += time.monotonic() - item.started
 
     # -- reporting ------------------------------------------------------------
 
@@ -115,6 +139,16 @@ class MemoryWatch:
         ]
         for item in sorted(self.in_flight.values(), key=lambda i: i.started)[:25]:
             lines.append(f"  in flight: {item.describe(now)}")
+        if self._counts:
+            total = sum(self._counts.values())
+            lines.append(f"  since last report: {total} requests completed")
+            for route, n in self._counts.most_common(8):
+                lines.append(f"  by count: {n:>6}  {self._seconds[route]:8.1f}s  {route}")
+            for route, secs in self._seconds.most_common(5):
+                if route not in dict(self._counts.most_common(8)):
+                    lines.append(f"  by time:  {self._counts[route]:>6}  {secs:8.1f}s  {route}")
+            self._counts.clear()
+            self._seconds.clear()
         if tracemalloc.is_tracing():
             current = tracemalloc.take_snapshot()
             traced, traced_peak = tracemalloc.get_traced_memory()
@@ -212,6 +246,7 @@ class MemoryWatch:
             "reports": self.reports,
             "tracing": tracemalloc.is_tracing(),
             "in_flight": [i.describe(now) for i in sorted(self.in_flight.values(), key=lambda i: i.started)],
+            "completed_since_last_report": self._counts.most_common(12),
             "report_path": self.report_path,
         }
 
