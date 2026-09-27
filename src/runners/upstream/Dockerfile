@@ -1,4 +1,8 @@
-FROM ubuntu:22.04
+# Ubuntu 24.04 because that is what Fullsend asks for: DefaultGHRunner is
+# "ubuntu-24.04" and its reusable dispatch defaults runner_image to the same.
+# This image is the stack's stand-in for a GitHub-hosted runner, so its label
+# list has to describe what it actually is.
+FROM ubuntu:24.04
 
 ARG RUNNER_VERSION=2.317.0
 
@@ -8,7 +12,7 @@ RUN apt-get update && \
         curl \
         git \
         jq \
-        libicu70 \
+        libicu74 \
         python3 \
         tar \
     && rm -rf /var/lib/apt/lists/*
