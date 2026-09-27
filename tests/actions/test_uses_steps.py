@@ -160,6 +160,26 @@ async def test_uses_steps_become_repository_references(client, uses_workflow, te
 
 
 @pytest.mark.asyncio
+async def test_job_context_lets_action_input_defaults_evaluate(
+    client, uses_workflow, test_token
+):
+    """Every context an action input default may reference is registered.
+
+    The runner expands `default: ${{ github.repository }}` only when github,
+    strategy, matrix, job and runner are all present; job and runner it adds
+    itself. Without strategy and matrix, actions/checkout failed to load with
+    "Unexpected type 'BasicExpressionToken'" after a successful download.
+    """
+    body = await _claim_job(client, test_token)
+    context = body["contextData"]
+    assert "github" in context
+    assert "matrix" in context  # present, null: no matrix on this job
+    assert context["matrix"] is None
+    strategy = {e["k"]: e["v"] for e in context["strategy"]["d"]}
+    assert strategy == {"fail-fast": True, "job-index": 0, "job-total": 1, "max-parallel": 1}
+
+
+@pytest.mark.asyncio
 async def test_a_container_action_still_fails_loudly(client, uses_workflow, test_token):
     """The one thing this path still cannot run says so and exits non-zero."""
     body = await _claim_job(client, test_token)

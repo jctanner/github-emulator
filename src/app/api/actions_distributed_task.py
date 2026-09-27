@@ -600,6 +600,23 @@ def _job_request_message(
             "system.github.workflow": _variable(workflow_name),
         },
         "contextData": {
+            # The runner expands an expression only when every context the
+            # schema allows for that field is registered (TemplateEvaluator:
+            # Expand = available.IsSupersetOf(allowed)). An action's input
+            # default allows github, strategy, matrix, job, runner and
+            # hashFiles; job and runner the worker adds itself, so without
+            # these two `default: ${{ github.repository }}` in
+            # actions/checkout stays an expression and the step fails with
+            # "Unexpected type 'BasicExpressionToken'". GitHub sends both on
+            # every job, matrix as null when there is none; matrix values
+            # here are already rendered into the steps at job creation.
+            "strategy": _context_dictionary({
+                "fail-fast": True,
+                "job-index": 0,
+                "job-total": 1,
+                "max-parallel": 1,
+            }),
+            "matrix": None,
             "github": _context_dictionary({
                 "api_url": f"{runner_base_url}/api/v3",
                 "base_ref": "",
