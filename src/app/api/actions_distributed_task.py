@@ -634,11 +634,23 @@ def _job_step_message(
 ) -> dict:
     number = int(step.get("number", 0) or 0)
     display_name = step.get("name", f"Step {number}")
-    inputs = {
-        "script": step.get("run", ""),
-        "shell": step.get("shell"),
-        "workingDirectory": step.get("working-directory"),
-    }
+    uses = step.get("uses")
+    if uses:
+        # Every step reaches the upstream runner as a Script reference: this
+        # surface has no action-download endpoint, so an action cannot be
+        # fetched and run. Until it can, a `uses:` step must fail where it
+        # stands rather than become an empty script that reports success.
+        inputs = {
+            "script": _unsupported_uses_script(uses),
+            "shell": "bash",
+            "workingDirectory": step.get("working-directory"),
+        }
+    else:
+        inputs = {
+            "script": step.get("run", ""),
+            "shell": step.get("shell"),
+            "workingDirectory": step.get("working-directory"),
+        }
     return {
         "type": "Action",
         "id": _workflow_guid("step", (job.id * 1000) + number),
@@ -656,6 +668,27 @@ def _job_step_message(
         },
         "inputs": _template_mapping(inputs),
     }
+
+
+def _unsupported_uses_script(uses: str) -> str:
+    """A script that fails loudly in place of an action this path cannot run.
+
+    The `::error::` line becomes an annotation on the run, so the refusal is
+    visible from the UI and not only from the step log.
+    """
+    quoted = "'" + uses.replace("'", "'\\''") + "'"
+    return "\n".join(
+        [
+            f"echo ::error::uses: {quoted} was not run: this runner path cannot "
+            "fetch actions >&2",
+            "echo 'The job reached an upstream actions/runner through the "
+            "distributed-task protocol, which renders every step as a script "
+            "and serves no action downloads. The action was NOT executed.' >&2",
+            "echo 'Use a run: step here, or send the job to the emulator runner, "
+            "which emulates a fixed set of actions.' >&2",
+            "exit 1",
+        ]
+    )
 
 
 def _job_request_response(job: WorkflowJob, runner: Runner, result: str | None = None) -> dict:
