@@ -37,3 +37,15 @@ should refuse log appends and completions for a cancelled job with a
 status the runner can act on, and the runner should poll for cancellation
 between steps. Recorded here rather than as its own file because the fix
 touches both sides of the same protocol.
+
+## Fixed 2026-09-27
+
+`process_push_event` dispatches `synchronize` only for an open pull request
+whose stored `head_sha` differs from the pushed commit, and records the new
+head when it does. A pull request opened after the push landed already
+carries that commit and is skipped, which is GitHub's rule: synchronize is
+for a head that changed after the pull request existed. The related
+cancel-does-not-stop-the-runner item is fixed alongside: the emulator
+answers a cancelled job's log appends with 409 "job cancelled", and
+`runner.py` kills the running step and abandons the job on seeing it.
+Pinned in `tests/actions/test_consolidation_bug_fixes.py`.

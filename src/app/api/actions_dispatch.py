@@ -110,8 +110,40 @@ async def _create_runner_from_registration(
         labels = ["self-hosted", "linux"]
 
     runner_token = f"ghp_runner_{secrets.token_urlsafe(32)}"
+    name = body.get("name", body.get("agentName", "unnamed-runner"))
+    # A pod that restarts registers again under the same name. That used to
+    # create a new row each time and leave the old one reporting online -
+    # 39 registrations for one deployment on 2026-08-28. The same name in
+    # the same scope is the same runner: reuse the row, re-key its token.
+    scope_filter = (
+        Runner.repo_id == reg.repo_id if reg is not None
+        else Runner.enterprise_slug == enterprise_reg.enterprise_slug
+    )
+    existing = (await db.execute(
+        select(Runner).where(Runner.name == name, scope_filter)
+    )).scalars().first()
+    if existing is not None:
+        existing.os = normalise_runner_os(body.get("os", body.get("osDescription"))) or existing.os
+        existing.status = "online"
+        existing.labels = labels
+        existing.busy = False
+        existing.token_hash = hash_token(runner_token)
+        existing.last_heartbeat = datetime.now(timezone.utc)
+        # The process that held this runner's jobs is gone; the one
+        # registering is new. Whatever it was running goes back to the
+        # queue rather than waiting for a heartbeat that now keeps coming.
+        held = (await db.execute(
+            select(WorkflowJob).where(
+                WorkflowJob.runner_id == existing.id, WorkflowJob.status == "in_progress"
+            )
+        )).scalars().all()
+        for job in held:
+            _requeue(job)
+        await db.commit()
+        await db.refresh(existing)
+        return existing, runner_token
     runner = Runner(
-        name=body.get("name", body.get("agentName", "unnamed-runner")),
+        name=name,
         os=normalise_runner_os(body.get("os", body.get("osDescription"))),
         status="online",
         labels=labels,
@@ -130,6 +162,18 @@ async def _create_runner_from_registration(
     return runner, runner_token
 
 
+def _refuse_if_cancelled(job: WorkflowJob) -> None:
+    """409 with a distinctive detail: the runner stops the job on seeing it.
+
+    Cancelling a run only marked its jobs cancelled; the runner, which never
+    re-reads a job's status, kept executing a cancelled review for fifteen
+    minutes and appended its logs (2026-09-27, job 5081). Every runner-facing
+    write on a cancelled job now says so, and runner.py aborts on it.
+    """
+    if job.status == "completed" and job.conclusion == "cancelled":
+        raise HTTPException(status_code=409, detail="job cancelled")
+
+
 async def _requeue_stale_jobs(db) -> int:
     """Return jobs from runners that have stopped heartbeating to the queue."""
     cutoff = datetime.now(timezone.utc) - timedelta(
@@ -146,19 +190,45 @@ async def _requeue_stale_jobs(db) -> int:
     )
     stale_jobs = result.all()
     for job, runner in stale_jobs:
-        job.status = "queued"
-        job.runner_id = None
-        job.runner_name = None
-        job.started_at = None
-        job.steps = [
-            {**step, "status": "queued", "conclusion": None}
-            for step in (job.steps or [])
-        ]
+        _requeue(job)
         runner.status = "offline"
         runner.busy = False
-    if stale_jobs:
+    # A claim the runner never acted on. The job was handed out - status
+    # in_progress, runner named, started_at set - but no step has moved: the
+    # response was lost (the emulator restarted mid-claim on 2026-09-27 and
+    # the job sat in progress with nobody running it). The runner is still
+    # heartbeating, so the stale-runner rule above never fires. Real GitHub
+    # re-queues a job its runner does not start within a window.
+    ack_cutoff = datetime.now(timezone.utc) - timedelta(
+        seconds=settings.RUNNER_CLAIM_ACK_SECONDS
+    )
+    unacknowledged = (await db.execute(
+        select(WorkflowJob).where(
+            WorkflowJob.status == "in_progress",
+            WorkflowJob.started_at.is_not(None),
+            WorkflowJob.started_at < ack_cutoff,
+        )
+    )).scalars().all()
+    requeued = 0
+    for job in unacknowledged:
+        if any(step.get("status") not in (None, "queued") for step in (job.steps or [])):
+            continue  # the runner started it; a slow first step is not a lost claim
+        _requeue(job)
+        requeued += 1
+    if stale_jobs or requeued:
         await db.commit()
-    return len(stale_jobs)
+    return len(stale_jobs) + requeued
+
+
+def _requeue(job: WorkflowJob) -> None:
+    job.status = "queued"
+    job.runner_id = None
+    job.runner_name = None
+    job.started_at = None
+    job.steps = [
+        {**step, "status": "queued", "conclusion": None}
+        for step in (job.steps or [])
+    ]
 
 
 def _registration_response(runner: Runner, runner_token: str, base: str | None = None) -> dict:
@@ -498,6 +568,7 @@ async def upload_job_logs(
     job = result.scalar_one_or_none()
     if job is None:
         raise HTTPException(status_code=404, detail="Job not found")
+    _refuse_if_cancelled(job)
 
     log_data = await request.body()
     log_dir = os.path.join(settings.DATA_DIR, "logs", "jobs")

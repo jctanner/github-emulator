@@ -13,7 +13,12 @@ running it until the run was cancelled by hand.
 
 ## Two defects
 
-1. **No recovery for a claimed-but-unacknowledged job.** The stale-runner
+1. **No recovery for a claimed-but-unacknowledged job.** *Fixed 2026-09-27:*
+   `_requeue_stale_jobs` also returns to the queue any job that has been
+   `in_progress` for longer than `RUNNER_CLAIM_ACK_SECONDS` (120) with no
+   step started - a claim whose response was lost - while leaving a job
+   whose runner has begun a step alone. Pinned in
+   `tests/actions/test_consolidation_bug_fixes.py`. The original text: The stale-runner
    reclaim (tests/actions/test_execution.py, `reclaims_job_from_stale_runner`)
    keys on a runner whose heartbeat stopped. This runner kept heartbeating;
    it simply never received the job. Real GitHub re-queues a job whose

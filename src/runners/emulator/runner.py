@@ -42,6 +42,14 @@ EMULATOR_URL = os.environ.get("GITHUB_EMULATOR_URL", "https://localhost")
 ADMIN_TOKEN = os.environ.get("GITHUB_EMULATOR_TOKEN", "")
 REPO = os.environ.get("RUNNER_REPO", "admin/test-repo")
 RUNNER_SCOPE = os.environ.get("RUNNER_SCOPE", "repository").strip().lower()
+
+
+class JobCancelled(Exception):
+    """Raised inside a job when the server reports it cancelled."""
+
+    def __init__(self, job_id: int):
+        super().__init__(f"job {job_id} cancelled")
+        self.job_id = job_id
 RUNNER_NAME = os.environ.get("RUNNER_NAME", platform.node())
 LABELS = os.environ.get("RUNNER_LABELS", "self-hosted,linux").split(",")
 WORKDIR = os.environ.get("RUNNER_WORKDIR", "/tmp/runner-work")
@@ -826,6 +834,13 @@ class RunnerClient:
         """
         try:
             self.execute_job(job)
+        except JobCancelled:
+            # The server already holds the job as cancelled and refuses
+            # writes for it; there is nothing to report and nothing to
+            # complete. The step's process was killed where the
+            # cancellation was noticed.
+            log.warning("Job #%s stopped: cancelled on the server", job.get("job_id"))
+            return
         except Exception as exc:  # noqa: BLE001 - the point is to catch everything
             job_id = job.get("job_id")
             repository = str(job.get("repository") or REPO)
@@ -1065,6 +1080,16 @@ class RunnerClient:
             if pending:
                 emit(pending.decode(errors="replace"))
             return_code = proc.wait(timeout=5)
+        except JobCancelled:
+            # Noticed on a log upload mid-step: the process is still running
+            # and would otherwise finish on its own time and its own bill.
+            try:
+                if proc.poll() is None:
+                    proc.kill()
+                    proc.wait(timeout=5)
+            except Exception:  # noqa: BLE001 - best effort; the job is over either way
+                pass
+            raise
         except subprocess.TimeoutExpired as exc:
             output = exc.stdout or b""
             if isinstance(output, bytes):
@@ -1659,13 +1684,28 @@ class RunnerClient:
 
     def _report_progress(self, repository: str, job_id: int, steps: list):
         try:
-            self.client.patch(
+            resp = self.client.patch(
                 f"{API}/repos/{repository}/actions/runner/jobs/{job_id}",
                 json={"steps": steps},
                 headers=self._auth_headers(),
             )
+            self._note_cancellation(resp, job_id)
+        except JobCancelled:
+            raise
         except Exception:
             log.warning("Failed to report progress for job %d", job_id)
+
+    def _note_cancellation(self, resp, job_id: int) -> None:
+        """A 409 'job cancelled' from any runner-facing write ends the job.
+
+        The emulator marks a cancelled run's jobs cancelled and, since
+        2026-09-27, refuses the runner's writes for them with this status.
+        Before that the runner never re-read a job's status and ran a
+        cancelled fifteen-minute review to completion.
+        """
+        if resp.status_code == 409 and "cancel" in resp.text.lower():
+            log.warning("Job %d was cancelled by the server; stopping", job_id)
+            raise JobCancelled(job_id)
 
     def _complete_job(
         self, repository: str, job_id: int, conclusion: str, steps: list,
@@ -1688,11 +1728,14 @@ class RunnerClient:
 
     def _upload_logs(self, repository: str, job_id: int, log_data: str):
         try:
-            self.client.post(
+            resp = self.client.post(
                 f"{API}/repos/{repository}/actions/runner/jobs/{job_id}/logs",
                 content=log_data.encode(),
                 headers={**self._auth_headers(), "Content-Type": "text/plain"},
             )
+            self._note_cancellation(resp, job_id)
+        except JobCancelled:
+            raise
         except Exception:
             pass
 

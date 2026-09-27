@@ -36,6 +36,10 @@ class Settings(BaseSettings):
     ACTIONS_UPSTREAM_ARCHIVE_URL: str = "https://codeload.github.com"
     ACTIONS_UPSTREAM_TOKEN: str = ""
 
+    # A claimed job whose runner has not started any step within this many
+    # seconds goes back to the queue: the claim response was lost.
+    RUNNER_CLAIM_ACK_SECONDS: int = 120
+
     # The memory watchdog (app/services/memory_watch.py). The process has
     # been OOM-killed at 1.5 GiB three times with nothing naming a cause; it
     # now reports in-flight requests and the largest allocation sites when

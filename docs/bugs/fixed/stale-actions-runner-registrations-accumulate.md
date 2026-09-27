@@ -31,3 +31,13 @@ which runner can actually accept a queued job.
 ## Related Tasks
 
 - `docs/tasks/done/admin-runner-management-page.md`
+
+## Fixed 2026-09-27
+
+Registration with a name that already exists in the same scope - the same
+repository, or the same enterprise - reuses that row: status online, labels
+and OS refreshed, the credential re-keyed so the old token stops working.
+The site-scope path already replaced by name; the repository and enterprise
+paths now do the same. Offline detection by missed heartbeat was already in
+place (`_effective_status`). Pinned in
+`tests/actions/test_consolidation_bug_fixes.py`.

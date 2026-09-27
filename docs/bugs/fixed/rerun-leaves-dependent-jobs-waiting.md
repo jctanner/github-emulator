@@ -36,3 +36,12 @@ completes; `tests/actions/test_execution.py` has the fixtures.
 
 File a new triggering event instead of rerunning; cancel the stuck run so
 its `in_progress` status does not linger in the admin Actions view.
+
+## Fixed 2026-09-27
+
+`rerun_workflow` no longer copies job rows. It detects the workflow at the
+run's commit, materializes its reusable workflows and creates the run from
+the stored trigger payload - the same path a fresh event takes - with
+`run_attempt` incremented. `tests/actions/test_consolidation_bug_fixes.py`
+reruns a two-job workflow, completes the first job and asserts the second
+is queued.

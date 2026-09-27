@@ -121,7 +121,9 @@ async def dependent_workflow(client, db_session, test_user, test_token):
     return repo, workflow, run
 
 
-async def _register_custom_runner(client, repo_full_name: str, token: str) -> str:
+async def _register_custom_runner(
+    client, repo_full_name: str, token: str, name: str = "exec-runner"
+) -> str:
     token_resp = await client.post(
         f"{API}/repos/{repo_full_name}/actions/runners/registration-token",
         headers=auth_headers(token),
@@ -132,7 +134,7 @@ async def _register_custom_runner(client, repo_full_name: str, token: str) -> st
         f"{API}/actions/runner/register",
         json={
             "token": token_resp.json()["token"],
-            "name": "exec-runner",
+            "name": name,
             "labels": ["self-hosted", "linux"],
             "os": "linux",
         },
@@ -354,8 +356,10 @@ async def test_custom_runner_reclaims_job_from_stale_runner(
     )
     await db_session.commit()
 
+    # A different runner. The same name would be the same runner re-registering,
+    # which reuses the row and takes its own jobs back (tested separately).
     second_token = await _register_custom_runner(
-        client, "testuser/actions-exec-repo", test_token
+        client, "testuser/actions-exec-repo", test_token, name="replacement-runner"
     )
     second_poll = await client.get(
         f"{API}/repos/testuser/actions-exec-repo/actions/runner/jobs",

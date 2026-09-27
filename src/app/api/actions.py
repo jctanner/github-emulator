@@ -490,7 +490,18 @@ async def cancel_workflow_run(
 async def rerun_workflow(
     owner: str, repo: str, run_id: int, db: DbSession, user: AuthUser,
 ):
-    """Re-run a workflow."""
+    """Re-run a workflow.
+
+    Rebuilt through the same path a fresh event takes - detect the workflow
+    at the run's commit, materialize its reusable workflows, create the run
+    from the stored trigger payload - rather than copying the old run's job
+    rows. The copy carried names, steps, labels and needs and nothing else;
+    dependents are matched on job_key, so their needs never resolved and a
+    rerun sat with every dependent waiting forever (2026-09-27, run 1589).
+    """
+    from app.services.workflow_service import (
+        create_workflow_run, detect_workflows, materialize_reusable_workflows,
+    )
     repository = await get_repo_or_404(owner, repo, db)
     result = await db.execute(
         select(WorkflowRun).where(WorkflowRun.id == run_id, WorkflowRun.repo_id == repository.id)
@@ -498,62 +509,38 @@ async def rerun_workflow(
     run = result.scalar_one_or_none()
     if run is None:
         raise HTTPException(status_code=404, detail="Not Found")
-
-    count = (await db.execute(
-        select(func.count(WorkflowRun.id)).where(
-            WorkflowRun.workflow_id == run.workflow_id
-        )
-    )).scalar() or 0
-
-    new_run = WorkflowRun(
-        workflow_id=run.workflow_id,
-        repo_id=run.repo_id,
-        head_sha=run.head_sha,
-        head_branch=run.head_branch,
-        event=run.event,
-        status="queued",
-        run_number=count + 1,
-        run_attempt=run.run_attempt + 1,
-        actor_id=user.id,
-        trigger_payload=run.trigger_payload,
+    workflow = (await db.execute(
+        select(Workflow).where(Workflow.id == run.workflow_id)
+    )).scalar_one_or_none()
+    if workflow is None:
+        raise HTTPException(status_code=404, detail="Workflow not found")
+    ref_spec = run.head_sha or run.head_branch or "HEAD"
+    workflow_yaml = next(
+        (wf for wf in await detect_workflows(repository.disk_path, ref_spec)
+         if wf.get("_path") == workflow.path),
+        None,
     )
-    db.add(new_run)
-    await db.flush()
-
-    old_jobs = (await db.execute(
-        select(WorkflowJob).where(WorkflowJob.run_id == run_id)
-    )).scalars().all()
-
-    for old_job in old_jobs:
-        new_job = WorkflowJob(
-            run_id=new_run.id,
-            name=old_job.name,
-            workflow_name=old_job.workflow_name,
-            status="queued" if not old_job.needs else "waiting",
-            steps=[
-                {
-                    **s,
-                    "status": "queued",
-                    "conclusion": None,
-                }
-                for s in (old_job.steps or [])
-            ],
-            labels=old_job.labels,
-            run_attempt=new_run.run_attempt,
-            needs=old_job.needs,
+    if workflow_yaml is None:
+        raise HTTPException(
+            status_code=422,
+            detail=f"{workflow.path} is not present at {ref_spec}; cannot re-run",
         )
-        db.add(new_job)
-
+    payload = dict(run.trigger_payload or {})
+    workflow_yaml = await materialize_reusable_workflows(
+        workflow_yaml, repository.disk_path, ref_spec, db,
+        inputs=payload.get("inputs", {}), secrets=payload.get("secrets", {}),
+    )
+    new_run = await create_workflow_run(
+        db, workflow, workflow_yaml, run.event, payload, user,
+        run.head_sha, run.head_branch,
+    )
+    new_run.run_attempt = run.run_attempt + 1
     await db.commit()
-    api = f"{BASE}/api/v3"
-    return {
-        "id": new_run.id, "status": new_run.status,
-        "run_number": new_run.run_number, "run_attempt": new_run.run_attempt,
-        "url": f"{api}/repos/{owner}/{repo}/actions/runs/{new_run.id}",
-    }
-
-
-# --- Workflow jobs ---
+    await db.refresh(new_run)
+    from app.services.workflow_service import dispatch_ready_jobs
+    await dispatch_ready_jobs(db, new_run.id)
+    await db.commit()
+    return {"id": new_run.id, "run_number": new_run.run_number, "run_attempt": new_run.run_attempt, "status": new_run.status}
 
 @router.get(
     "/repos/{owner}/{repo}/actions/runs/{run_id}/jobs",

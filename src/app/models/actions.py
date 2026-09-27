@@ -139,6 +139,10 @@ class WorkflowJob(Base):
     )
     name: Mapped[str] = mapped_column(String, nullable=False)
     workflow_name: Mapped[str | None] = mapped_column(String, nullable=True)
+    # owner/repo/path@ref of the workflow that *defined* this job when it
+    # came from an inlined reusable workflow; None for a job the run's own
+    # workflow defines. The OIDC token's job_workflow_ref reads it.
+    workflow_ref: Mapped[str | None] = mapped_column(String, nullable=True)
     status: Mapped[str] = mapped_column(String, default="queued")
     conclusion: Mapped[str | None] = mapped_column(String, nullable=True)
     started_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)

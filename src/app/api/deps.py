@@ -1,5 +1,6 @@
 """Shared FastAPI dependencies for the GitHub Emulator REST API."""
 
+import re
 import base64
 from typing import Annotated, Optional
 
@@ -165,8 +166,34 @@ async def _resolve_user(
                 status_code=403,
                 detail=f"Resource not accessible by integration: {refusal}",
             )
+        # A job token belongs to one repository. GitHub's GITHUB_TOKEN can
+        # read other public repositories and write to none of them; here a
+        # job declaring actions: write could dispatch a workflow in any
+        # repository (G45, proven by probe on 2026-09-25). Writes to another
+        # repository are refused at the chokepoint, whatever the route.
+        target = _repository_in_path(request.url.path)
+        if target is not None and request.method not in ("GET", "HEAD", "OPTIONS"):
+            own = (await db.execute(
+                select(Repository.full_name).where(Repository.id == run.repo_id)
+            )).scalar_one_or_none()
+            if own is not None and target.lower() != own.lower():
+                raise HTTPException(
+                    status_code=403,
+                    detail=f"Resource not accessible by integration: "
+                           f"job token for {own} cannot write to {target}",
+                )
         return run.actor
     return await validate_token(db, token_value)
+
+
+_REPO_PATH = re.compile(r"^/(?:api/v3/)?repos/([^/]+)/([^/]+)(?:/|$)")
+_GIT_PATH = re.compile(r"^/([^/_][^/]*)/([^/]+?)(?:\.git)?/(?:git-receive-pack|git-upload-pack|info/refs)")
+
+
+def _repository_in_path(path: str) -> str | None:
+    """owner/repo named by a repository API route or a git transport route."""
+    m = _REPO_PATH.match(path) or _GIT_PATH.match(path)
+    return f"{m.group(1)}/{m.group(2)}" if m else None
 
 
 async def require_auth(

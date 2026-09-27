@@ -85,8 +85,10 @@ async def actions_token(request: Request, db: DbSession, audience: str | None = 
         "workflow": workflow.name if workflow else "",
         "workflow_ref": workflow_ref,
         # The job's own workflow, which for an inlined reusable workflow is
-        # the workflow that actually defined the job.
-        "job_workflow_ref": workflow_ref,
+        # the workflow that actually defined the job - recorded on the job at
+        # materialization. It differs from workflow_ref exactly when the run's
+        # workflow called another one, which is what a mint keys trust on.
+        "job_workflow_ref": job.workflow_ref or workflow_ref,
         "job_workflow_sha": run.head_sha,
         "ref": ref,
         "sha": run.head_sha,

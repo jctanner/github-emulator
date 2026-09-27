@@ -208,6 +208,7 @@ def build_job_graph(workflow_yaml: dict) -> list[dict]:
             "_call_secrets": config.get("_call_secrets", {}),
             "_workflow_repository": config.get("_workflow_repository", ""),
             "_workflow_sha": config.get("_workflow_sha", ""),
+            "_workflow_ref": config.get("_workflow_ref", ""),
             "timeout_minutes": config.get("timeout-minutes", 360),
         })
 
@@ -411,6 +412,30 @@ def apply_workflow_call_inputs(called: dict, supplied: dict) -> tuple[dict, list
     return resolved, missing_required
 
 
+def _called_workflow_ref(uses: str, called_full_name: str, called_ref: str) -> str:
+    """`owner/repo/.github/workflows/x.yml@v1` -> `owner/repo/.github/workflows/x.yml@refs/heads/v1`.
+
+    Local (`./`) calls resolve against the calling repository, which the
+    caller supplies as ``called_full_name``.
+    """
+    reference = uses.split("@", 1)[0]
+    if reference.startswith("./"):
+        path = reference[2:]
+        name = called_full_name
+    else:
+        parts = reference.split("/", 2)
+        name = "/".join(parts[:2])
+        path = parts[2] if len(parts) == 3 else ""
+    ref = called_ref or ""
+    if ref and not ref.startswith("refs/") and not _looks_like_sha(ref):
+        ref = f"refs/heads/{ref}"
+    return f"{name}/{path}@{ref}"
+
+
+def _looks_like_sha(value: str) -> bool:
+    return len(value) == 40 and all(c in "0123456789abcdef" for c in value.lower())
+
+
 async def _materialize_reusable_jobs(
     workflow_yaml: dict,
     repo_disk_path: str,
@@ -509,6 +534,12 @@ async def _materialize_reusable_jobs(
             # is how ADR 0062 keeps the dispatch and its defaults in step.
             child.setdefault("_workflow_repository", called_full_name)
             child.setdefault("_workflow_sha", called_sha)
+            # The called workflow as GitHub names it in job_workflow_ref:
+            # owner/repo/path@ref. The OIDC token reports this for a job an
+            # inlined reusable workflow defined; the run's own workflow_ref
+            # still names the caller (Fullsend ADR 0082 keys the mint on
+            # the called one).
+            child.setdefault("_workflow_ref", _called_workflow_ref(uses, called_full_name, called_ref))
             child_needs = child.get("needs", [])
             if isinstance(child_needs, str):
                 child_needs = [child_needs]
@@ -969,6 +1000,7 @@ async def create_workflow_run(
                 outputs_config=job_config.get("outputs") or {},
                 outputs={},
                 pending_render=pending_render,
+                workflow_ref=job_config.get("_workflow_ref") or None,
             )
             db.add(job)
 
@@ -1319,6 +1351,14 @@ async def process_push_event(
     )
     for pr in result.scalars().all():
         issue = pr.issue
+        # GitHub fires synchronize for a head that *changed* after the pull
+        # request existed. A pull request opened after this push was received
+        # but before it was processed already records the pushed commit as
+        # its head, and dispatching for it ran a second review of one pull
+        # request (2026-09-27, runs 1604 and 1609).
+        if pr.head_sha == head_sha:
+            continue
+        pr.head_sha = head_sha
         # ``base_sha`` is the base commit recorded when the pull request was
         # opened. GitHub runs pull_request_target against the base branch as it
         # is *now*, which is the whole point of the event: it runs the base
