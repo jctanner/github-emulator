@@ -69,12 +69,25 @@ running it until the run was cancelled by hand.
    then replaced, leaving the middleware entry alive; the same GET takes
    18 ms and no memory now.
 
-   Ruled out since, each by measurement: the clone path (three full
-   clones of the 112 MiB target, +1 MiB each); an ordinary triage (one
-   full haiku triage under tracemalloc peaked at 353 MiB); every
-   module-level container (four, all bounded); the log-append handler
-   (writes to a file and returns). Not yet replayed: the reset script's
-   emulator-facing work, and the two runs overlapping with it.
+   Ruled out since, each by measurement, with the pod's cgroup sampled
+   twice a second and the application frames sampled by py-spy: the
+   clone path (three full clones of the 112 MiB target, +1 MiB each); the
+   reset script (`25-reset-conformance.sh`, 27 s, +15 MiB); an ordinary
+   triage (164 -> 227 MiB, +60 net, the steps landing a few seconds after
+   each job completion, none during the agent); event dispatch (thirty
+   `issues: edited` events, each a dispatch and a route job, +5 MiB);
+   forty fetches of a 180 KiB job log and twenty UI page loads (flat);
+   every module-level container (four, all bounded); the log-append
+   handler (writes a file and returns). The py-spy samples put the
+   emulator's own CPU in `dispatch_event -> materialize_reusable_workflows
+   -> _resolve_reusable_workflow -> detect_workflows`, which is cost, not
+   retention.
+
+   So nothing identifiable from the window reproduces its rate, and the
+   container's access log went with the pod. The watchdog now counts
+   completed requests per endpoint between reports (2026-09-27, memory
+   watch counters), which is the shape that was invisible: many quick,
+   repeating requests. The next report will name the hot endpoint.
 
    Two instrument notes. tracemalloc cannot be left on: with eight frames
    a route job took fifteen minutes and a conformance run timed out. And
