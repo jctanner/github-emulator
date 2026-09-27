@@ -494,6 +494,7 @@ def _evaluate_step_if(
     step_outputs: dict[str, dict[str, str]],
     job: dict | None = None,
     failed: bool = False,
+    inputs: dict | None = None,
 ) -> bool:
     """Return whether a runner step should execute.
 
@@ -501,6 +502,11 @@ def _evaluate_step_if(
     failed. GitHub keeps running the remaining steps in that case and lets
     each one's condition decide, which is the only way `if: always()` can
     mean anything; a step with no condition does not run.
+
+    ``inputs`` are a composite action's inputs. Its steps' conditions read
+    them (``if: inputs.mode == 'vendored'``); evaluated without them every
+    such condition was false, and an install action skipped all of its
+    install steps and then reported success.
     """
     if condition is None:
         return not failed
@@ -513,7 +519,7 @@ def _evaluate_step_if(
         expression = expression[3:-2].strip()
     try:
         return _StepIfParser(
-            expression, _runner_context(None, step_outputs, job=job), failed
+            expression, _runner_context(inputs, step_outputs, job=job), failed
         ).parse()
     except ValueError as exc:
         # Treating an unevaluable condition as false silently drops the step,
@@ -1625,7 +1631,9 @@ class RunnerClient:
         failure_result = "failure"
         for index, action_step in enumerate(action_steps, start=1):
             try:
-                action_should_run = _evaluate_step_if(action_step.get("if"), step_outputs, job, failed)
+                action_should_run = _evaluate_step_if(
+                    action_step.get("if"), step_outputs, job, failed, inputs=inputs,
+                )
             except StepConditionError as exc:
                 # The caller discards the returned output when it is streaming
                 # through log_callback, so a condition error raised inside a

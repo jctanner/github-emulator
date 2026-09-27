@@ -11,6 +11,8 @@ _EXPRESSION_RE = re.compile(r"\$\{\{\s*([^}]+?)\s*\}\}")
 # operator, a string literal, or a call. Bare context paths, including the
 # ``a || b`` fallback chain, stay on the cheaper lookup path.
 _NEEDS_PARSER_RE = re.compile(r"\(|&&|==|!=|'|\"")
+# A reference to the runner context root, as a whole path segment.
+_RUNNER_CONTEXT_RE = re.compile(r"(?<![\w.])runner\.")
 
 def _lookup_context(context: dict, expression: str) -> str:
     value = _lookup_context_value(context, expression)
@@ -364,6 +366,12 @@ def render_expressions(value: object, context: dict, resolve_steps: bool = False
             if expression == "github.token":
                 return match.group(0)
             if expression.startswith("steps.") and not resolve_steps:
+                return match.group(0)
+            # The runner context describes the machine a job lands on, so
+            # only the runner can resolve it. Rendering it here produced an
+            # empty string: ``${{ runner.temp }}/fullsend-cache`` reached the
+            # runner as ``/fullsend-cache`` and actions/cache saved nothing.
+            if _RUNNER_CONTEXT_RE.search(expression):
                 return match.group(0)
             # Anything with an operator, a literal, or a call needs the real
             # parser. A job's ``outputs:`` routinely combines several step

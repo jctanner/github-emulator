@@ -206,3 +206,51 @@ def test_a_composite_condition_error_reaches_the_log(monkeypatch, tmp_path):
     assert result == "failure"
     assert "totallyUnsupported" in "".join(chunks)
     assert "totallyUnsupported" in output
+
+
+# --- what run 1712 found ----------------------------------------------------
+
+def test_composite_conditions_read_the_actions_own_inputs():
+    """``if: inputs.mode == 'vendored'`` inside install-fullsend-cli.
+
+    Evaluated without the action's inputs every such condition was false:
+    the action skipped all six install steps and reported success.
+    """
+    assert runner_module._evaluate_step_if(
+        "inputs.mode == 'vendored'", {}, inputs={"mode": "vendored"}
+    )
+    assert not runner_module._evaluate_step_if(
+        "inputs.mode == 'vendored'", {}, inputs={"mode": "upstream"}
+    )
+    assert not runner_module._evaluate_step_if("inputs.mode == 'vendored'", {})
+
+
+def test_a_composite_action_runs_the_steps_its_inputs_select(monkeypatch, tmp_path):
+    monkeypatch.setattr(runner_module, "WORKDIR", str(tmp_path))
+    action = Path(str(tmp_path)) / "act"
+    action.mkdir(parents=True)
+    (action / "action.yml").write_text(
+        "name: Demo\n"
+        "inputs:\n"
+        "  mode:\n"
+        "    required: true\n"
+        "runs:\n"
+        "  using: composite\n"
+        "  steps:\n"
+        "    - shell: bash\n"
+        "      if: inputs.mode == 'vendored'\n"
+        "      run: echo vendored-path\n"
+        "    - shell: bash\n"
+        "      if: inputs.mode == 'upstream'\n"
+        "      run: echo upstream-path\n"
+    )
+    client = runner_module.RunnerClient.__new__(runner_module.RunnerClient)
+    client._masks = set()
+    chunks: list[str] = []
+    result, _output, _updates = client._composite_step(
+        {"uses": "./act", "with": {"mode": "upstream"}}, {}, {}, log_callback=chunks.append,
+    )
+    log = "".join(chunks)
+    assert result == "success"
+    assert "upstream-path" in log
+    assert "vendored-path" not in log

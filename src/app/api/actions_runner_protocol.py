@@ -2,6 +2,7 @@
 
 import base64
 import json
+import re
 import uuid
 
 from app.config import settings
@@ -16,12 +17,41 @@ def _workflow_guid(kind: str, local_id: int) -> str:
     return str(uuid.uuid5(uuid.NAMESPACE_URL, f"github-emulator-actions-{kind}-{local_id}"))
 
 
+_EMBEDDED_EXPRESSION_RE = re.compile(r"\$\{\{\s*(.+?)\s*\}\}")
+
+
+def _format_expression(value: str) -> str | None:
+    """Turn text with embedded expressions into the format() call the
+    upstream template converter emits for it: ``{0}/x`` with ``runner.temp``
+    as the argument, literal braces doubled and quotes doubled."""
+    pieces: list[str] = []
+    arguments: list[str] = []
+    position = 0
+    for match in _EMBEDDED_EXPRESSION_RE.finditer(value):
+        literal = value[position:match.start()]
+        pieces.append(literal.replace("{", "{{").replace("}", "}}"))
+        pieces.append(f"{{{len(arguments)}}}")
+        arguments.append(match.group(1))
+        position = match.end()
+    if not arguments:
+        return None
+    pieces.append(value[position:].replace("{", "{{").replace("}", "}}"))
+    text = "".join(pieces).replace("'", "''")
+    return f"format('{text}', {', '.join(arguments)})"
+
+
 def _template_mapping(values: dict[str, str]) -> dict:
     def template_value(value):
         if isinstance(value, str):
             stripped = value.strip()
-            if stripped.startswith("${{") and stripped.endswith("}}"):
+            if stripped.startswith("${{") and stripped.endswith("}}") and stripped.count("${{") == 1:
                 return {"type": 3, "expr": stripped[3:-2].strip()}
+            # Text with expressions inside it, the way the server hands over
+            # ``${{ runner.temp }}/fullsend-cache`` for the runner to finish.
+            # Left as a string it would have reached the step verbatim.
+            expression = _format_expression(value) if "${{" in value else None
+            if expression:
+                return {"type": 3, "expr": expression}
         return value
 
     return {
