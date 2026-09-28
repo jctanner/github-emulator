@@ -320,6 +320,42 @@ async def test_a_site_wide_runner_re_registering_takes_its_own_job_back(
 
 
 @pytest.mark.asyncio
+async def test_a_job_the_lost_runner_had_started_fails_with_githubs_message(
+    client, executable_workflow, admin_token, db_session,
+):
+    """GitHub does not re-run a job whose runner disappeared mid-job; it
+    fails it, naming the lost runner. Re-running an agent on top of what
+    the dead runner left behind is not a recovery."""
+    _repo, _workflow, run = executable_workflow
+    first = await _register_site_wide_runner(client, admin_token, "agent-runner")
+    claimed = await client.get(
+        f"{API}/actions/runner/jobs",
+        params={"labels": "self-hosted,linux,fullsend-router", "timeout": 1},
+        headers={"Authorization": f"Bearer {first['token']}"},
+    )
+    assert claimed.status_code == 200
+    job_id = claimed.json()["job_id"]
+    job = (await db_session.execute(select(WorkflowJob).where(WorkflowJob.id == job_id))).scalar_one()
+    steps = list(job.steps or [{"number": 1, "name": "one"}, {"number": 2, "name": "two"}])
+    steps[0] = {**steps[0], "status": "completed", "conclusion": "success"}
+    if len(steps) > 1:
+        steps[1] = {**steps[1], "status": "in_progress", "conclusion": None}
+    job.steps = steps
+    await db_session.commit()
+
+    await _register_site_wide_runner(client, admin_token, "agent-runner")
+
+    await db_session.refresh(job)
+    assert job.status == "completed" and job.conclusion == "failure"
+    assert job.steps[0]["conclusion"] == "success"
+    if len(job.steps) > 1:
+        assert job.steps[1]["conclusion"] == "failure"
+        assert "lost communication" in job.steps[1]["message"]
+    await db_session.refresh(run)
+    assert run.status == "completed" and run.conclusion == "failure"
+
+
+@pytest.mark.asyncio
 async def test_job_if_false_is_skipped_and_not_queued(
     executable_workflow, db_session, test_user,
 ):

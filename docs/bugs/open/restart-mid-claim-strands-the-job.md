@@ -134,7 +134,16 @@ running it until the run was cancelled by hand.
    to the queue the way the repository and enterprise routes do, and the
    stale-runner rule could not fire because the shared row kept
    heartbeating. Fixed: every registration route that reuses a row
-   releases its held jobs (`_release_held_jobs`), with a site-wide test.
+   settles its held jobs (`_release_held_jobs`), with site-wide tests.
+   Settling is GitHub's rule rather than a blanket requeue: a job the
+   runner never started goes back to the queue, a job it had started
+   fails with "The self-hosted runner lost communication with the
+   server" on the step it was on, and its run concludes. The first
+   version requeued every held job; the re-run triage then failed anyway,
+   because the dead runner's sandbox was still holding the provider
+   profile the new attempt wanted to replace. Re-running an agent on top
+   of what a dead runner left is not a recovery, and GitHub does not try.
+   The stale-heartbeat rule applies the same distinction.
 
 ## Workaround
 
