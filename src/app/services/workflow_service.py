@@ -1212,6 +1212,10 @@ async def dispatch_event(
     """Dispatch one successful repository activity to matching workflows."""
     if not repository.disk_path or not actor:
         return []
+    if repository.actions_enabled is False:
+        # Actions is off for this repository (GitHub's per-repository
+        # setting): the activity is recorded, no run is created.
+        return []
 
     ref = ref or repository.default_branch or "main"
     ref_name = ref.removeprefix("refs/heads/")

@@ -369,6 +369,8 @@ async def dispatch_workflow(
 ):
     """Dispatch a workflow configured with ``workflow_dispatch``."""
     repository = await get_repo_or_404(owner, repo, db)
+    if repository.actions_enabled is False:
+        raise HTTPException(status_code=403, detail="Actions is disabled on this repository")
     from app.services.workflow_service import sync_workflows_to_db
 
     await sync_workflows_to_db(db, repository, "HEAD")
@@ -737,6 +739,33 @@ async def delete_secret(
 
 
 # --- Workflow permissions ---
+
+@router.get("/repos/{owner}/{repo}/actions/permissions")
+async def get_actions_permissions(
+    owner: str, repo: str, db: DbSession, user: AuthUser,
+):
+    """Whether Actions runs on this repository, GitHub's shape."""
+    repository = await get_repo_or_404(owner, repo, db)
+    enabled = repository.actions_enabled is not False
+    return {"enabled": enabled, "allowed_actions": "all" if enabled else None}
+
+
+@router.put("/repos/{owner}/{repo}/actions/permissions", status_code=204)
+async def set_actions_permissions(
+    owner: str, repo: str, body: dict, user: AuthUser, db: DbSession,
+):
+    """Enable or disable Actions on the repository.
+
+    Disabled means no event dispatches a run and workflow_dispatch is refused,
+    which is how a mirror of an upstream repository stops running upstream's
+    CI on every push.
+    """
+    repository = await get_repo_or_404(owner, repo, db)
+    if "enabled" not in body or not isinstance(body["enabled"], bool):
+        raise HTTPException(status_code=422, detail="enabled must be true or false")
+    repository.actions_enabled = body["enabled"]
+    await db.commit()
+
 
 @router.get("/repos/{owner}/{repo}/actions/permissions/workflow")
 async def get_workflow_permissions(

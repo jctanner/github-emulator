@@ -32,6 +32,11 @@ class Repository(Base):
     default_workflow_permissions: Mapped[str | None] = mapped_column(
         String, nullable=True, default="write"
     )
+    # Whether Actions runs at all on this repository: GitHub's setting at
+    # /repos/{owner}/{repo}/actions/permissions. NULL means enabled. A mirror
+    # of an upstream repository carries upstream's CI workflows, and without
+    # this every push to the mirror dispatched them here.
+    actions_enabled: Mapped[bool | None] = mapped_column(Boolean, nullable=True, default=True)
     can_approve_pull_request_reviews: Mapped[bool | None] = mapped_column(
         Boolean, nullable=True, default=False
     )
