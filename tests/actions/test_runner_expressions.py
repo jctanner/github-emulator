@@ -254,3 +254,24 @@ def test_a_composite_action_runs_the_steps_its_inputs_select(monkeypatch, tmp_pa
     assert result == "success"
     assert "upstream-path" in log
     assert "vendored-path" not in log
+
+
+def test_a_condition_without_a_status_function_implies_success():
+    """GitHub prepends success() to any if: that names no status function.
+
+    Run 1717: `if: steps.cli-cache.outputs.cache-hit != 'true'` on the cache
+    save ran after the copy before it had failed, and cached an empty
+    directory that the next job restored as a hit.
+    """
+    outputs = {"cli-cache": {"outputs": {"cache-hit": "false"}}}
+    condition = "steps.cli-cache.outputs.cache-hit != 'true'"
+    assert runner_module._evaluate_step_if(condition, {"cli-cache": {"cache-hit": "false"}})
+    assert not runner_module._evaluate_step_if(condition, {"cli-cache": {"cache-hit": "false"}}, failed=True)
+
+
+def test_a_status_function_still_decides_after_a_failure():
+    assert runner_module._evaluate_step_if("always()", {}, failed=True)
+    assert runner_module._evaluate_step_if("failure()", {}, failed=True)
+    assert runner_module._evaluate_step_if("always() && inputs.x == 'y'", {}, failed=True, inputs={"x": "y"})
+    assert not runner_module._evaluate_step_if("success() && inputs.x == 'y'", {}, failed=True, inputs={"x": "y"})
+    assert not runner_module._evaluate_step_if("failure()", {}, failed=False)

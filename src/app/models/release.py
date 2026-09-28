@@ -26,7 +26,9 @@ class Release(Base):
 
     # Relationships
     author = relationship("User", lazy="selectin")
-    assets = relationship("ReleaseAsset", back_populates="release", lazy="selectin")
+    assets = relationship(
+        "ReleaseAsset", back_populates="release", lazy="selectin", cascade="all, delete-orphan"
+    )
 
 
 class ReleaseAsset(Base):

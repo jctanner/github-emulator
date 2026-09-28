@@ -182,6 +182,7 @@ def create_app() -> FastAPI:
     from app.api.statuses import router as statuses_router
     from app.api.check_runs import router as check_runs_router
     from app.api.releases import router as releases_router
+    from app.api.releases import download_router as release_download_router
     from app.api.collaborators import router as collaborators_router
     from app.api.forks import router as forks_router
     from app.api.reactions import router as reactions_router
@@ -239,6 +240,8 @@ def create_app() -> FastAPI:
 
     # Root-level API endpoints (discovery doc, meta, rate_limit)
     app.include_router(root_router)
+    # Release browser downloads live on the web host, as on GitHub.
+    app.include_router(release_download_router)
     app.include_router(oidc_router)
     app.include_router(admin_apps_router)
     app.include_router(admin_frontend_router)

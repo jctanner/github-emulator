@@ -489,6 +489,9 @@ def _hash_files(patterns: list[str]) -> str:
     return digest.hexdigest() if matched else ""
 
 
+_STATUS_FUNCTION_RE = re.compile(r"\b(?:always|success|failure|cancelled)\s*\(")
+
+
 def _evaluate_step_if(
     condition: object,
     step_outputs: dict[str, dict[str, str]],
@@ -517,6 +520,12 @@ def _evaluate_step_if(
     expression = condition.strip()
     if expression.startswith("${{") and expression.endswith("}}"):
         expression = expression[3:-2].strip()
+    # A condition that names no status function carries an implicit
+    # success(): GitHub prepends it. Without this, a cache save guarded only
+    # by `cache-hit != 'true'` ran after the step that populates the cache
+    # had failed, and saved an empty directory that the next job restored.
+    if failed and not _STATUS_FUNCTION_RE.search(expression):
+        return False
     try:
         return _StepIfParser(
             expression, _runner_context(inputs, step_outputs, job=job), failed
