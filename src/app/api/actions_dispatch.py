@@ -129,16 +129,7 @@ async def _create_runner_from_registration(
         existing.busy = False
         existing.token_hash = hash_token(runner_token)
         existing.last_heartbeat = datetime.now(timezone.utc)
-        # The process that held this runner's jobs is gone; the one
-        # registering is new. Whatever it was running goes back to the
-        # queue rather than waiting for a heartbeat that now keeps coming.
-        held = (await db.execute(
-            select(WorkflowJob).where(
-                WorkflowJob.runner_id == existing.id, WorkflowJob.status == "in_progress"
-            )
-        )).scalars().all()
-        for job in held:
-            _requeue(job)
+        await _release_held_jobs(db, existing)
         await db.commit()
         await db.refresh(existing)
         return existing, runner_token
@@ -218,6 +209,28 @@ async def _requeue_stale_jobs(db) -> int:
     if stale_jobs or requeued:
         await db.commit()
     return len(stale_jobs) + requeued
+
+
+async def _release_held_jobs(db, runner: Runner) -> int:
+    """Return to the queue whatever a runner held when a new process
+    registers under its name.
+
+    The process that held this runner's jobs is gone; the one registering
+    is new. Whatever it was running goes back to the queue rather than
+    waiting for a heartbeat that now keeps coming from the new process on
+    the same row, which is why the stale-runner rule can never fire for it.
+    Every registration route that reuses a row must do this: the site-wide
+    route did not, and a job whose runner pod was replaced mid-run sat
+    in_progress for the full conformance timeout (2026-09-28, job 6789).
+    """
+    held = (await db.execute(
+        select(WorkflowJob).where(
+            WorkflowJob.runner_id == runner.id, WorkflowJob.status == "in_progress"
+        )
+    )).scalars().all()
+    for job in held:
+        _requeue(job)
+    return len(held)
 
 
 def _requeue(job: WorkflowJob) -> None:
@@ -308,6 +321,8 @@ async def register_site_wide_runner(body: dict, user: AuthUser, db: DbSession):
     if runner is None:
         runner = Runner(name=name, repo_id=None, org_id=None)
         db.add(runner)
+    else:
+        await _release_held_jobs(db, runner)
 
     runner.os = normalise_runner_os(body.get("os"))
     runner.status = "online"

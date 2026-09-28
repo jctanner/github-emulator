@@ -102,6 +102,40 @@ running it until the run was cancelled by hand.
    in-flight list stay on; defect 2 is open again with the window above
    as the lead.
 
+   **Replayed again on 2026-09-28, with the pod's cgroup and the uvicorn
+   process sampled every five seconds.** Every distinctive event of the
+   19:40-19:52 window, run against the current code on a pod at 331 MiB
+   after a day of conformance, review and onboarding traffic, and none of
+   them moved it more than ten megabytes: the reset script (22 s, flat); a
+   runner deployment rolled while its triage job was in progress, the
+   window's own trigger, watched for twelve minutes (331 to 341 MiB, no
+   trend); the Fullsend dashboard's polling shape aimed straight at the
+   emulator for four minutes, the last eight runs and each of their job
+   lists every five seconds (+4 MiB); twenty loads of the Breadboard
+   dashboard's root page, which pages through every issue and pull
+   request (flat); and a client-disconnect battery of sixty dropped
+   runner long-polls, sixty dropped upstream-runner message polls, six
+   hundred JSON listings dropped mid-transfer, and twenty clones aborted
+   mid-transfer (flat, within noise). Threads stayed at 13 to 15 and file
+   descriptors at 40, so nothing is leaking connections either.
+
+   So the window still does not reproduce, and the code it ran on has
+   since changed in the areas every hypothesis pointed at. The instrument
+   stays armed: the watchdog's per-endpoint counters have been live since
+   the evening of 2026-09-27 and no report has fired since, across roughly
+   thirty conformance runs. If the growth returns, the report names the
+   endpoint; until then this is an unreproduced kill on superseded code,
+   not an open lead.
+
+   One defect did fall out of the replay. The rollout left the triage job
+   `in_progress` for the whole 900 s conformance timeout: the new pod
+   registered under the same name through the site-wide route, which
+   reused the row and re-keyed it but did not return the row's held jobs
+   to the queue the way the repository and enterprise routes do, and the
+   stale-runner rule could not fire because the shared row kept
+   heartbeating. Fixed: every registration route that reuses a row
+   releases its held jobs (`_release_held_jobs`), with a site-wide test.
+
 ## Workaround
 
 Cancel the run and file a new triggering event. Read

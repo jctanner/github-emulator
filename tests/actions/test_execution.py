@@ -292,6 +292,34 @@ async def test_site_wide_runner_claims_job_and_repository_runner_cannot_poll_glo
 
 
 @pytest.mark.asyncio
+async def test_a_site_wide_runner_re_registering_takes_its_own_job_back(
+    client, executable_workflow, admin_token,
+):
+    """A replaced runner pod registers under the same name; the job its
+    previous self was running goes back to the queue instead of sitting
+    in_progress against a row that keeps heartbeating (job 6789)."""
+    _repo, _workflow, _run = executable_workflow
+    first = await _register_site_wide_runner(client, admin_token, "agent-runner")
+    claimed = await client.get(
+        f"{API}/actions/runner/jobs",
+        params={"labels": "self-hosted,linux,fullsend-router", "timeout": 1},
+        headers={"Authorization": f"Bearer {first['token']}"},
+    )
+    assert claimed.status_code == 200
+    job_id = claimed.json()["job_id"]
+
+    second = await _register_site_wide_runner(client, admin_token, "agent-runner")
+    assert second["runner_id"] == first["runner_id"]
+    again = await client.get(
+        f"{API}/actions/runner/jobs",
+        params={"labels": "self-hosted,linux,fullsend-router", "timeout": 1},
+        headers={"Authorization": f"Bearer {second['token']}"},
+    )
+    assert again.status_code == 200, again.text
+    assert again.json()["job_id"] == job_id
+
+
+@pytest.mark.asyncio
 async def test_job_if_false_is_skipped_and_not_queued(
     executable_workflow, db_session, test_user,
 ):
