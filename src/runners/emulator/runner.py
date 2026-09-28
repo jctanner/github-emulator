@@ -22,6 +22,7 @@ import hashlib
 import platform
 import re
 import shutil
+import signal
 import selectors
 import subprocess
 import sys
@@ -43,6 +44,13 @@ EMULATOR_URL = os.environ.get("GITHUB_EMULATOR_URL", "https://localhost")
 ADMIN_TOKEN = os.environ.get("GITHUB_EMULATOR_TOKEN", "")
 REPO = os.environ.get("RUNNER_REPO", "admin/test-repo")
 RUNNER_SCOPE = os.environ.get("RUNNER_SCOPE", "repository").strip().lower()
+
+
+# GitHub's own wording for a job whose runner was told to stop.
+SHUTDOWN_MESSAGE = (
+    "The runner has received a shutdown signal. This can happen when the "
+    "runner service is stopped, or a manually started runner is canceled."
+)
 
 
 class JobCancelled(Exception):
@@ -656,12 +664,26 @@ def _requested_go_version(inputs: dict, workspace: Path) -> tuple[str, str]:
 
 
 class RunnerClient:
+    # Class-level defaults so a client built without __init__ (the tests do
+    # that) behaves as one that was never told to shut down.
+    _shutdown: threading.Event | None = None
+    _current_proc = None
+
+    def _stopping(self) -> bool:
+        return self._shutdown is not None and self._shutdown.is_set()
+
     def __init__(self):
         self.runner_id = None
         self.runner_token = None
         self.client = httpx.Client(verify=False, timeout=60.0)
         self._heartbeat_stop = threading.Event()
         self._heartbeat_thread = None
+        # Set by SIGTERM. The pod's grace period is what a rolling update
+        # gives the old runner; without a handler it kept running its step,
+        # created a sandbox nobody would delete, and posted logs with a token
+        # the new pod had already re-keyed (2026-09-28, job 6839).
+        self._shutdown = threading.Event()
+        self._current_proc = None
         self._masks: set[str] = set()
 
     def register(self):
@@ -1075,15 +1097,23 @@ class RunnerClient:
                 env=env,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.STDOUT,
+                # Its own process group, so a shutdown reaches the CLI and
+                # everything the CLI started, not only the shell.
+                start_new_session=True,
             )
+            self._current_proc = proc
             assert proc.stdout is not None
             selector.register(proc.stdout, selectors.EVENT_READ)
             deadline = time.monotonic() + int(job.get("timeout_seconds") or 3600)
             pending = b""
+            shutting_down = False
             while True:
                 if time.monotonic() >= deadline and proc.poll() is None:
                     timed_out = True
                     proc.kill()
+                if self._stopping() and not shutting_down:
+                    shutting_down = True
+                    self._terminate(proc)
 
                 events = selector.select(timeout=0.25)
                 if events:
@@ -1125,7 +1155,11 @@ class RunnerClient:
             return "failure", "".join(captured), {}
         finally:
             selector.close()
+            self._current_proc = None
 
+        if self._stopping():
+            emit(SHUTDOWN_MESSAGE + "\n")
+            return "failure", "".join(captured), {}
         if timed_out:
             emit("Command timed out\n")
         updates = self._read_command_file(env_file)
@@ -1906,6 +1940,39 @@ class RunnerClient:
         except Exception:
             pass
 
+    def _terminate(self, proc) -> None:
+        """SIGTERM the step's process group, then SIGKILL what is left.
+
+        TERM first so the Fullsend CLI can delete its sandbox on the way
+        out; KILL after a few seconds so a step that ignores TERM does not
+        outlive the pod's grace period.
+        """
+        try:
+            if proc.poll() is None:
+                os.killpg(os.getpgid(proc.pid), signal.SIGTERM)
+        except (ProcessLookupError, PermissionError):
+            return
+        deadline = time.monotonic() + 5
+        while proc.poll() is None and time.monotonic() < deadline:
+            time.sleep(0.1)
+        try:
+            if proc.poll() is None:
+                os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+        except (ProcessLookupError, PermissionError):
+            pass
+
+    def request_shutdown(self, *_args) -> None:
+        """What SIGTERM does: stop the current step and end the poll loop."""
+        if self._shutdown is None:
+            self._shutdown = threading.Event()
+        if self._shutdown.is_set():
+            return
+        log.info("Shutdown signal received; stopping the current step")
+        self._shutdown.set()
+        proc = self._current_proc
+        if proc is not None:
+            threading.Thread(target=self._terminate, args=(proc,), daemon=True).start()
+
     def run(self):
         """Main loop: register, then poll and execute jobs forever."""
         if not ADMIN_TOKEN:
@@ -1930,10 +1997,14 @@ class RunnerClient:
                 time.sleep(10)
 
         self.start_heartbeat()
+        try:
+            signal.signal(signal.SIGTERM, self.request_shutdown)
+        except ValueError:
+            pass  # not the main thread; nothing to install
         target = "all repositories" if RUNNER_SCOPE == "site" else REPO
         log.info("Runner ready. Polling for jobs on %s ...", target)
 
-        while True:
+        while not self._stopping():
             try:
                 job = self.poll_for_job()
                 if job:
@@ -1946,6 +2017,7 @@ class RunnerClient:
             except Exception as e:
                 log.error("Error in poll loop: %s", e)
                 time.sleep(5)
+        log.info("Runner stopped")
 
 
 if __name__ == "__main__":

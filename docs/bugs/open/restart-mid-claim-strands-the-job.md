@@ -143,7 +143,16 @@ running it until the run was cancelled by hand.
    because the dead runner's sandbox was still holding the provider
    profile the new attempt wanted to replace. Re-running an agent on top
    of what a dead runner left is not a recovery, and GitHub does not try.
-   The stale-heartbeat rule applies the same distinction.
+   The stale-heartbeat rule applies the same distinction. Two more
+   things the live replay showed and that are fixed with it: the
+   settlement's step failure was not being written, because the loaded
+   step dicts were mutated in place and SQLAlchemy saw no change (a deep
+   copy now); and the old runner pod had no SIGTERM handler, so for its
+   whole grace period it kept running the step, created a sandbox nobody
+   would delete, and posted logs with a token the new pod had re-keyed.
+   The runner now stops the step's process group on SIGTERM, TERM first so
+   the CLI can delete its sandbox, fails the step with GitHub's "The
+   runner has received a shutdown signal" wording, and ends its loop.
 
 ## Workaround
 

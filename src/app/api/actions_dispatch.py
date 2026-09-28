@@ -3,6 +3,7 @@
 import asyncio
 import hashlib
 import os
+import copy
 import secrets
 from datetime import datetime, timedelta, timezone
 from urllib.parse import parse_qs
@@ -238,7 +239,10 @@ def _lose_job(job: WorkflowJob) -> bool:
     a recovery either. Returns True when the job was failed, so the caller
     can conclude its run.
     """
-    steps = list(job.steps or [])
+    # A copy, not the loaded list: SQLAlchemy detects a JSON change by
+    # comparing the new value with the loaded one, and mutating the loaded
+    # dicts in place makes them equal, so the failure was never written.
+    steps = copy.deepcopy(list(job.steps or []))
     if not any(step.get("status") not in (None, "queued") for step in steps):
         _requeue(job)
         return False

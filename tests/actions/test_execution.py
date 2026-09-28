@@ -345,13 +345,17 @@ async def test_a_job_the_lost_runner_had_started_fails_with_githubs_message(
 
     await _register_site_wide_runner(client, admin_token, "agent-runner")
 
-    await db_session.refresh(job)
+    # Read back from the database, not the identity map: the first version
+    # of this fix mutated the loaded step dicts in place, which SQLAlchemy
+    # saw as no change, and the failure was never written (job 6839).
+    db_session.expire_all()
+    job = (await db_session.execute(select(WorkflowJob).where(WorkflowJob.id == job_id))).scalar_one()
     assert job.status == "completed" and job.conclusion == "failure"
     assert job.steps[0]["conclusion"] == "success"
     if len(job.steps) > 1:
         assert job.steps[1]["conclusion"] == "failure"
         assert "lost communication" in job.steps[1]["message"]
-    await db_session.refresh(run)
+    run = (await db_session.execute(select(WorkflowRun).where(WorkflowRun.id == run.id))).scalar_one()
     assert run.status == "completed" and run.conclusion == "failure"
 
 
