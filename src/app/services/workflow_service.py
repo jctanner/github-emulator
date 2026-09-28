@@ -1060,6 +1060,18 @@ def _repository_payload(repository: Repository) -> dict:
     }
 
 
+def _milestone_payload(milestone, repository: Repository) -> dict:
+    return {
+        "id": milestone.id,
+        "node_id": f"MI_{milestone.id}",
+        "number": milestone.number,
+        "title": milestone.title,
+        "description": getattr(milestone, "description", None),
+        "state": getattr(milestone, "state", "open"),
+        "html_url": f"{settings.BASE_URL}/{repository.full_name}/milestone/{milestone.number}",
+    }
+
+
 def _label_payload(label) -> dict:
     return {
         "id": label.id,
@@ -1135,6 +1147,9 @@ def build_activity_payload(
     label=None,
     ref: str | None = None,
     sha: str | None = None,
+    changes: dict | None = None,
+    assignee=None,
+    milestone=None,
 ) -> dict:
     """Build the GitHub-like payload shared by REST-triggered activities."""
     payload = {
@@ -1142,6 +1157,14 @@ def build_activity_payload(
         "repository": _repository_payload(repository),
         "sender": _user_payload(actor),
     }
+    if changes:
+        # GitHub's shape for an edit: the previous value of each changed
+        # field, so a consumer can tell a body edit from anything else.
+        payload["changes"] = changes
+    if assignee is not None:
+        payload["assignee"] = _user_payload(assignee)
+    if milestone is not None:
+        payload["milestone"] = _milestone_payload(milestone, repository)
     if issue is not None:
         payload["issue"] = _issue_payload(issue, repository)
     if pull_request is not None and issue is not None:

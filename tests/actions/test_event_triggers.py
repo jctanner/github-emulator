@@ -401,3 +401,113 @@ async def test_graphql_pull_request_creation_dispatches_opened_event(
     assert run.trigger_payload["action"] == "opened"
     assert run.trigger_payload["pull_request"]["number"] == 1
     assert run.trigger_payload["sender"]["login"] == "testuser"
+
+
+# --- issue updates are reported per kind of change, as GitHub reports them ---
+#
+# The emulator sent one `edited` for any update at all. Fullsend routes every
+# `edited` to triage (its ADR 0002 says "when title or body changed"), so a
+# milestone or an assignee cost a triage run, and the payload carried no
+# `changes` object for a consumer to tell the difference.
+
+def _issue_update_workflow(monkeypatch):
+    async def fake_detect(_path, _ref="HEAD"):
+        return [{
+            "_path": ".github/workflows/activity.yml",
+            "name": "Activity",
+            "on": {"issues": {"types": [
+                "opened", "edited", "closed", "reopened",
+                "assigned", "unassigned", "milestoned", "demilestoned",
+            ]}},
+            "jobs": {"record": {"runs-on": ["self-hosted"], "steps": [{"run": "echo activity"}]}},
+        }]
+
+    async def fake_ref_sha(_path, _ref):
+        return "a" * 40
+
+    monkeypatch.setattr(workflow_service, "detect_workflows", fake_detect)
+    monkeypatch.setattr(workflow_service, "get_ref_sha", fake_ref_sha)
+
+
+async def _actions_after_opened(db_session):
+    runs = (await db_session.execute(select(WorkflowRun).order_by(WorkflowRun.id))).scalars().all()
+    assert runs[0].trigger_payload["action"] == "opened"
+    return [run.trigger_payload for run in runs[1:]]
+
+
+@pytest.mark.asyncio
+async def test_a_body_edit_is_edited_with_the_previous_value(client, db_session, test_token, test_repo_with_init, monkeypatch):
+    owner, repo_name, _ = test_repo_with_init
+    _issue_update_workflow(monkeypatch)
+    headers = auth_headers(test_token)
+    await client.post(f"{API}/repos/{owner}/{repo_name}/issues", json={"title": "T", "body": "before"}, headers=headers)
+    assert (await client.patch(f"{API}/repos/{owner}/{repo_name}/issues/1", json={"body": "after"}, headers=headers)).status_code == 200
+    payloads = await _actions_after_opened(db_session)
+    assert [p["action"] for p in payloads] == ["edited"]
+    assert payloads[0]["changes"] == {"body": {"from": "before"}}
+    assert payloads[0]["issue"]["body"] == "after"
+
+
+@pytest.mark.asyncio
+async def test_a_title_edit_names_the_title(client, db_session, test_token, test_repo_with_init, monkeypatch):
+    owner, repo_name, _ = test_repo_with_init
+    _issue_update_workflow(monkeypatch)
+    headers = auth_headers(test_token)
+    await client.post(f"{API}/repos/{owner}/{repo_name}/issues", json={"title": "old", "body": "b"}, headers=headers)
+    await client.patch(f"{API}/repos/{owner}/{repo_name}/issues/1", json={"title": "new", "body": "b"}, headers=headers)
+    payloads = await _actions_after_opened(db_session)
+    assert [p["action"] for p in payloads] == ["edited"]
+    assert payloads[0]["changes"] == {"title": {"from": "old"}}
+
+
+@pytest.mark.asyncio
+async def test_an_unchanged_update_sends_nothing(client, db_session, test_token, test_repo_with_init, monkeypatch):
+    owner, repo_name, _ = test_repo_with_init
+    _issue_update_workflow(monkeypatch)
+    headers = auth_headers(test_token)
+    await client.post(f"{API}/repos/{owner}/{repo_name}/issues", json={"title": "T", "body": "b"}, headers=headers)
+    await client.patch(f"{API}/repos/{owner}/{repo_name}/issues/1", json={"title": "T", "body": "b", "state_reason": "not_planned"}, headers=headers)
+    assert await _actions_after_opened(db_session) == []
+
+
+@pytest.mark.asyncio
+async def test_an_assignee_change_is_assigned_not_edited(client, db_session, test_token, test_repo_with_init, monkeypatch):
+    owner, repo_name, _ = test_repo_with_init
+    _issue_update_workflow(monkeypatch)
+    headers = auth_headers(test_token)
+    await client.post(f"{API}/repos/{owner}/{repo_name}/issues", json={"title": "T", "body": "b"}, headers=headers)
+    await client.patch(f"{API}/repos/{owner}/{repo_name}/issues/1", json={"assignees": ["testuser"]}, headers=headers)
+    await client.patch(f"{API}/repos/{owner}/{repo_name}/issues/1", json={"assignees": []}, headers=headers)
+    payloads = await _actions_after_opened(db_session)
+    assert [p["action"] for p in payloads] == ["assigned", "unassigned"]
+    assert payloads[0]["assignee"]["login"] == "testuser"
+    assert "changes" not in payloads[0]
+
+
+@pytest.mark.asyncio
+async def test_a_milestone_change_is_milestoned_not_edited(client, db_session, test_token, test_repo_with_init, monkeypatch):
+    owner, repo_name, _ = test_repo_with_init
+    _issue_update_workflow(monkeypatch)
+    headers = auth_headers(test_token)
+    created = await client.post(f"{API}/repos/{owner}/{repo_name}/milestones", json={"title": "v1"}, headers=headers)
+    assert created.status_code == 201, created.text
+    number = created.json()["number"]
+    await client.post(f"{API}/repos/{owner}/{repo_name}/issues", json={"title": "T", "body": "b"}, headers=headers)
+    await client.patch(f"{API}/repos/{owner}/{repo_name}/issues/1", json={"milestone": number}, headers=headers)
+    await client.patch(f"{API}/repos/{owner}/{repo_name}/issues/1", json={"milestone": None}, headers=headers)
+    payloads = await _actions_after_opened(db_session)
+    assert [p["action"] for p in payloads] == ["milestoned", "demilestoned"]
+    assert payloads[0]["milestone"]["title"] == "v1"
+    assert payloads[1]["milestone"]["number"] == number
+
+
+@pytest.mark.asyncio
+async def test_closing_with_an_edit_sends_both_events(client, db_session, test_token, test_repo_with_init, monkeypatch):
+    owner, repo_name, _ = test_repo_with_init
+    _issue_update_workflow(monkeypatch)
+    headers = auth_headers(test_token)
+    await client.post(f"{API}/repos/{owner}/{repo_name}/issues", json={"title": "T", "body": "b"}, headers=headers)
+    await client.patch(f"{API}/repos/{owner}/{repo_name}/issues/1", json={"state": "closed", "body": "resolved"}, headers=headers)
+    payloads = await _actions_after_opened(db_session)
+    assert [p["action"] for p in payloads] == ["closed", "edited"]
+    assert payloads[1]["changes"] == {"body": {"from": "b"}}

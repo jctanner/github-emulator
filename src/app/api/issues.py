@@ -349,6 +349,8 @@ async def update_issue(
     old_title = issue.title
     old_body = issue.body
     old_labels = {label.name: label for label in (issue.labels or [])}
+    old_assignees = {assignee.login: assignee for assignee in (issue.assignees or [])}
+    old_milestone = issue.milestone
     replacement_labels: dict[str, Label] = {}
 
     if "title" in body:
@@ -432,20 +434,55 @@ async def update_issue(
     await db.commit()
     await db.refresh(issue)
     from app.services.workflow_service import build_activity_payload, dispatch_event
-    action = "edited"
+
+    # One event per kind of change, the way GitHub reports an update. It used
+    # to send a single `edited` for anything at all - a milestone, an
+    # assignee, a state reason - and Fullsend routes every `edited` to
+    # triage, so each such update cost a triage run. On GitHub `edited`
+    # means the title or body changed, and the payload says which.
     if issue.state != old_state:
         action = "closed" if issue.state == "closed" else "reopened"
-    changed = (
-        issue.title != old_title
-        or issue.body != old_body
-        or issue.state != old_state
-        or any(key in body for key in ("milestone", "assignees", "state_reason"))
-    )
-    if changed:
         await dispatch_event(
             db, repository, user, "issues", action,
             build_activity_payload(repository, user, action, issue=issue),
         )
+    changes: dict[str, dict] = {}
+    if issue.title != old_title:
+        changes["title"] = {"from": old_title}
+    if issue.body != old_body:
+        changes["body"] = {"from": old_body}
+    if changes:
+        await dispatch_event(
+            db, repository, user, "issues", "edited",
+            build_activity_payload(repository, user, "edited", issue=issue, changes=changes),
+        )
+    if "assignees" in body:
+        new_assignees = {assignee.login: assignee for assignee in (issue.assignees or [])}
+        for login, assignee in new_assignees.items():
+            if login not in old_assignees:
+                await dispatch_event(
+                    db, repository, user, "issues", "assigned",
+                    build_activity_payload(repository, user, "assigned", issue=issue, assignee=assignee),
+                )
+        for login, assignee in old_assignees.items():
+            if login not in new_assignees:
+                await dispatch_event(
+                    db, repository, user, "issues", "unassigned",
+                    build_activity_payload(repository, user, "unassigned", issue=issue, assignee=assignee),
+                )
+    if "milestone" in body:
+        old_id = old_milestone.id if old_milestone is not None else None
+        if issue.milestone_id != old_id:
+            if old_milestone is not None:
+                await dispatch_event(
+                    db, repository, user, "issues", "demilestoned",
+                    build_activity_payload(repository, user, "demilestoned", issue=issue, milestone=old_milestone),
+                )
+            if issue.milestone is not None:
+                await dispatch_event(
+                    db, repository, user, "issues", "milestoned",
+                    build_activity_payload(repository, user, "milestoned", issue=issue, milestone=issue.milestone),
+                )
     if "labels" in body:
         from app.services.workflow_service import build_activity_payload, dispatch_event
         new_labels = {label.name: label for label in (issue.labels or [])}
