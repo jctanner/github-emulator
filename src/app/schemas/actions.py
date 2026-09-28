@@ -36,6 +36,8 @@ class WorkflowRunResponse(BaseModel):
     status: str
     conclusion: str | None = None
     workflow_id: int
+    path: str = ""
+    referenced_workflows: list[dict] = []
     url: str
     html_url: str
     created_at: str

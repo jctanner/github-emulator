@@ -48,12 +48,19 @@ def _workflow_json(w: Workflow, owner: str, repo: str) -> dict:
     }
 
 
-def _run_json(r: WorkflowRun, owner: str, repo: str) -> dict:
+def _run_json(
+    r: WorkflowRun, owner: str, repo: str, referenced_workflows: list[dict] | None = None,
+) -> dict:
     api = f"{BASE}/api/v3"
     actor = SimpleUser.from_db(r.actor, BASE).model_dump() if r.actor else None
     return {
         "id": r.id,
         "name": r.workflow.name if r.workflow else "",
+        # The workflow file, and the reusable workflows its jobs came from:
+        # GitHub's shape, which is how a consumer learns provenance from the
+        # API rather than from an OIDC token it cannot decode.
+        "path": r.workflow.path if r.workflow else "",
+        "referenced_workflows": referenced_workflows if referenced_workflows is not None else [],
         "head_branch": r.head_branch,
         "head_sha": r.head_sha,
         "run_number": r.run_number,
@@ -469,7 +476,25 @@ async def get_workflow_run(
     r = result.scalar_one_or_none()
     if r is None:
         raise HTTPException(status_code=404, detail="Not Found")
-    return _run_json(r, owner, repo)
+    return _run_json(r, owner, repo, await _referenced_workflows(db, r))
+
+
+async def _referenced_workflows(db, run: WorkflowRun) -> list[dict]:
+    """The distinct reusable workflows this run's jobs were defined by.
+
+    Only on the single-run endpoint: a listing would need every run's jobs,
+    which is the eager load the history endpoints were cured of.
+    """
+    refs = (await db.execute(
+        select(WorkflowJob.workflow_ref)
+        .where(WorkflowJob.run_id == run.id, WorkflowJob.workflow_ref.is_not(None))
+        .distinct()
+    )).scalars().all()
+    referenced = []
+    for ref in sorted(refs):
+        spec, _, at_ref = ref.rpartition("@")
+        referenced.append({"path": spec or ref, "sha": run.head_sha, "ref": at_ref})
+    return referenced
 
 
 @router.post("/repos/{owner}/{repo}/actions/runs/{run_id}/cancel", status_code=202)

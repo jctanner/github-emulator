@@ -294,3 +294,34 @@ async def test_a_runner_re_registering_takes_its_own_job_back(client, db_session
     assert second["id"] == first["id"]
     again = await _claim(client, repository.full_name, second["token"])
     assert again.status_code == 200 and again.json()["job_id"] == job_id
+
+
+@pytest.mark.asyncio
+async def test_a_run_reports_its_workflow_path_and_referenced_workflows(client, db_session, test_user, test_token):
+    """GitHub's `path` and `referenced_workflows` on a run, so provenance can
+    be read from the API rather than from an OIDC token."""
+    repository = await _repo_with_workflow(client, test_token, db_session, name="prov-repo")
+    (run,) = await process_push_event(db_session, repository, test_user, ref_name="main")
+    job = (await db_session.execute(select(WorkflowJob).where(WorkflowJob.run_id == run.id))).scalars().first()
+    job.workflow_ref = "fullsend-ai/fullsend/.github/workflows/reusable-dispatch.yml@refs/heads/main"
+    await db_session.commit()
+
+    resp = await client.get(
+        f"{API}/repos/{repository.full_name}/actions/runs/{run.id}", headers=auth_headers(test_token),
+    )
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["path"].startswith(".github/workflows/")
+    assert body["referenced_workflows"] == [{
+        "path": "fullsend-ai/fullsend/.github/workflows/reusable-dispatch.yml",
+        "sha": run.head_sha,
+        "ref": "refs/heads/main",
+    }]
+
+    listing = await client.get(
+        f"{API}/repos/{repository.full_name}/actions/runs", headers=auth_headers(test_token),
+    )
+    assert listing.status_code == 200
+    (listed,) = [r for r in listing.json()["workflow_runs"] if r["id"] == run.id]
+    assert listed["path"] == body["path"]
+    assert listed["referenced_workflows"] == []  # not computed per run in a listing
