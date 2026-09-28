@@ -125,6 +125,10 @@ async def create_app(body: dict, user: AuthUser, db: DbSession):
         raise HTTPException(status_code=422, detail="name is required")
     if (await db.execute(select(GitHubApp).where(GitHubApp.slug == slug))).scalar_one_or_none():
         raise HTTPException(status_code=409, detail="App slug already exists")
+    if (await db.execute(select(GitHubApp).where(GitHubApp.app_id == app_id))).scalar_one_or_none():
+        # A taken id with a new slug used to hit the unique constraint and
+        # surface as a 500 with nothing in the response to say why.
+        raise HTTPException(status_code=409, detail="App id already exists")
     app = GitHubApp(app_id=app_id, client_id=_client_id(), name=name, slug=slug, private_key_pem=_private_key(), permissions=body.get("permissions", {}))
     db.add(app)
     await db.flush()

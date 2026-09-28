@@ -96,3 +96,13 @@ async def test_an_installation_elsewhere_grants_nothing_here(client, admin_token
     await _app(client, admin_token, "2005", "narrow", {"contents": "write"}, [f"{owner}/other"])
     resp = await client.get(f"{API}/repos/{owner}/{repo}/collaborators/narrow[bot]/permission", headers=auth_headers(test_token))
     assert resp.status_code == 404
+
+
+async def test_a_taken_app_id_is_a_conflict_not_a_server_error(client, admin_token):
+    first = await client.post(f"{API}/admin/apps", headers=auth_headers(admin_token),
+                              json={"app_id": "2100", "name": "one", "slug": "one", "permissions": {}})
+    assert first.status_code == 201
+    second = await client.post(f"{API}/admin/apps", headers=auth_headers(admin_token),
+                               json={"app_id": "2100", "name": "two", "slug": "two", "permissions": {}})
+    assert second.status_code == 409
+    assert "id" in second.json()["message"].lower() or "id" in second.text.lower()
