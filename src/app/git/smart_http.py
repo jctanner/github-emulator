@@ -88,10 +88,14 @@ async def _check_write_access(
         )
     )
     collaborator = result.scalar_one_or_none()
-    if collaborator is None or collaborator.permission not in {
-        "push", "maintain", "admin"
-    }:
-        raise HTTPException(status_code=403, detail="Permission denied")
+    if collaborator is not None and collaborator.permission in {"push", "maintain", "admin"}:
+        return
+    # An App's bot pushes with what its installation grants.
+    from app.services.repository_access import installation_role
+
+    if await installation_role(db, repository, user) == "write":
+        return
+    raise HTTPException(status_code=403, detail="Permission denied")
 
 
 async def _run_git_command(

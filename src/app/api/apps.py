@@ -260,7 +260,12 @@ async def create_installation_token(installation_id: int, request: Request, body
     if not isinstance(requested, list):
         raise HTTPException(status_code=422, detail="requested repositories must be a list")
     requested_full = [item if "/" in str(item) else f"{installation.account_login}/{item}" for item in requested]
-    if not set(requested_full).issubset(set(installation.repositories)):
+    if installation.repositories:
+        covered = set(requested_full).issubset(set(installation.repositories))
+    else:
+        # repository_selection "all": every repository of the account.
+        covered = all(item.split("/", 1)[0] == installation.account_login for item in requested_full)
+    if not covered:
         raise HTTPException(status_code=422, detail="requested repository is not installed")
     permissions = body.get("permissions") or installation.permissions or {}
     raw = "ghs_" + secrets.token_urlsafe(30)

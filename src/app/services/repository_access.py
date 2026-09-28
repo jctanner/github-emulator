@@ -142,3 +142,46 @@ async def is_hidden(db: AsyncSession, path: str, user: User | None) -> bool:
     if repository is None:
         return False
     return not await can_read(db, repository, user)
+
+
+async def installation_role(
+    db: AsyncSession, repository: Repository, user: User | None
+) -> str | None:
+    """The role a GitHub App installation grants ``user`` on ``repository``.
+
+    A GitHub App acts as its bot user, and the bot's access to a repository
+    comes from the App's installation, not from a collaborator row: an
+    installation on the repository's owner that covers this repository
+    (explicitly, or every repository when its selection is "all") grants the
+    installation's ``contents`` permission. Returns "write", "read", or None
+    for a user that is not an installed App's bot.
+    """
+    if user is None:
+        return None
+    from app.models.apps import AppInstallation, GitHubApp
+
+    app = (
+        await db.execute(select(GitHubApp).where(GitHubApp.bot_user_id == user.id))
+    ).scalar_one_or_none()
+    if app is None:
+        return None
+    owner_login = repository.full_name.split("/", 1)[0]
+    installations = (
+        await db.execute(
+            select(AppInstallation).where(
+                AppInstallation.app_id == app.id,
+                AppInstallation.account_login == owner_login,
+            )
+        )
+    ).scalars().all()
+    role: str | None = None
+    for installation in installations:
+        covered = not installation.repositories or repository.full_name in installation.repositories
+        if not covered:
+            continue
+        contents = str((installation.permissions or {}).get("contents", "")).lower()
+        if contents == "write":
+            return "write"
+        if contents == "read":
+            role = "read"
+    return role

@@ -176,7 +176,19 @@ async def get_collaborator_permission(
     )
     collab = result.scalar_one_or_none()
     if collab is None:
-        raise HTTPException(status_code=404, detail="Not Found")
+        # A GitHub App's bot is not a collaborator; its access is what the
+        # App's installation grants, and GitHub answers this endpoint with it.
+        from app.services.repository_access import installation_role
+
+        bot = (await db.execute(select(User).where(User.login == username))).scalar_one_or_none()
+        role = await installation_role(db, repository, bot)
+        if role is None:
+            raise HTTPException(status_code=404, detail="Not Found")
+        return {
+            "permission": role,
+            "role_name": role,
+            "user": SimpleUser.from_db(bot, BASE).model_dump(),
+        }
 
     return {
         "permission": collab.permission,
