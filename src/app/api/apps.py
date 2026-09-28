@@ -271,7 +271,20 @@ async def create_installation_token(installation_id: int, request: Request, body
         covered = all(item.split("/", 1)[0] == installation.account_login for item in requested_full)
     if not covered:
         raise HTTPException(status_code=422, detail="requested repository is not installed")
-    permissions = body.get("permissions") or installation.permissions or {}
+    granted = {str(k): str(v) for k, v in (installation.permissions or {}).items()}
+    requested = body.get("permissions") or granted
+    if not isinstance(requested, dict):
+        raise HTTPException(status_code=422, detail="permissions must be an object")
+    # A token may be downscoped from the installation, never widened.
+    rank = {"read": 1, "write": 2, "admin": 3}
+    for name, level in requested.items():
+        have = granted.get(str(name))
+        if have is None or rank.get(str(level).lower(), 99) > rank.get(have.lower(), 0):
+            raise HTTPException(
+                status_code=422,
+                detail=f"requested permission {name}: {level} exceeds the installation's grant",
+            )
+    permissions = {str(k): str(v) for k, v in requested.items()}
     raw = "ghs_" + secrets.token_urlsafe(30)
     expires = datetime.now(timezone.utc) + timedelta(hours=1)
     db.add(AppInstallationToken(installation_id=installation.id, token_hash=hashlib.sha256(raw.encode()).hexdigest(), token_prefix=raw[:8], repositories=sorted(set(requested_full)), permissions=permissions, expires_at=expires))

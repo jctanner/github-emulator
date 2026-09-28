@@ -140,6 +140,16 @@ async def _resolve_user(
             return None
         request.state.installation_token = installation_token
         request.state.is_installation_token = True
+        # An installation token carries exactly the repositories and
+        # permissions it was minted with, and GitHub answers for them at the
+        # gateway: a repository outside the token's selection is Not Found,
+        # and an endpoint the token's permissions do not cover is "Resource
+        # not accessible by integration". Checking here covers every route,
+        # the git transport included, so a token minted at the read level
+        # cannot write what its installation could.
+        _check_installation_token_route(
+            installation_token, request.method, request.url.path, request.url.query or "",
+        )
         return await get_installation_actor(db, installation_token)
     validated = await validate_job_token(db, token_value)
     if validated is not None:
@@ -194,6 +204,38 @@ def _repository_in_path(path: str) -> str | None:
     """owner/repo named by a repository API route or a git transport route."""
     m = _REPO_PATH.match(path) or _GIT_PATH.match(path)
     return f"{m.group(1)}/{m.group(2)}" if m else None
+
+
+def _check_installation_token_route(token, method: str, path: str, query: str = "") -> None:
+    """Refuse a route an installation token's scope does not cover."""
+    target = _repository_in_path(path)
+    if target is None:
+        return
+    installation = token.installation
+    selected = [str(item).lower() for item in (token.repositories or [])]
+    if selected:
+        covered = target.lower() in selected
+    else:
+        # Every repository of the installed account.
+        covered = target.split("/", 1)[0].lower() == str(installation.account_login).lower()
+    if not covered:
+        raise HTTPException(status_code=404, detail="Not Found")
+    # Installation permissions are spelled pull_requests; the job-token
+    # checker, whose route map this reuses, spells them pull-requests.
+    permissions = {str(k).lower().replace("_", "-"): str(v).lower() for k, v in (token.permissions or {}).items()}
+    if _GIT_PATH.match(path):
+        needed = "write" if path.endswith("git-receive-pack") or "service=git-receive-pack" in query else "read"
+        granted = permissions.get("contents", "none")
+        if granted == "write" or (granted == "read" and needed == "read"):
+            return
+        refusal = f"the token's contents permission is {granted}, which does not allow this"
+    else:
+        refusal = job_permissions.check(method, path, permissions)
+    if refusal is not None:
+        raise HTTPException(
+            status_code=403,
+            detail=f"Resource not accessible by integration: {refusal}",
+        )
 
 
 async def require_auth(
