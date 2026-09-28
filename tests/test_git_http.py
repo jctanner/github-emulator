@@ -184,7 +184,7 @@ async def test_upload_pack_spools_request_and_streams_response(
     async def fake_stream_git_command_from_file(args, repo_path, input_path):
         nonlocal called
         called = True
-        assert args[0] == "git-upload-pack"
+        assert args[:4] == ["git", "-c", "uploadpack.allowReachableSHA1InWant=true", "upload-pack"]
         assert input_path == str(spooled_path)
         assert spooled_path.exists()
         yield b"0008ok\n"

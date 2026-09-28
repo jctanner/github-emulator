@@ -9,14 +9,25 @@ here so nobody reaches that conclusion again.
 
 Measured against real git:
 
-- A commit **reachable** from some ref is served already, with no configuration
-  at all. Not being a branch tip is not the problem.
+- A commit **reachable** from some ref is served by upload-pack when asked
+  for, with no configuration at all. Not being a branch tip is not the problem
+  on the server side.
 - A commit reachable from **nothing** is refused, and GitHub refuses it too.
 
-So the failure was never about the transport. It was a run referencing a commit
-that no ref pointed at, which is fixed where the run is created. Enabling
-``allowAnySHA1InWant`` would have made this emulator *more* permissive than the
-thing it emulates, and hidden the real defect instead of fixing it.
+So that failure was never about the transport. It was a run referencing a
+commit that no ref pointed at, which is fixed where the run is created.
+Enabling ``allowAnySHA1InWant`` would have made this emulator *more*
+permissive than the thing it emulates, and hidden the real defect.
+
+One thing the first measurement missed, found by a later run (1766): a real
+git **client** will not ask for an unadvertised object unless the server
+advertises ``allow-reachable-sha1-in-want``, and upload-pack only advertises
+it with ``uploadpack.allowReachableSHA1InWant``. A push that landed between a
+run's creation and its checkout left the run's own commit reachable but no
+longer a tip, and ``git fetch`` refused client-side with "Server does not
+allow request for unadvertised object". The transport now sets that one
+option, reachable only, which is the case Actions needs and the case GitHub
+serves; the unreachable refusal below still holds.
 
 If a future case genuinely needs an unreachable commit to be fetchable, the
 faithful answer is to give it a ref the way GitHub does with
@@ -109,3 +120,41 @@ def test_the_transport_does_not_loosen_upload_pack(origin):
             f"{module.__name__} enables allowAnySHA1InWant, which makes this "
             "emulator more permissive than GitHub; see this module's docstring"
         )
+
+
+def test_the_advertisement_offers_reachable_sha1_in_want(origin):
+    """What a real client checks before it will ask for a non-tip commit."""
+    bare, _superseded, _unreferenced = origin
+    without = subprocess.run(
+        ["git-upload-pack", "--stateless-rpc", "--advertise-refs", str(bare)],
+        capture_output=True, env=GIT_ENV,
+    ).stdout
+    assert b"allow-reachable-sha1-in-want" not in without
+    with_option = subprocess.run(
+        ["git", "-c", "uploadpack.allowReachableSHA1InWant=true",
+         "upload-pack", "--stateless-rpc", "--advertise-refs", str(bare)],
+        capture_output=True, env=GIT_ENV,
+    ).stdout
+    assert b"allow-reachable-sha1-in-want" in with_option
+    assert b"allow-any-sha1-in-want" not in with_option
+
+
+def test_a_real_client_can_fetch_a_superseded_commit_over_the_transport(origin, tmp_path):
+    """git fetch <sha> of a reachable non-tip commit, through upload-pack
+    invoked the way smart_http invokes it."""
+    bare, superseded, unreferenced = origin
+    clone = tmp_path / "clone"
+    _git("init", "-q", str(clone))
+    _git("remote", "add", "origin", str(bare), cwd=clone)
+    # Protocol v0, which is what the emulator's smart HTTP speaks. (Over v2
+    # the advertisement is a separate request and git accepts any object
+    # in a want, so v2 would not exercise the capability at all.)
+    server = "remote.origin.uploadpack=git -c uploadpack.allowReachableSHA1InWant=true upload-pack"
+    plain = _git("-c", "protocol.version=0", "fetch", "origin", superseded, cwd=clone, check=False)
+    assert plain.returncode != 0 and "unadvertised" in plain.stderr, "without the option a client refuses to ask"
+    served = _git("-c", "protocol.version=0", "-c", server,
+                  "fetch", "origin", superseded, cwd=clone, check=False)
+    assert served.returncode == 0, served.stderr
+    refused = _git("-c", "protocol.version=0", "-c", server,
+                   "fetch", "origin", unreferenced, cwd=clone, check=False)
+    assert refused.returncode != 0

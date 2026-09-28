@@ -411,9 +411,18 @@ async def info_refs(
     if not os.path.isdir(repo_path):
         raise HTTPException(status_code=404, detail="Repository not found on disk")
 
-    # Run git service with --advertise-refs
+    # Run git service with --advertise-refs. For upload-pack, advertise that
+    # a reachable commit may be asked for by SHA: git clients refuse to
+    # request an unadvertised object unless the server says it accepts one,
+    # and Actions routinely checks out a commit that a later push has moved
+    # off the branch tip. GitHub serves that case; reachable only, so a
+    # commit no ref reaches is still refused.
+    command = [service, "--stateless-rpc", "--advertise-refs", repo_path]
+    if service == "git-upload-pack":
+        command = ["git", "-c", "uploadpack.allowReachableSHA1InWant=true",
+                   "upload-pack", "--stateless-rpc", "--advertise-refs", repo_path]
     stdout, stderr = await _run_git_command(
-        [service, "--stateless-rpc", "--advertise-refs", repo_path],
+        command,
         repo_path,
     )
 
@@ -456,7 +465,8 @@ async def git_upload_pack(
     async def stream_and_cleanup():
         try:
             async for chunk in _stream_git_command_from_file(
-                ["git-upload-pack", "--stateless-rpc", repo_path],
+                ["git", "-c", "uploadpack.allowReachableSHA1InWant=true",
+                 "upload-pack", "--stateless-rpc", repo_path],
                 repo_path,
                 input_path,
             ):
