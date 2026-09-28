@@ -9,7 +9,7 @@ from fastapi import APIRouter, HTTPException
 from fastapi.responses import JSONResponse
 from sqlalchemy import select
 
-from app.api.deps import AuthUser, CurrentUser, DbSession, get_repo_record_or_404
+from app.api.deps import require_contents_write, AuthUser, CurrentUser, DbSession, get_repo_record_or_404
 from app.config import settings
 from app.schemas.browse import ContentResponse
 from app.schemas.user import _make_node_id
@@ -162,6 +162,7 @@ async def create_or_update_file(
 ):
     """Create or update a file."""
     repository = await get_repo_record_or_404(owner, repo, db)
+    await require_contents_write(db, repository, user)
 
     if not repository.disk_path or not os.path.isdir(repository.disk_path):
         raise HTTPException(status_code=404, detail="Repository not found on disk")
@@ -281,6 +282,7 @@ async def delete_file(
 ):
     """Delete a file (stub -- returns 200 with commit info)."""
     repository = await get_repo_record_or_404(owner, repo, db)
+    await require_contents_write(db, repository, user)
     message = body.get("message", f"Delete {path}")
     sha = body.get("sha", "")
 

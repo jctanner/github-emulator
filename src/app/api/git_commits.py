@@ -5,7 +5,7 @@ import os
 
 from fastapi import APIRouter, HTTPException, Request
 
-from app.api.deps import AuthUser, CurrentUser, DbSession, get_repo_or_404
+from app.api.deps import require_contents_write, AuthUser, CurrentUser, DbSession, get_repo_or_404
 from app.config import settings
 from app.api.verification import verification
 
@@ -101,6 +101,7 @@ async def create_git_commit(
 ):
     """Create a Git commit."""
     repository = await get_repo_or_404(owner, repo, db)
+    await require_contents_write(db, repository, user)
     if not repository.disk_path or not os.path.isdir(repository.disk_path):
         raise HTTPException(status_code=404, detail="Repository not found on disk")
 

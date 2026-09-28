@@ -185,3 +185,30 @@ async def installation_role(
         if contents == "read":
             role = "read"
     return role
+
+
+async def can_write_contents(
+    db: AsyncSession, repository: Repository, user: User | None
+) -> bool:
+    """Whether ``user`` may write this repository's contents, refs, and objects.
+
+    The owner and site admins may; a collaborator with push, maintain, or
+    admin may; and an installed App's bot may when its installation grants
+    ``contents: write``. Everything else, including a bot whose installation
+    grants only ``contents: read``, may not - which is what makes a role's
+    permission level mean something.
+    """
+    if user is None:
+        return False
+    if user.site_admin or user.id == repository.owner_id:
+        return True
+    collaborator = (
+        await db.execute(
+            select(Collaborator).where(
+                Collaborator.repo_id == repository.id, Collaborator.user_id == user.id
+            )
+        )
+    ).scalar_one_or_none()
+    if collaborator is not None and collaborator.permission in {"push", "maintain", "admin"}:
+        return True
+    return await installation_role(db, repository, user) == "write"

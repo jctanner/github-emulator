@@ -267,3 +267,13 @@ DbSession = Annotated[AsyncSession, Depends(get_db)]
 CurrentUser = Annotated[Optional[User], Depends(get_current_user)]
 AuthUser = Annotated[User, Depends(require_auth)]
 RepoDep = Annotated[Repository, Depends(get_repo_or_404)]
+
+
+async def require_contents_write(db: AsyncSession, repository: Repository, user: User | None) -> None:
+    """403 unless the user may write the repository's contents (see
+    ``repository_access.can_write_contents``)."""
+    if not await repository_access.can_write_contents(db, repository, user):
+        raise HTTPException(
+            status_code=403,
+            detail="Resource not accessible: write access to this repository is required",
+        )
