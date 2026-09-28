@@ -1624,6 +1624,14 @@ class RunnerClient:
             return "failure", f"Could not load local action {action_ref}: {exc}\n", {}
 
         inputs = {str(key): str(value) for key, value in (step.get("with") or {}).items()}
+        # An input the caller did not pass takes the action's declared
+        # default, rendered like the rest of the action. Without this the
+        # mint-token action's `level` (default: write) reached the mint
+        # empty, and the mint read an empty level as the read level.
+        declared = definition.get("inputs") or {}
+        for name, spec in (declared.items() if isinstance(declared, dict) else []):
+            if str(name) not in inputs and isinstance(spec, dict) and spec.get("default") is not None:
+                inputs[str(name)] = str(_render_local_action(spec["default"], inputs, {}, github_token, job))
         calling_env = {
             str(key): str(value) for key, value in (step.get("env") or {}).items()
         }

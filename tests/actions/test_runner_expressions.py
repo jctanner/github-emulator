@@ -275,3 +275,54 @@ def test_a_status_function_still_decides_after_a_failure():
     assert runner_module._evaluate_step_if("always() && inputs.x == 'y'", {}, failed=True, inputs={"x": "y"})
     assert not runner_module._evaluate_step_if("success() && inputs.x == 'y'", {}, failed=True, inputs={"x": "y"})
     assert not runner_module._evaluate_step_if("failure()", {}, failed=False)
+
+
+def test_a_composite_input_default_applies_when_the_caller_passes_nothing(monkeypatch, tmp_path):
+    """mint-token's `level` defaults to write; the runner sent it empty."""
+    monkeypatch.setattr(runner_module, "WORKDIR", str(tmp_path))
+    action = Path(str(tmp_path)) / "act"
+    action.mkdir(parents=True)
+    (action / "action.yml").write_text(
+        "name: Demo\n"
+        "inputs:\n"
+        "  level:\n"
+        "    default: write\n"
+        "  repos:\n"
+        "    required: true\n"
+        "  who:\n"
+        "    default: ${{ github.repository }}\n"
+        "runs:\n"
+        "  using: composite\n"
+        "  steps:\n"
+        "    - shell: bash\n"
+        "      env:\n"
+        "        LEVEL: ${{ inputs.level }}\n"
+        "        REPOS: ${{ inputs.repos }}\n"
+        "        WHO: ${{ inputs.who }}\n"
+        "      run: echo \"level=$LEVEL repos=$REPOS who=$WHO\"\n"
+    )
+    client = runner_module.RunnerClient.__new__(runner_module.RunnerClient)
+    client._masks = set()
+    chunks: list[str] = []
+    result, _output, _updates = client._composite_step(
+        {"uses": "./act", "with": {"repos": "triage-target"}},
+        {"repository": "fullsend-dev/triage-target"}, {}, log_callback=chunks.append,
+    )
+    assert result == "success"
+    assert "level=write repos=triage-target who=fullsend-dev/triage-target" in "".join(chunks)
+
+
+def test_a_passed_input_beats_its_default(monkeypatch, tmp_path):
+    monkeypatch.setattr(runner_module, "WORKDIR", str(tmp_path))
+    action = Path(str(tmp_path)) / "act"
+    action.mkdir(parents=True)
+    (action / "action.yml").write_text(
+        "name: Demo\ninputs:\n  level:\n    default: write\n"
+        "runs:\n  using: composite\n  steps:\n    - shell: bash\n"
+        "      env:\n        LEVEL: ${{ inputs.level }}\n      run: echo \"level=$LEVEL\"\n"
+    )
+    client = runner_module.RunnerClient.__new__(runner_module.RunnerClient)
+    client._masks = set()
+    chunks: list[str] = []
+    client._composite_step({"uses": "./act", "with": {"level": "read"}}, {}, {}, log_callback=chunks.append)
+    assert "level=read" in "".join(chunks)
