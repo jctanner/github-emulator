@@ -9,6 +9,10 @@ from app.database import Base
 
 class Repository(Base):
     __tablename__ = "repositories"
+    # GitHub never reuses a repository id. Without AUTOINCREMENT, SQLite hands
+    # the next repository the highest id ever deleted, and anything that
+    # deletion left behind resurfaces as the new repository's history.
+    __table_args__ = {"sqlite_autoincrement": True}
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     owner_id: Mapped[int] = mapped_column(Integer, ForeignKey("users.id"), nullable=False)

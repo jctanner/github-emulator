@@ -96,3 +96,63 @@ def test_pre_alembic_database_is_upgraded_without_losing_rows(tmp_path, monkeypa
             text("SELECT version_num FROM alembic_version")
         ).scalar_one() == _alembic_head()
     engine.dispose()
+
+
+def test_orphaned_repository_rows_are_purged_and_ids_stop_being_reused(tmp_path, monkeypatch):
+    """A database from before 0011: a deleted repository's runs, jobs, secrets
+    and variables are still there under its old id, and that id is what the
+    next repository would get. After the upgrade they are gone and the table
+    hands out fresh ids."""
+    from sqlalchemy.orm import Session
+
+    from app.models import Repository, User
+    from app.models.actions import Secret, Variable, Workflow, WorkflowJob, WorkflowRun
+
+    path = tmp_path / "reuse.db"
+    monkeypatch.delenv("GITHUB_EMULATOR_DATABASE_URL", raising=False)
+    upgrade_database_sync(_url(path))
+    engine = create_engine(f"sqlite:///{path}")
+    with engine.begin() as connection:
+        connection.execute(text("DELETE FROM alembic_version"))
+        connection.execute(text("INSERT INTO alembic_version VALUES ('0010_repository_actions_enabled')"))
+        # Recreate the repositories table the way earlier revisions made it:
+        # without AUTOINCREMENT, so the highest id can be handed out again.
+        ddl = connection.execute(text("SELECT sql FROM sqlite_master WHERE name = 'repositories'")).scalar_one()
+        connection.execute(text("DROP TABLE repositories"))
+        connection.execute(text(ddl.replace("AUTOINCREMENT", "")))
+    with Session(engine) as session:
+        session.add(User(id=1, login="u", hashed_password="h"))
+        session.add(Repository(id=7, owner_id=1, name="live", full_name="u/live"))
+        # A fork whose parent, 9, is gone keeps its row with the pointer cleared.
+        session.add(Repository(id=8, owner_id=1, name="fork", full_name="u/fork", fork=True, parent_id=9))
+        session.flush()
+        run_kwargs = dict(head_sha="a", head_branch="main", event="push", status="completed",
+                          run_number=1, run_attempt=1, actor_id=1)
+        # Owned by repository 9, which no longer exists.
+        session.add(Workflow(id=1, repo_id=9, name="wf", path="p"))
+        session.add(WorkflowRun(id=1, workflow_id=1, repo_id=9, **run_kwargs))
+        session.add(WorkflowJob(id=1, run_id=1, name="job", status="completed"))
+        session.add(Secret(repo_id=9, name="S"))
+        session.add(Variable(repo_id=9, name="V", value="v"))
+        # And the live repository's own run, which must survive.
+        session.add(Workflow(id=2, repo_id=7, name="wf", path="p"))
+        session.add(WorkflowRun(id=2, workflow_id=2, repo_id=7, **run_kwargs))
+        session.commit()
+    engine.dispose()
+
+    upgrade_database_sync(_url(path))
+
+    engine = create_engine(f"sqlite:///{path}")
+    with engine.connect() as connection:
+        rows = lambda sql: connection.execute(text(sql)).scalar_one()  # noqa: E731
+        assert rows("SELECT count(*) FROM workflow_runs WHERE repo_id = 9") == 0
+        assert rows("SELECT count(*) FROM workflow_jobs") == 0
+        assert rows("SELECT count(*) FROM workflows WHERE repo_id = 9") == 0
+        assert rows("SELECT count(*) FROM secrets") == 0
+        assert rows("SELECT count(*) FROM variables") == 0
+        assert rows("SELECT count(*) FROM workflow_runs WHERE repo_id = 7") == 1
+        assert rows("SELECT parent_id IS NULL FROM repositories WHERE id = 8") == 1
+        assert "AUTOINCREMENT" in rows("SELECT sql FROM sqlite_master WHERE name = 'repositories'").upper()
+        assert rows("SELECT seq FROM sqlite_sequence WHERE name = 'repositories'") >= 8
+        assert rows("SELECT version_num FROM alembic_version") == _alembic_head()
+    engine.dispose()

@@ -8,7 +8,9 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
+from app.database import Base
 from app.database_retry import commit_with_sqlite_retry
+from app.services.repository_purge import purge_repository
 from app.models import Organization, Repository, User
 from app.services.git_service import (
     create_initial_commit,
@@ -236,12 +238,18 @@ async def delete_repo(db: AsyncSession, repo: Repository) -> None:
         repo: The repository to delete.
     """
     disk_path = repo.disk_path
-    await db.delete(repo)
-    await commit_with_sqlite_retry(
-        db,
-        label="delete_repo",
-        before_retry=lambda: db.delete(repo),
-    )
+    repository_id = repo.id
+    # Everything the repository owns goes with it, in foreign-key order, by
+    # plain statements (see repository_purge). The ORM row is expunged rather
+    # than deleted so its cascades do not chase rows the purge already
+    # removed.
+    db.expunge(repo)
+
+    async def purge() -> None:
+        await purge_repository(db, Base.metadata, repository_id)
+
+    await purge()
+    await commit_with_sqlite_retry(db, label="delete_repo", before_retry=purge)
 
     # Remove bare repo from disk
     if disk_path:
