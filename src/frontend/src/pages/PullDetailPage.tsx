@@ -150,9 +150,7 @@ export function PullDetailPage() {
                         page.data.pull.created_at,
                       ).toLocaleString()}
                     >
-                      {new Date(
-                        page.data.pull.created_at,
-                      ).toLocaleString()}
+                      {new Date(page.data.pull.created_at).toLocaleString()}
                     </time>
                   </span>
                   {user &&

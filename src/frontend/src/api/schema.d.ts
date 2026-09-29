@@ -101,6 +101,26 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/_apis/distributedtask/actions/archives/{owner}/{repo}/{sha}/archive.{fmt}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Dt Action Archive
+         * @description Serve an action archive, fetched from upstream once per SHA.
+         */
+        get: operations["dt_action_archive__apis_distributedtask_actions_archives__owner___repo___sha__archive__fmt__get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/_apis/distributedtask/connect": {
         parameters: {
             query?: never;
@@ -115,6 +135,31 @@ export interface paths {
          * @description Session negotiation. Runner opens a long-lived session.
          */
         post: operations["dt_connect__apis_distributedtask_connect_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/_apis/distributedtask/hubs/{hub_name}/plans/{plan_id}/actionsdownloadinfo": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Dt Resolve Action Download Info
+         * @description Resolve every `uses:` action in the job to a commit and an archive URL.
+         *
+         *     Called once by ActionManager before the first step runs, with the
+         *     repository references it found in the job. The archive URL points back
+         *     here: the runner downloads it with the job token as a Basic credential,
+         *     which GitHub would reject and this service can verify.
+         */
+        post: operations["dt_resolve_action_download_info__apis_distributedtask_hubs__hub_name__plans__plan_id__actionsdownloadinfo_post"];
         delete?: never;
         options?: never;
         head?: never;
@@ -713,15 +758,18 @@ export interface paths {
             cookie?: never;
         };
         /**
-         * Active Actions
-         * @description Every unfinished workflow run, newest activity first.
+         * List Runs
+         * @description Workflow runs across every repository, newest activity first.
          *
-         *     Actions state was only visible one repository at a time, which is the
-         *     wrong shape for the question people actually have: what is running right
-         *     now, and what is stuck. A run queued behind a missing runner label looks
-         *     identical to one about to start unless you can see them together.
+         *     Unfinished runs by default (``scope=active``), which is the question
+         *     people actually have: what is running right now, and what is stuck. A
+         *     run queued behind a missing runner label looks identical to one about
+         *     to start unless you can see them together. ``scope=all`` with a
+         *     ``status`` and ``repository`` filter and a page window is how a finished
+         *     run is found afterwards; the window is bounded because the run and job
+         *     tables are the ones that grow.
          */
-        get: operations["active_actions_admin_api_actions_get"];
+        get: operations["list_runs_admin_api_actions_get"];
         put?: never;
         post?: never;
         delete?: never;
@@ -908,6 +956,107 @@ export interface paths {
         };
         /** Issues */
         get: operations["issues_admin_api_issues_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/admin/api/jobs": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List Jobs
+         * @description Jobs across every repository and run, newest first.
+         *
+         *     Unfinished by default. The run list answers "which runs are stuck";
+         *     this answers the job-shaped questions that list cannot: what is each
+         *     runner doing, what has been queued longest on which label, and how a
+         *     job that is no longer in flight actually ended, which the run list
+         *     drops as soon as the run closes. A job settled as lost carries its
+         *     reason on the step it was on, and that is what ``current_step`` shows.
+         *     Bounded window, no relationship loads: this is the table that grew to
+         *     five thousand rows.
+         */
+        get: operations["list_jobs_admin_api_jobs_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/admin/api/jobs/{job_id}/fail": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Fail Lost Job
+         * @description Fail an in-progress job whose runner is gone, as a lost runner would.
+         *
+         *     GitHub's settlement for a job whose runner disappeared, on demand: the
+         *     step it was on fails with the lost-runner message, later steps are
+         *     skipped, and the run concludes.
+         */
+        post: operations["fail_lost_job_admin_api_jobs__job_id__fail_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/admin/api/jobs/{job_id}/requeue": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Requeue Job
+         * @description Put an unfinished job back on the queue, dropping its runner claim.
+         *
+         *     The settlement the emulator applies on its own to a claim its runner
+         *     never acted on, offered to the operator for a job they can see is
+         *     stranded. A finished job is left alone: re-running is the run-level
+         *     rerun's business.
+         */
+        post: operations["requeue_job_admin_api_jobs__job_id__requeue_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/admin/api/memory": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Memory
+         * @description The process's memory and in-flight requests, on demand.
+         *
+         *     The watchdog writes the same on threshold crossings; this is for looking
+         *     while something is slow rather than after it has died.
+         */
+        get: operations["memory_admin_api_memory_get"];
         put?: never;
         post?: never;
         delete?: never;
@@ -2247,6 +2396,34 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v3/repos/{owner}/{repo}/actions/permissions": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get Actions Permissions
+         * @description Whether Actions runs on this repository, GitHub's shape.
+         */
+        get: operations["get_actions_permissions_api_v3_repos__owner___repo__actions_permissions_get"];
+        /**
+         * Set Actions Permissions
+         * @description Enable or disable Actions on the repository.
+         *
+         *     Disabled means no event dispatches a run and workflow_dispatch is refused,
+         *     which is how a mirror of an upstream repository stops running upstream's
+         *     CI on every push.
+         */
+        put: operations["set_actions_permissions_api_v3_repos__owner___repo__actions_permissions_put"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v3/repos/{owner}/{repo}/actions/permissions/workflow": {
         parameters: {
             query?: never;
@@ -2584,6 +2761,13 @@ export interface paths {
         /**
          * Rerun Workflow
          * @description Re-run a workflow.
+         *
+         *     Rebuilt through the same path a fresh event takes - detect the workflow
+         *     at the run's commit, materialize its reusable workflows, create the run
+         *     from the stored trigger payload - rather than copying the old run's job
+         *     rows. The copy carried names, steps, labels and needs and nothing else;
+         *     dependents are matched on job_key, so their needs never resolved and a
+         *     rerun sat with every dependent waiting forever (2026-09-27, run 1589).
          */
         post: operations["rerun_workflow_api_v3_repos__owner___repo__actions_runs__run_id__rerun_post"];
         delete?: never;
@@ -4319,6 +4503,34 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v3/repos/{owner}/{repo}/releases/assets/{asset_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get Release Asset
+         * @description Get an asset, or its bytes when the client accepts an octet stream.
+         */
+        get: operations["get_release_asset_api_v3_repos__owner___repo__releases_assets__asset_id__get"];
+        put?: never;
+        post?: never;
+        /**
+         * Delete Release Asset
+         * @description Delete an asset and its bytes.
+         */
+        delete: operations["delete_release_asset_api_v3_repos__owner___repo__releases_assets__asset_id__delete"];
+        options?: never;
+        head?: never;
+        /**
+         * Update Release Asset
+         * @description Rename or relabel an asset.
+         */
+        patch: operations["update_release_asset_api_v3_repos__owner___repo__releases_assets__asset_id__patch"];
+        trace?: never;
+    };
     "/api/v3/repos/{owner}/{repo}/releases/latest": {
         parameters: {
             query?: never;
@@ -4385,6 +4597,33 @@ export interface paths {
          * @description Update a release.
          */
         patch: operations["update_release_api_v3_repos__owner___repo__releases__release_id__patch"];
+        trace?: never;
+    };
+    "/api/v3/repos/{owner}/{repo}/releases/{release_id}/assets": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List Release Assets
+         * @description List a release's assets.
+         */
+        get: operations["list_release_assets_api_v3_repos__owner___repo__releases__release_id__assets_get"];
+        put?: never;
+        /**
+         * Upload Release Asset
+         * @description Upload an asset: the raw request body, named by the query string.
+         *
+         *     GitHub serves this from uploads.github.com; the release's ``upload_url``
+         *     here points at this host, so a client that follows it lands here.
+         */
+        post: operations["upload_release_asset_api_v3_repos__owner___repo__releases__release_id__assets_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
         trace?: never;
     };
     "/api/v3/repos/{owner}/{repo}/stargazers": {
@@ -5072,6 +5311,26 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/{owner_}/{repo_}/_apis/distributedtask/actions/archives/{owner}/{repo}/{sha}/archive.{fmt}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Dt Action Archive
+         * @description Serve an action archive, fetched from upstream once per SHA.
+         */
+        get: operations["dt_action_archive__owner____repo____apis_distributedtask_actions_archives__owner___repo___sha__archive__fmt__get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/{owner}/{repo_name}.git/git-receive-pack": {
         parameters: {
             query?: never;
@@ -5260,6 +5519,31 @@ export interface paths {
          * @description Session negotiation. Runner opens a long-lived session.
          */
         post: operations["dt_connect__owner___repo___apis_distributedtask_connect_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/{owner}/{repo}/_apis/distributedtask/hubs/{hub_name}/plans/{plan_id}/actionsdownloadinfo": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Dt Resolve Action Download Info
+         * @description Resolve every `uses:` action in the job to a commit and an archive URL.
+         *
+         *     Called once by ActionManager before the first step runs, with the
+         *     repository references it found in the job. The archive URL points back
+         *     here: the runner downloads it with the job token as a Basic credential,
+         *     which GitHub would reject and this service can verify.
+         */
+        post: operations["dt_resolve_action_download_info__owner___repo___apis_distributedtask_hubs__hub_name__plans__plan_id__actionsdownloadinfo_post"];
         delete?: never;
         options?: never;
         head?: never;
@@ -5726,6 +6010,26 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/{owner}/{repo}/releases/download/{tag}/{name}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Browser Download Asset
+         * @description The browser download URL: the asset's bytes by release tag and name.
+         */
+        get: operations["browser_download_asset__owner___repo__releases_download__tag___name__get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
 }
 export type webhooks = Record<string, never>;
 export interface components {
@@ -5750,7 +6054,7 @@ export interface components {
         };
         /**
          * AdminActiveRunResponse
-         * @description A workflow run that has not finished, across every repository.
+         * @description A workflow run, across every repository; unfinished by default.
          */
         AdminActiveRunResponse: {
             /**
@@ -5760,6 +6064,8 @@ export interface components {
             active_jobs: components["schemas"]["AdminActiveJobResponse"][];
             /** Actor */
             actor?: string | null;
+            /** Conclusion */
+            conclusion?: string | null;
             /** Created At */
             created_at?: string | null;
             /** Event */
@@ -5873,6 +6179,77 @@ export interface components {
             /** Title */
             title: string;
         };
+        /** AdminJobPage */
+        AdminJobPage: {
+            /**
+             * Items
+             * @default []
+             */
+            items: components["schemas"]["AdminJobResponse"][];
+            /** Page */
+            page: number;
+            /** Per Page */
+            per_page: number;
+            /** Total Count */
+            total_count: number;
+        };
+        /**
+         * AdminJobResponse
+         * @description A job, across every repository and run; unfinished by default.
+         *
+         *     Job-shaped rather than run-shaped, because the questions that need it
+         *     are: what is each runner doing, what has been queued longest on which
+         *     label, and how did a job that is no longer in flight actually end.
+         */
+        AdminJobResponse: {
+            /** Completed At */
+            completed_at?: string | null;
+            /** Conclusion */
+            conclusion?: string | null;
+            /** Created At */
+            created_at?: string | null;
+            current_step?: components["schemas"]["AdminJobStepResponse"] | null;
+            /** Event */
+            event: string;
+            /** Id */
+            id: number;
+            /**
+             * Labels
+             * @default []
+             */
+            labels: string[];
+            /** Name */
+            name: string;
+            /** Repository */
+            repository: string;
+            /** Run Id */
+            run_id: number;
+            /** Run Number */
+            run_number: number;
+            /** Runner Name */
+            runner_name?: string | null;
+            /** Started At */
+            started_at?: string | null;
+            /** Status */
+            status: string;
+            /** Url */
+            url?: string | null;
+            /** Workflow */
+            workflow: string;
+        };
+        /** AdminJobStepResponse */
+        AdminJobStepResponse: {
+            /** Conclusion */
+            conclusion?: string | null;
+            /** Message */
+            message?: string | null;
+            /** Name */
+            name?: string | null;
+            /** Number */
+            number?: number | null;
+            /** Status */
+            status?: string | null;
+        };
         /** AdminOrganizationResponse */
         AdminOrganizationResponse: {
             /** Created At */
@@ -5913,6 +6290,23 @@ export interface components {
             owner_type: string;
             /** Private */
             private: boolean;
+        };
+        /**
+         * AdminRunPage
+         * @description One page of runs: the total that match, and the page asked for.
+         */
+        AdminRunPage: {
+            /**
+             * Items
+             * @default []
+             */
+            items: components["schemas"]["AdminActiveRunResponse"][];
+            /** Page */
+            page: number;
+            /** Per Page */
+            per_page: number;
+            /** Total Count */
+            total_count: number;
         };
         /** AdminRunnerResponse */
         AdminRunnerResponse: {
@@ -7502,6 +7896,18 @@ export interface components {
             id: number;
             /** Name */
             name: string;
+            /**
+             * Path
+             * @default
+             */
+            path: string;
+            /**
+             * Referenced Workflows
+             * @default []
+             */
+            referenced_workflows: {
+                [key: string]: unknown;
+            }[];
             /** Run Attempt */
             run_attempt: number;
             /** Run Number */
@@ -7624,6 +8030,40 @@ export interface operations {
             };
         };
     };
+    dt_action_archive__apis_distributedtask_actions_archives__owner___repo___sha__archive__fmt__get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                owner: string;
+                repo: string;
+                sha: string;
+                fmt: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     dt_connect__apis_distributedtask_connect_post: {
         parameters: {
             query?: never;
@@ -7640,6 +8080,38 @@ export interface operations {
                 };
                 content: {
                     "application/json": unknown;
+                };
+            };
+        };
+    };
+    dt_resolve_action_download_info__apis_distributedtask_hubs__hub_name__plans__plan_id__actionsdownloadinfo_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                hub_name: string;
+                plan_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
                 };
             };
         };
@@ -8690,10 +9162,14 @@ export interface operations {
             };
         };
     };
-    active_actions_admin_api_actions_get: {
+    list_runs_admin_api_actions_get: {
         parameters: {
             query?: {
-                limit?: number;
+                scope?: string;
+                status?: string | null;
+                repository?: string | null;
+                page?: number;
+                per_page?: number;
             };
             header?: never;
             path?: never;
@@ -8707,7 +9183,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["AdminActiveRunResponse"][];
+                    "application/json": components["schemas"]["AdminRunPage"];
                 };
             };
             /** @description Validation Error */
@@ -9133,6 +9609,121 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["AdminIssueResponse"][];
+                };
+            };
+        };
+    };
+    list_jobs_admin_api_jobs_get: {
+        parameters: {
+            query?: {
+                scope?: string;
+                status?: string | null;
+                runner?: string | null;
+                label?: string | null;
+                repository?: string | null;
+                page?: number;
+                per_page?: number;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AdminJobPage"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    fail_lost_job_admin_api_jobs__job_id__fail_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                job_id: number;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    requeue_job_admin_api_jobs__job_id__requeue_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                job_id: number;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    memory_admin_api_memory_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
                 };
             };
         };
@@ -11699,6 +12290,74 @@ export interface operations {
                 content: {
                     "application/json": unknown;
                 };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_actions_permissions_api_v3_repos__owner___repo__actions_permissions_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                owner: string;
+                repo: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    set_actions_permissions_api_v3_repos__owner___repo__actions_permissions_put: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                owner: string;
+                repo: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": {
+                    [key: string]: unknown;
+                };
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
             };
             /** @description Validation Error */
             422: {
@@ -16835,6 +17494,109 @@ export interface operations {
             };
         };
     };
+    get_release_asset_api_v3_repos__owner___repo__releases_assets__asset_id__get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                owner: string;
+                repo: string;
+                asset_id: number;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    delete_release_asset_api_v3_repos__owner___repo__releases_assets__asset_id__delete: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                owner: string;
+                repo: string;
+                asset_id: number;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    update_release_asset_api_v3_repos__owner___repo__releases_assets__asset_id__patch: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                owner: string;
+                repo: string;
+                asset_id: number;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": {
+                    [key: string]: unknown;
+                };
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     get_latest_release_api_v3_repos__owner___repo__releases_latest_get: {
         parameters: {
             query?: never;
@@ -16985,6 +17747,78 @@ export interface operations {
         responses: {
             /** @description Successful Response */
             200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    list_release_assets_api_v3_repos__owner___repo__releases__release_id__assets_get: {
+        parameters: {
+            query?: {
+                page?: number;
+                per_page?: number;
+            };
+            header?: never;
+            path: {
+                owner: string;
+                repo: string;
+                release_id: number;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    upload_release_asset_api_v3_repos__owner___repo__releases__release_id__assets_post: {
+        parameters: {
+            query?: {
+                name?: string;
+                label?: string | null;
+            };
+            header?: never;
+            path: {
+                owner: string;
+                repo: string;
+                release_id: number;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            201: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -18363,6 +19197,40 @@ export interface operations {
             };
         };
     };
+    dt_action_archive__owner____repo____apis_distributedtask_actions_archives__owner___repo___sha__archive__fmt__get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                owner: string;
+                repo: string;
+                sha: string;
+                fmt: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     git_receive_pack__owner___repo_name__git_git_receive_pack_post: {
         parameters: {
             query?: never;
@@ -18615,6 +19483,38 @@ export interface operations {
                 };
                 content: {
                     "application/json": unknown;
+                };
+            };
+        };
+    };
+    dt_resolve_action_download_info__owner___repo___apis_distributedtask_hubs__hub_name__plans__plan_id__actionsdownloadinfo_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                hub_name: string;
+                plan_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
                 };
             };
         };
@@ -19452,6 +20352,40 @@ export interface operations {
                 repo: string;
                 ref: string;
                 path: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    browser_download_asset__owner___repo__releases_download__tag___name__get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                owner: string;
+                repo: string;
+                tag: string;
+                name: string;
             };
             cookie?: never;
         };

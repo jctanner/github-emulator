@@ -418,7 +418,9 @@ async def test_admin_actions_lists_unfinished_runs_across_repos(
 
     listed = await client.get("/admin/api/actions", headers=headers)
     assert listed.status_code == 200, listed.text
-    body = listed.json()
+    page = listed.json()
+    assert page["page"] == 1 and page["per_page"] == 50
+    body = page["items"]
     ids = [row["id"] for row in body]
 
     assert made[0][1] in ids and made[1][1] in ids
@@ -487,7 +489,7 @@ async def test_admin_actions_keeps_runs_whose_repository_is_gone(
 
     listed = await client.get("/admin/api/actions", headers=headers)
     assert listed.status_code == 200, listed.text
-    row = next((r for r in listed.json() if r["id"] == run_id), None)
+    row = next((r for r in listed.json()["items"] if r["id"] == run_id), None)
     assert row is not None, "a run whose repository was deleted vanished from the list"
     assert str(repo_id) in row["repository"] and "deleted" in row["repository"]
     # No link, because there is nowhere to go.
@@ -546,7 +548,7 @@ async def test_admin_can_cancel_a_run_whose_repository_is_gone(
     assert cancelled.status_code == 204, cancelled.text
 
     listed = await client.get("/admin/api/actions", headers=headers)
-    assert run_id not in [r["id"] for r in listed.json()], "still listed as in flight"
+    assert run_id not in [r["id"] for r in listed.json()["items"]], "still listed as in flight"
 
     # The record survives, marked cancelled rather than removed.
     after = (await db_session.execute(
@@ -609,3 +611,140 @@ async def test_admin_cannot_delete_an_organization_that_owns_repositories(client
     assert repo.status_code == 201, repo.text
     resp = await client.delete(f"/admin/api/organizations/{created.json()['id']}", headers=headers)
     assert resp.status_code == 409
+
+
+# --- the job listing and its settlements ----------------------------------------
+
+async def _seed_runs_with_jobs(client, admin_token, db_session, count=3):
+    """A repository with `count` runs, each holding one finished and one
+    queued job, plus one in-progress job on a named runner in the last run."""
+    from datetime import datetime, timedelta
+    from app.models.actions import Workflow, WorkflowJob, WorkflowRun
+    headers = auth_headers(admin_token)
+    created = await client.post("/api/v3/user/repos", json={"name": "jobs-repo"}, headers=headers)
+    assert created.status_code in (200, 201), created.text
+    repo_id, full_name = created.json()["id"], created.json()["full_name"]
+    actor_id = (await db_session.execute(select(User))).scalars().first().id
+    workflow = Workflow(repo_id=repo_id, name="wf", path=".github/wf.yml")
+    db_session.add(workflow)
+    await db_session.flush()
+    base = datetime(2026, 9, 28, 12, 0, 0)
+    runs = []
+    for index in range(count):
+        run = WorkflowRun(
+            workflow_id=workflow.id, repo_id=repo_id, head_sha="a" * 40, head_branch="main",
+            event="push", status="in_progress", run_number=index + 1, run_attempt=1,
+            actor_id=actor_id, created_at=base + timedelta(minutes=index),
+            updated_at=base + timedelta(minutes=index),
+        )
+        db_session.add(run)
+        await db_session.flush()
+        db_session.add(WorkflowJob(run_id=run.id, name="done", status="completed", conclusion="success",
+                                   steps=[{"number": 1, "name": "a", "status": "completed", "conclusion": "success"}]))
+        db_session.add(WorkflowJob(run_id=run.id, name="waiting", status="queued", labels=["fullsend"]))
+        runs.append(run)
+    db_session.add(WorkflowJob(
+        run_id=runs[-1].id, name="running", status="in_progress", runner_name="fullsend-agent-runner",
+        started_at=base, labels=["fullsend"],
+        steps=[{"number": 1, "name": "checkout", "status": "completed", "conclusion": "success"},
+               {"number": 2, "name": "agent", "status": "in_progress", "conclusion": None}],
+    ))
+    await db_session.commit()
+    return full_name, runs
+
+
+@pytest.mark.asyncio
+async def test_admin_jobs_lists_unfinished_jobs_by_default_and_pages_all(client, admin_token, db_session):
+    full_name, runs = await _seed_runs_with_jobs(client, admin_token, db_session)
+    headers = auth_headers(admin_token)
+    listed = await client.get("/admin/api/jobs", headers=headers)
+    assert listed.status_code == 200, listed.text
+    page = listed.json()
+    names = [item["name"] for item in page["items"]]
+    assert "done" not in names, "a finished job was listed by default"
+    assert names.count("waiting") == 3 and names.count("running") == 1
+    assert page["total_count"] == 4
+    running = next(item for item in page["items"] if item["name"] == "running")
+    assert running["repository"] == full_name and running["runner_name"] == "fullsend-agent-runner"
+    assert running["current_step"]["name"] == "agent" and running["current_step"]["status"] == "in_progress"
+    assert running["url"] == f"/ui/{full_name}/actions/jobs/{running['id']}"
+
+    everything = (await client.get("/admin/api/jobs", params={"scope": "all", "per_page": 3, "page": 1}, headers=headers)).json()
+    assert everything["total_count"] == 7 and len(everything["items"]) == 3 and everything["page"] == 1
+    second = (await client.get("/admin/api/jobs", params={"scope": "all", "per_page": 3, "page": 3}, headers=headers)).json()
+    assert len(second["items"]) == 1
+    # Newest first, and the pages tile the whole listing without overlap.
+    whole = [i["id"] for i in (await client.get("/admin/api/jobs", params={"scope": "all", "per_page": 200}, headers=headers)).json()["items"]]
+    assert whole == sorted(whole, reverse=True) and len(whole) == 7
+    assert [i["id"] for i in everything["items"]] == whole[:3]
+    assert [i["id"] for i in second["items"]] == whole[6:]
+
+
+@pytest.mark.asyncio
+async def test_admin_jobs_filters_by_status_runner_label_and_repository(client, admin_token, db_session):
+    full_name, _runs = await _seed_runs_with_jobs(client, admin_token, db_session)
+    headers = auth_headers(admin_token)
+    by_status = (await client.get("/admin/api/jobs", params={"status": "completed"}, headers=headers)).json()
+    assert {i["name"] for i in by_status["items"]} == {"done"} and by_status["total_count"] == 3
+    by_runner = (await client.get("/admin/api/jobs", params={"scope": "all", "runner": "fullsend-agent-runner"}, headers=headers)).json()
+    assert [i["name"] for i in by_runner["items"]] == ["running"]
+    by_label = (await client.get("/admin/api/jobs", params={"label": "fullsend"}, headers=headers)).json()
+    assert by_label["total_count"] == 4 and all("fullsend" in i["labels"] for i in by_label["items"])
+    by_repo = (await client.get("/admin/api/jobs", params={"repository": "nobody/nowhere"}, headers=headers)).json()
+    assert by_repo["total_count"] == 0 and by_repo["items"] == []
+    by_repo = (await client.get("/admin/api/jobs", params={"repository": full_name}, headers=headers)).json()
+    assert by_repo["total_count"] == 4
+
+
+@pytest.mark.asyncio
+async def test_admin_actions_pages_and_shows_finished_runs_on_request(client, admin_token, db_session):
+    from app.models.actions import WorkflowRun
+    full_name, runs = await _seed_runs_with_jobs(client, admin_token, db_session)
+    runs[0].status, runs[0].conclusion = "completed", "success"
+    await db_session.commit()
+    headers = auth_headers(admin_token)
+    active = (await client.get("/admin/api/actions", headers=headers)).json()
+    assert active["total_count"] == 2 and all(r["status"] == "in_progress" for r in active["items"])
+    everything = (await client.get("/admin/api/actions", params={"scope": "all", "per_page": 2}, headers=headers)).json()
+    assert everything["total_count"] == 3 and len(everything["items"]) == 2
+    finished = (await client.get("/admin/api/actions", params={"status": "completed"}, headers=headers)).json()
+    assert [r["conclusion"] for r in finished["items"]] == ["success"]
+    scoped = (await client.get("/admin/api/actions", params={"scope": "all", "repository": full_name}, headers=headers)).json()
+    assert scoped["total_count"] == 3
+
+
+@pytest.mark.asyncio
+async def test_admin_can_requeue_a_stranded_job_and_fail_a_lost_one(client, admin_token, db_session):
+    from app.models.actions import WorkflowJob, WorkflowRun
+    _full_name, runs = await _seed_runs_with_jobs(client, admin_token, db_session)
+    headers = auth_headers(admin_token)
+    running = (await db_session.execute(
+        select(WorkflowJob).where(WorkflowJob.name == "running")
+    )).scalar_one()
+    done = (await db_session.execute(
+        select(WorkflowJob).where(WorkflowJob.name == "done", WorkflowJob.run_id == runs[-1].id)
+    )).scalar_one()
+    running_id, done_id, run_id = running.id, done.id, runs[-1].id
+
+    # Requeue drops the claim; a finished job is refused.
+    assert (await client.post(f"/admin/api/jobs/{running_id}/requeue", headers=headers)).status_code == 204
+    assert (await client.post(f"/admin/api/jobs/{done_id}/requeue", headers=headers)).status_code == 409
+    db_session.expire_all()
+    running = (await db_session.execute(select(WorkflowJob).where(WorkflowJob.id == running_id))).scalar_one()
+    assert running.status == "queued" and running.runner_name is None
+    assert all(step["status"] == "queued" for step in running.steps)
+
+    # Fail-as-lost: back to in progress with a step underway, then settle it.
+    running.status, running.runner_name = "in_progress", "fullsend-agent-runner"
+    running.steps = [{"number": 1, "name": "checkout", "status": "completed", "conclusion": "success"},
+                     {"number": 2, "name": "agent", "status": "in_progress", "conclusion": None}]
+    await db_session.commit()
+    assert (await client.post(f"/admin/api/jobs/{running_id}/fail", headers=headers)).status_code == 204
+    assert (await client.post(f"/admin/api/jobs/{done_id}/fail", headers=headers)).status_code == 409
+    db_session.expire_all()
+    running = (await db_session.execute(select(WorkflowJob).where(WorkflowJob.id == running_id))).scalar_one()
+    assert running.status == "completed" and running.conclusion == "failure"
+    assert "lost communication" in running.steps[1]["message"]
+    listed = (await client.get("/admin/api/jobs", params={"status": "completed", "runner": "fullsend-agent-runner"}, headers=headers)).json()
+    assert listed["items"][0]["current_step"]["message"].startswith("The self-hosted runner lost communication")
+    assert (await client.post("/admin/api/jobs/999999/fail", headers=headers)).status_code == 404

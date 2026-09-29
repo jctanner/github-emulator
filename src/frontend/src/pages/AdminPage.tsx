@@ -3,8 +3,15 @@ import {Link, useParams} from "react-router-dom";
 
 import {api} from "../api/client";
 import type {components} from "../api/schema";
+import {JobRow} from "../components/JobRow";
+import type {AdminJob} from "../components/JobRow";
 import {Loadable} from "../components/Loadable";
+import {PagedList} from "../components/PagedList";
+import type {ListQuery, Page} from "../components/PagedList";
+import {RunRow} from "../components/RunRow";
+import type {AdminRun} from "../components/RunRow";
 import {requireApiData, useApiData} from "../hooks/useApiData";
+import {listParams} from "../utils/listParams";
 
 type Summary = components["schemas"]["AdminSummaryResponse"];
 type User = components["schemas"]["AdminUserResponse"];
@@ -12,7 +19,6 @@ type Organization = components["schemas"]["AdminOrganizationResponse"];
 type Repository = components["schemas"]["AdminRepositoryResponse"];
 type Token = components["schemas"]["AdminTokenResponse"];
 type Runner = components["schemas"]["AdminRunnerResponse"];
-type ActiveRun = components["schemas"]["AdminActiveRunResponse"];
 type Import = components["schemas"]["AdminImportResponse"];
 type Issue = components["schemas"]["AdminIssueResponse"];
 type App = components["schemas"]["AdminAppResponse"];
@@ -883,81 +889,122 @@ function Apps() {
   );
 }
 
-function Actions() {
-  const values = useApiData<ActiveRun[]>("admin-actions", async () => {
-    const {data, response} = await api.GET("/admin/api/actions");
-    return requireApiData(data, response, "Could not load actions.");
+const RUN_STATUSES = [
+  "queued",
+  "waiting",
+  "pending",
+  "in_progress",
+  "completed",
+];
+const JOB_STATUSES = [
+  "queued",
+  "waiting",
+  "pending",
+  "in_progress",
+  "completed",
+];
+
+async function loadRuns(query: ListQuery): Promise<Page<AdminRun>> {
+  const {data, response} = await api.GET("/admin/api/actions", {
+    params: {query: listParams(query)},
   });
-  async function cancel(id: number) {
+  return requireApiData(data, response, "Could not load actions.");
+}
+
+function Actions() {
+  async function cancel(id: number, reload: () => void) {
     await api.POST("/admin/api/actions/{run_id}/cancel", {
       params: {path: {run_id: id}},
     });
-    values.reload();
+    reload();
   }
   return (
     <>
-      <h1>Actions in flight</h1>
+      <h1>Actions</h1>
       <p className="muted">
-        Every workflow run that has not finished, across all repositories, most
-        recent activity first.
+        Workflow runs across all repositories, most recent activity first.
+        Unfinished runs by default; widen to all and filter to find one that has
+        finished.
       </p>
-      <AdminList
-        {...values}
-        values={values.data}
-        row={(value) => (
-          <div className="list-row" key={value.id}>
-            <div>
-              <strong>
-                <a href={value.url ?? "#"}>
-                  {value.repository} #{value.run_number}
-                </a>
-              </strong>{" "}
-              <span className="muted">
-                {value.workflow} · {value.event} · {value.head_branch}
-                {value.run_attempt > 1 ? ` · attempt ${value.run_attempt}` : ""}
-              </span>
-            </div>
-            <div>
-              <span>{value.status}</span>{" "}
-              <span className="muted">
-                {value.jobs_completed}/{value.jobs_total} jobs done · updated{" "}
-                {value.updated_at ?? "never"}
-              </span>
-            </div>
-            {/* The unfinished jobs are what explain a stuck run: which one is
-                waiting, on which runner, and on which labels. A job queued on
-                a label no runner registers is the common case, and it is
-                invisible from the run's status alone. */}
-            {value.active_jobs.length > 0 ? (
-              <ul className="muted">
-                {value.active_jobs.map((job) => (
-                  <li key={job.id}>
-                    {job.name} — {job.status}
-                    {job.runner_name ? ` on ${job.runner_name}` : ""}
-                    {job.labels.length > 0
-                      ? ` · needs [${job.labels.join(", ")}]`
-                      : ""}
-                  </li>
-                ))}
-              </ul>
-            ) : (
-              <span className="muted">no unfinished jobs recorded</span>
-            )}
-            {/* Cancelling keeps the run and its jobs and stops them being in
-                flight, which is what GitHub does. Deleting would lose the
-                record of what was attempted. */}
-            <button type="button" onClick={() => void cancel(value.id)}>
-              Cancel
-            </button>
-          </div>
+      <PagedList<AdminRun>
+        storageKey="admin-actions"
+        load={loadRuns}
+        activeLabel="In flight"
+        filters={[
+          {
+            name: "status",
+            label: "Status",
+            options: RUN_STATUSES.map((value) => ({value, label: value})),
+          },
+          {name: "repository", label: "Repository", placeholder: "owner/name"},
+        ]}
+        row={(run, reload) => (
+          <RunRow
+            run={run}
+            key={run.id}
+            onCancel={(id) => void cancel(id, reload)}
+          />
         )}
+        emptyTitle="Nothing to show"
+        emptyText="No workflow run matches this scope and these filters."
       />
-      {values.data?.length === 0 ? (
-        <div className="settings-empty">
-          <h2>Nothing in flight</h2>
-          <p className="muted">Every workflow run has finished.</p>
-        </div>
-      ) : null}
+    </>
+  );
+}
+
+async function loadJobs(query: ListQuery): Promise<Page<AdminJob>> {
+  const {data, response} = await api.GET("/admin/api/jobs", {
+    params: {query: listParams(query)},
+  });
+  return requireApiData(data, response, "Could not load jobs.");
+}
+
+function Jobs() {
+  async function requeue(id: number, reload: () => void) {
+    await api.POST("/admin/api/jobs/{job_id}/requeue", {
+      params: {path: {job_id: id}},
+    });
+    reload();
+  }
+  async function fail(id: number, reload: () => void) {
+    await api.POST("/admin/api/jobs/{job_id}/fail", {
+      params: {path: {job_id: id}},
+    });
+    reload();
+  }
+  return (
+    <>
+      <h1>Jobs</h1>
+      <p className="muted">
+        Jobs across all repositories and runs, newest first. The run list says
+        which runs are stuck; this says what each runner is doing, what has been
+        queued longest on which label, and how a job that is no longer in flight
+        actually ended.
+      </p>
+      <PagedList<AdminJob>
+        storageKey="admin-jobs"
+        load={loadJobs}
+        filters={[
+          {
+            name: "status",
+            label: "Status",
+            options: JOB_STATUSES.map((value) => ({value, label: value})),
+          },
+          {name: "runner", label: "Runner", placeholder: "runner name"},
+          {name: "label", label: "Label", placeholder: "fullsend"},
+          {name: "repository", label: "Repository", placeholder: "owner/name"},
+        ]}
+        row={(job, reload) => (
+          <JobRow
+            job={job}
+            key={job.id}
+            onRequeue={(id) => void requeue(id, reload)}
+            onFail={(id) => void fail(id, reload)}
+          />
+        )}
+        emptyTitle="Nothing to show"
+        emptyText="No job matches this scope and these filters."
+      />
     </>
   );
 }
@@ -1219,6 +1266,8 @@ export function AdminPage() {
       <Apps />
     ) : current === "actions" ? (
       <Actions />
+    ) : current === "jobs" ? (
+      <Jobs />
     ) : current === "runners" ? (
       <Runners />
     ) : current === "imports" ? (
@@ -1236,6 +1285,7 @@ export function AdminPage() {
     ["tokens", "Tokens"],
     ["apps", "GitHub Apps"],
     ["actions", "Actions"],
+    ["jobs", "Jobs"],
     ["runners", "Runners"],
     ["issues", "Issues"],
     ["imports", "Imports"],

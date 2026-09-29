@@ -133,9 +133,7 @@ export function IssueDetailPage() {
                         page.data.issue.created_at,
                       ).toLocaleString()}
                     >
-                      {new Date(
-                        page.data.issue.created_at,
-                      ).toLocaleString()}
+                      {new Date(page.data.issue.created_at).toLocaleString()}
                     </time>
                   </span>
                   {user &&

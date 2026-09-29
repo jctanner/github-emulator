@@ -18,6 +18,8 @@ from app.models.repository import Repository
 from app.models.token import PersonalAccessToken
 from app.models.user import User
 from app.schemas.admin import (
+    AdminJobPage,
+    AdminRunPage,
     AdminActiveRunResponse,
     AdminImportResponse, AdminIssueResponse, AdminOrganizationResponse, AdminRepositoryResponse,
     AdminRunnerResponse, AdminSummaryResponse, AdminTokenCreatedResponse,
@@ -350,20 +352,56 @@ async def import_job(job_id: int, user: AuthUser, db: DbSession):
 _ACTIVE_RUN_STATUSES = ("queued", "in_progress", "waiting", "pending", "requested")
 
 
-@router.get("/actions", response_model=list[AdminActiveRunResponse])
-async def active_actions(user: AuthUser, db: DbSession, limit: int = 200):
-    """Every unfinished workflow run, newest activity first.
+_ACTIVE_JOB_STATUSES = ("queued", "in_progress", "waiting", "pending")
+_MAX_PER_PAGE = 200
 
-    Actions state was only visible one repository at a time, which is the
-    wrong shape for the question people actually have: what is running right
-    now, and what is stuck. A run queued behind a missing runner label looks
-    identical to one about to start unless you can see them together.
+
+def _page_window(page: int, per_page: int) -> tuple[int, int]:
+    page = max(1, page)
+    per_page = max(1, min(per_page, _MAX_PER_PAGE))
+    return page, per_page
+
+
+@router.get("/actions", response_model=AdminRunPage)
+async def list_runs(
+    user: AuthUser, db: DbSession,
+    scope: str = "active", status: str | None = None, repository: str | None = None,
+    page: int = 1, per_page: int = 50,
+):
+    """Workflow runs across every repository, newest activity first.
+
+    Unfinished runs by default (``scope=active``), which is the question
+    people actually have: what is running right now, and what is stuck. A
+    run queued behind a missing runner label looks identical to one about
+    to start unless you can see them together. ``scope=all`` with a
+    ``status`` and ``repository`` filter and a page window is how a finished
+    run is found afterwards; the window is bounded because the run and job
+    tables are the ones that grow.
     """
     _require_admin(user)
+    page, per_page = _page_window(page, per_page)
+    conditions = []
+    if status:
+        conditions.append(WorkflowRun.status == status)
+    elif scope != "all":
+        conditions.append(WorkflowRun.status.in_(_ACTIVE_RUN_STATUSES))
+    if repository:
+        conditions.append(Repository.full_name == repository)
+    base = (
+        select(WorkflowRun)
+        # Outer, deliberately. An inner join here dropped every run whose
+        # repository had been deleted — on this stack that was 43 of 73
+        # in-flight runs, and the page would have reported 30 and looked
+        # complete. Deleting a repository does not delete its runs, so those
+        # rows are exactly the ones an operator is least likely to know about.
+        .outerjoin(Repository, Repository.id == WorkflowRun.repo_id)
+        .where(*conditions)
+    )
+    total = (await db.execute(select(func.count()).select_from(base.subquery()))).scalar() or 0
     rows = (await db.execute(
         select(
             WorkflowRun.id, WorkflowRun.repo_id,
-            WorkflowRun.event, WorkflowRun.status,
+            WorkflowRun.event, WorkflowRun.status, WorkflowRun.conclusion,
             WorkflowRun.head_branch, WorkflowRun.run_number,
             WorkflowRun.run_attempt, WorkflowRun.created_at,
             WorkflowRun.updated_at,
@@ -371,74 +409,218 @@ async def active_actions(user: AuthUser, db: DbSession, limit: int = 200):
             Workflow.name.label("workflow"),
             User.login.label("actor"),
         )
-        # Outer, deliberately. An inner join here dropped every run whose
-        # repository had been deleted — on this stack that was 43 of 73
-        # in-flight runs, and the page would have reported 30 and looked
-        # complete. Deleting a repository does not delete its runs, so those
-        # rows are exactly the ones an operator is least likely to know about.
         .outerjoin(Repository, Repository.id == WorkflowRun.repo_id)
         .outerjoin(Workflow, Workflow.id == WorkflowRun.workflow_id)
         .outerjoin(User, User.id == WorkflowRun.actor_id)
-        .where(WorkflowRun.status.in_(_ACTIVE_RUN_STATUSES))
+        .where(*conditions)
         .order_by(WorkflowRun.updated_at.desc(), WorkflowRun.id.desc())
-        .limit(limit)
+        .offset((page - 1) * per_page)
+        .limit(per_page)
     )).all()
-    if not rows:
-        return []
+    items = []
+    if rows:
+        run_ids = [row.id for row in rows]
+        jobs = (await db.execute(
+            select(WorkflowJob).where(WorkflowJob.run_id.in_(run_ids))
+        )).scalars().all()
+        by_run: dict[int, list[WorkflowJob]] = {}
+        for job in jobs:
+            by_run.setdefault(job.run_id, []).append(job)
+        for row in rows:
+            run_jobs = by_run.get(row.id, [])
+            # Only the unfinished jobs are listed. On a stuck run those are the
+            # ones that explain it, and a finished run's job list is available
+            # from the run itself.
+            active = [job for job in run_jobs if job.status != "completed"]
+            # Named rather than blank: an empty repository column reads as a
+            # display bug, while "#12 (deleted repository)" reads as the fact it
+            # is — a run still queued against something that no longer exists.
+            repository_name = row.repository or f"#{row.repo_id} (deleted repository)"
+            items.append({
+                "id": row.id,
+                "repository": repository_name,
+                "workflow": row.workflow or "(unknown workflow)",
+                "event": row.event,
+                "status": row.status,
+                "conclusion": row.conclusion,
+                "head_branch": row.head_branch,
+                "run_number": row.run_number,
+                "run_attempt": row.run_attempt,
+                "actor": row.actor,
+                "created_at": _fmt_dt(row.created_at),
+                "updated_at": _fmt_dt(row.updated_at),
+                "jobs_total": len(run_jobs),
+                "jobs_completed": sum(1 for job in run_jobs if job.status == "completed"),
+                "active_jobs": [
+                    {
+                        "id": job.id,
+                        "name": job.name,
+                        "status": job.status,
+                        "runner_name": job.runner_name,
+                        # The labels a job is waiting to be matched on. A job
+                        # queued forever is usually queued on a label no runner
+                        # registers, and that is invisible without this.
+                        "labels": list(job.labels or []),
+                        "started_at": _fmt_dt(job.started_at),
+                    }
+                    for job in sorted(active, key=lambda j: j.id)
+                ],
+                "url": (
+                    f"/ui/{row.repository}/actions/runs/{row.id}"
+                    if row.repository else None
+                ),
+            })
+    return {"total_count": total, "page": page, "per_page": per_page, "items": items}
 
-    run_ids = [row.id for row in rows]
-    jobs = (await db.execute(
-        select(WorkflowJob).where(WorkflowJob.run_id.in_(run_ids))
-    )).scalars().all()
-    by_run: dict[int, list[WorkflowJob]] = {}
-    for job in jobs:
-        by_run.setdefault(job.run_id, []).append(job)
 
-    results = []
-    for row in rows:
-        run_jobs = by_run.get(row.id, [])
-        # Only the unfinished jobs are listed. On a stuck run those are the
-        # ones that explain it, and a finished run's job list is available
-        # from the run itself.
-        active = [job for job in run_jobs if job.status != "completed"]
-        # Named rather than blank: an empty repository column reads as a
-        # display bug, while "#12 (deleted repository)" reads as the fact it
-        # is — a run still queued against something that no longer exists.
-        repository = row.repository or f"#{row.repo_id} (deleted repository)"
-        results.append({
-            "id": row.id,
-            "repository": repository,
-            "workflow": row.workflow or "(unknown workflow)",
-            "event": row.event,
-            "status": row.status,
-            "head_branch": row.head_branch,
-            "run_number": row.run_number,
-            "run_attempt": row.run_attempt,
-            "actor": row.actor,
-            "created_at": _fmt_dt(row.created_at),
-            "updated_at": _fmt_dt(row.updated_at),
-            "jobs_total": len(run_jobs),
-            "jobs_completed": sum(1 for job in run_jobs if job.status == "completed"),
-            "active_jobs": [
-                {
-                    "id": job.id,
-                    "name": job.name,
-                    "status": job.status,
-                    "runner_name": job.runner_name,
-                    # The labels a job is waiting to be matched on. A job
-                    # queued forever is usually queued on a label no runner
-                    # registers, and that is invisible without this.
-                    "labels": list(job.labels or []),
-                    "started_at": _fmt_dt(job.started_at),
-                }
-                for job in sorted(active, key=lambda j: j.id)
-            ],
-            "url": (
-                f"/ui/{row.repository}/actions/runs/{row.id}"
-                if row.repository else None
-            ),
+def _current_step(steps: list | None) -> dict | None:
+    """The step a job is on, or ended on: the first that is not finished
+    with success, else the last one."""
+    steps = [step for step in (steps or []) if isinstance(step, dict)]
+    if not steps:
+        return None
+    chosen = next(
+        (step for step in steps if not (step.get("status") == "completed" and step.get("conclusion") == "success")),
+        steps[-1],
+    )
+    return {
+        "number": chosen.get("number"),
+        "name": chosen.get("name"),
+        "status": chosen.get("status"),
+        "conclusion": chosen.get("conclusion"),
+        "message": chosen.get("message"),
+    }
+
+
+@router.get("/jobs", response_model=AdminJobPage)
+async def list_jobs(
+    user: AuthUser, db: DbSession,
+    scope: str = "active", status: str | None = None, runner: str | None = None,
+    label: str | None = None, repository: str | None = None,
+    page: int = 1, per_page: int = 50,
+):
+    """Jobs across every repository and run, newest first.
+
+    Unfinished by default. The run list answers "which runs are stuck";
+    this answers the job-shaped questions that list cannot: what is each
+    runner doing, what has been queued longest on which label, and how a
+    job that is no longer in flight actually ended, which the run list
+    drops as soon as the run closes. A job settled as lost carries its
+    reason on the step it was on, and that is what ``current_step`` shows.
+    Bounded window, no relationship loads: this is the table that grew to
+    five thousand rows.
+    """
+    _require_admin(user)
+    page, per_page = _page_window(page, per_page)
+    conditions = []
+    if status:
+        conditions.append(WorkflowJob.status == status)
+    elif scope != "all":
+        conditions.append(WorkflowJob.status.in_(_ACTIVE_JOB_STATUSES))
+    if runner:
+        conditions.append(WorkflowJob.runner_name == runner)
+    if repository:
+        conditions.append(Repository.full_name == repository)
+    base = (
+        select(WorkflowJob)
+        .join(WorkflowRun, WorkflowRun.id == WorkflowJob.run_id)
+        .outerjoin(Repository, Repository.id == WorkflowRun.repo_id)
+        .where(*conditions)
+    )
+    query = (
+        select(
+            WorkflowJob, WorkflowRun.repo_id, WorkflowRun.run_number, WorkflowRun.event,
+            Repository.full_name.label("repository"), Workflow.name.label("workflow"),
+        )
+        .join(WorkflowRun, WorkflowRun.id == WorkflowJob.run_id)
+        .outerjoin(Repository, Repository.id == WorkflowRun.repo_id)
+        .outerjoin(Workflow, Workflow.id == WorkflowRun.workflow_id)
+        .where(*conditions)
+        .order_by(WorkflowJob.id.desc())
+    )
+    if label:
+        # Labels are a JSON list; filter in Python over the bounded window
+        # rather than teach SQLite JSON matching. The window is what makes
+        # this affordable, and a label filter is a rare, operator-driven ask.
+        rows = (await db.execute(query.limit(_MAX_PER_PAGE * 10))).all()
+        rows = [row for row in rows if label in (row[0].labels or [])]
+        total = len(rows)
+        rows = rows[(page - 1) * per_page:page * per_page]
+    else:
+        total = (await db.execute(select(func.count()).select_from(base.subquery()))).scalar() or 0
+        rows = (await db.execute(query.offset((page - 1) * per_page).limit(per_page))).all()
+    items = []
+    for job, repo_id, run_number, event, repository_name, workflow_name in rows:
+        repository_label = repository_name or f"#{repo_id} (deleted repository)"
+        items.append({
+            "id": job.id,
+            "run_id": job.run_id,
+            "repository": repository_label,
+            "workflow": workflow_name or "(unknown workflow)",
+            "run_number": run_number,
+            "event": event,
+            "name": job.name,
+            "status": job.status,
+            "conclusion": job.conclusion,
+            "runner_name": job.runner_name,
+            "labels": list(job.labels or []),
+            "created_at": _fmt_dt(job.created_at),
+            "started_at": _fmt_dt(job.started_at),
+            "completed_at": _fmt_dt(job.completed_at),
+            "current_step": _current_step(job.steps),
+            "url": f"/ui/{repository_name}/actions/jobs/{job.id}" if repository_name else None,
         })
-    return results
+    return {"total_count": total, "page": page, "per_page": per_page, "items": items}
+
+
+@router.post("/jobs/{job_id}/requeue", status_code=204)
+async def requeue_job(job_id: int, user: AuthUser, db: DbSession):
+    """Put an unfinished job back on the queue, dropping its runner claim.
+
+    The settlement the emulator applies on its own to a claim its runner
+    never acted on, offered to the operator for a job they can see is
+    stranded. A finished job is left alone: re-running is the run-level
+    rerun's business.
+    """
+    _require_admin(user)
+    from app.api.actions_dispatch import _requeue
+
+    job = (await db.execute(select(WorkflowJob).where(WorkflowJob.id == job_id))).scalar_one_or_none()
+    if job is None:
+        raise HTTPException(status_code=404, detail="Not Found")
+    if job.status == "completed":
+        raise HTTPException(status_code=409, detail="the job has finished; rerun the run instead")
+    _requeue(job)
+    await db.commit()
+    return Response(status_code=204)
+
+
+@router.post("/jobs/{job_id}/fail", status_code=204)
+async def fail_lost_job(job_id: int, user: AuthUser, db: DbSession):
+    """Fail an in-progress job whose runner is gone, as a lost runner would.
+
+    GitHub's settlement for a job whose runner disappeared, on demand: the
+    step it was on fails with the lost-runner message, later steps are
+    skipped, and the run concludes.
+    """
+    _require_admin(user)
+    from app.api.actions_dispatch import _lose_job
+    from app.services.workflow_service import check_run_completion, dispatch_ready_jobs
+
+    job = (await db.execute(select(WorkflowJob).where(WorkflowJob.id == job_id))).scalar_one_or_none()
+    if job is None:
+        raise HTTPException(status_code=404, detail="Not Found")
+    if job.status != "in_progress":
+        raise HTTPException(status_code=409, detail="only an in-progress job can be failed as lost")
+    if not _lose_job(job):
+        # Nothing had started: the settlement is a requeue, and it happened.
+        await db.commit()
+        return Response(status_code=204)
+    await db.commit()
+    await dispatch_ready_jobs(db, job.run_id)
+    await check_run_completion(db, job.run_id)
+    await db.commit()
+    return Response(status_code=204)
 
 
 @router.post("/actions/{run_id}/cancel", status_code=204)

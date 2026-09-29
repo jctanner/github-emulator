@@ -131,13 +131,14 @@ class AdminActiveJobResponse(BaseModel):
 
 
 class AdminActiveRunResponse(BaseModel):
-    """A workflow run that has not finished, across every repository."""
+    """A workflow run, across every repository; unfinished by default."""
 
     id: int
     repository: str
     workflow: str
     event: str
     status: str
+    conclusion: str | None = None
     head_branch: str
     run_number: int
     run_attempt: int
@@ -150,3 +151,55 @@ class AdminActiveRunResponse(BaseModel):
     jobs_completed: int = 0
     active_jobs: list[AdminActiveJobResponse] = []
     url: str | None = None
+
+
+class AdminRunPage(BaseModel):
+    """One page of runs: the total that match, and the page asked for."""
+
+    total_count: int
+    page: int
+    per_page: int
+    items: list[AdminActiveRunResponse] = []
+
+
+class AdminJobStepResponse(BaseModel):
+    number: int | None = None
+    name: str | None = None
+    status: str | None = None
+    conclusion: str | None = None
+    message: str | None = None
+
+
+class AdminJobResponse(BaseModel):
+    """A job, across every repository and run; unfinished by default.
+
+    Job-shaped rather than run-shaped, because the questions that need it
+    are: what is each runner doing, what has been queued longest on which
+    label, and how did a job that is no longer in flight actually end.
+    """
+
+    id: int
+    run_id: int
+    repository: str
+    workflow: str
+    run_number: int
+    event: str
+    name: str
+    status: str
+    conclusion: str | None = None
+    runner_name: str | None = None
+    labels: list[str] = []
+    created_at: str | None = None
+    started_at: str | None = None
+    completed_at: str | None = None
+    # The step the job is on, or ended on: its message is where a settled
+    # job says why (a lost runner, a shutdown signal).
+    current_step: AdminJobStepResponse | None = None
+    url: str | None = None
+
+
+class AdminJobPage(BaseModel):
+    total_count: int
+    page: int
+    per_page: int
+    items: list[AdminJobResponse] = []
