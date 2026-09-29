@@ -43,6 +43,18 @@ class GitHubUser:
         return _node_id("User", self.database_id)
 
     @strawberry.field
+    async def contributions_collection(
+        self,
+        info: Info,
+        from_: Annotated[Optional[datetime], strawberry.argument(name="from")] = None,
+        to: Optional[datetime] = None,
+    ) -> Annotated["ContributionsCollection", strawberry.lazy("app.graphql.types.contributions")]:
+        """The user's contribution calendar and totals over a window of at
+        most a year (see app.graphql.types.contributions)."""
+        from app.graphql.types.contributions import resolve_contributions_collection
+        return await resolve_contributions_collection(info, self.database_id, from_, to)
+
+    @strawberry.field
     async def repositories(
         self,
         info: Info,
