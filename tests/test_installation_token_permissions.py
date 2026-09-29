@@ -119,3 +119,38 @@ async def test_the_git_transport_honours_the_tokens_contents_permission(client, 
     assert push.status_code == 403
     write = _bearer(await _mint(client, installation_id, app, [repo], {"contents": "write"}))
     assert (await client.get(f"/{owner}/{repo}.git/info/refs?service=git-receive-pack", headers=write)).status_code == 200
+
+
+async def test_variables_and_secrets_are_their_own_app_permissions(client, admin_token, test_repo_with_init):
+    """An onboarding App carries actions_variables: write and secrets: write,
+    not actions; setting a repository variable was refused for want of
+    actions (2026-09-29, experiment/testrepo)."""
+    owner, repo, _ = test_repo_with_init
+    installation_id, app = await _app(
+        client, admin_token, "4006", "onboarder",
+        {"contents": "write", "actions_variables": "write", "secrets": "write", "metadata": "read"}, [],
+    )
+    headers = _bearer(await _mint(client, installation_id, app, [repo]))
+    variable = await client.post(
+        f"{API}/repos/{owner}/{repo}/actions/variables", headers=headers,
+        json={"name": "FULLSEND_GCP_REGION", "value": "global"},
+    )
+    assert variable.status_code in (201, 204), variable.text
+    public_key = await client.get(f"{API}/repos/{owner}/{repo}/actions/secrets/public-key", headers=headers)
+    assert public_key.status_code == 200, public_key.text
+    # No actions permission: a workflow dispatch is still refused.
+    dispatch = await client.post(
+        f"{API}/repos/{owner}/{repo}/actions/workflows/x.yml/dispatches", headers=headers, json={"ref": "main"},
+    )
+    assert dispatch.status_code == 403
+
+    read_only_id, read_only_app = await _app(
+        client, admin_token, "4007", "reader2", {"actions_variables": "read", "metadata": "read"}, [],
+    )
+    reader = _bearer(await _mint(client, read_only_id, read_only_app, [repo]))
+    assert (await client.get(f"{API}/repos/{owner}/{repo}/actions/variables", headers=reader)).status_code == 200
+    denied = await client.post(
+        f"{API}/repos/{owner}/{repo}/actions/variables", headers=reader,
+        json={"name": "X", "value": "y"},
+    )
+    assert denied.status_code == 403 and "actions_variables" in denied.text

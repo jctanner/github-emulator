@@ -206,6 +206,27 @@ def _repository_in_path(path: str) -> str | None:
     return f"{m.group(1)}/{m.group(2)}" if m else None
 
 
+_INSTALLATION_SCOPES = (
+    ("actions/variables", "actions-variables"),
+    ("actions/secrets", "secrets"),
+    ("actions/organization-variables", "actions-variables"),
+    ("actions/organization-secrets", "secrets"),
+)
+
+
+def _installation_scope(path: str) -> str | None:
+    """The App permission that governs a repository route the job-token map
+    files under a coarser scope, or None when the map's answer stands."""
+    m = _REPO_PATH.match(path)
+    if not m:
+        return None
+    rest = path[m.end():].split("?", 1)[0]
+    for prefix, scope in _INSTALLATION_SCOPES:
+        if rest == prefix or rest.startswith(prefix + "/"):
+            return scope
+    return None
+
+
 def _check_installation_token_route(token, method: str, path: str, query: str = "") -> None:
     """Refuse a route an installation token's scope does not cover."""
     target = _repository_in_path(path)
@@ -223,12 +244,22 @@ def _check_installation_token_route(token, method: str, path: str, query: str = 
     # Installation permissions are spelled pull_requests; the job-token
     # checker, whose route map this reuses, spells them pull-requests.
     permissions = {str(k).lower().replace("_", "-"): str(v).lower() for k, v in (token.permissions or {}).items()}
+    is_read = method.upper() in ("GET", "HEAD", "OPTIONS")
+    fine_grained = _installation_scope(path)
     if _GIT_PATH.match(path):
         needed = "write" if path.endswith("git-receive-pack") or "service=git-receive-pack" in query else "read"
         granted = permissions.get("contents", "none")
         if granted == "write" or (granted == "read" and needed == "read"):
             return
         refusal = f"the token's contents permission is {granted}, which does not allow this"
+    elif fine_grained is not None:
+        # An App permission the job-token map has no name for: GitHub
+        # grants repository variables and secrets to Apps as their own
+        # permissions (actions_variables, secrets), not under actions.
+        granted = permissions.get(fine_grained, "none")
+        if granted == "write" or (granted == "read" and is_read):
+            return
+        refusal = f"the token's {fine_grained.replace('-', '_')} permission is {granted}, which does not allow this"
     else:
         refusal = job_permissions.check(method, path, permissions)
     if refusal is not None:
