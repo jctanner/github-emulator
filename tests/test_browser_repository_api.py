@@ -1,5 +1,7 @@
 """UI-oriented repository summary API tests."""
 
+import base64
+
 import pytest
 
 from tests.conftest import auth_headers
@@ -89,3 +91,49 @@ async def test_repository_navigation_counts_issues_and_pulls_separately(
         "open_issues_count": 1,
         "open_pulls_count": 1,
     }
+
+
+@pytest.mark.asyncio
+async def test_ui_tree_lists_entries_with_last_commit(
+    client, test_token, test_repo_with_init
+):
+    """The UI tree read returns each entry's own last commit, dirs first."""
+    owner, repo_name, _ = test_repo_with_init
+    for path, message in (
+        ("docs/guide.md", "Add the guide"),
+        ("zzz.txt", "Add zzz"),
+    ):
+        created = await client.put(
+            f"{API}/repos/{owner}/{repo_name}/contents/{path}",
+            json={
+                "message": message,
+                "content": base64.b64encode(b"x").decode(),
+            },
+            headers=auth_headers(test_token),
+        )
+        assert created.status_code == 201
+
+    root = await client.get(f"{UI_API}/repos/{owner}/{repo_name}/tree")
+    assert root.status_code == 200
+    body = root.json()
+    assert body["path"] == ""
+    assert body["latest_commit"]["message"] == "Add zzz"
+    assert len(body["latest_commit"]["short_sha"]) == 7
+    by_name = {entry["name"]: entry for entry in body["entries"]}
+    assert body["entries"][0]["name"] == "docs"  # directories first
+    assert by_name["docs"]["type"] == "dir"
+    assert by_name["docs"]["last_commit"]["message"] == "Add the guide"
+    assert by_name["zzz.txt"]["last_commit"]["message"] == "Add zzz"
+    assert by_name["README.md"]["last_commit"]["message"] != "Add zzz"
+
+    sub = await client.get(
+        f"{UI_API}/repos/{owner}/{repo_name}/tree", params={"path": "docs"}
+    )
+    assert sub.status_code == 200
+    assert sub.json()["entries"][0]["path"] == "docs/guide.md"
+    assert sub.json()["latest_commit"]["message"] == "Add the guide"
+
+    missing = await client.get(
+        f"{UI_API}/repos/{owner}/{repo_name}/tree", params={"path": "nope"}
+    )
+    assert missing.status_code == 404

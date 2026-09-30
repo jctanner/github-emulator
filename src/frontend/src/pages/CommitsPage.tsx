@@ -1,4 +1,4 @@
-import {Link, useParams} from "react-router-dom";
+import {Link, useParams, useSearchParams} from "react-router-dom";
 
 import {api} from "../api/client";
 import type {components} from "../api/schema";
@@ -10,13 +10,18 @@ type Commit = components["schemas"]["CommitResponse"];
 
 export function CommitsPage() {
   const {owner = "", repo = "", ref = "main"} = useParams();
+  const [searchParams] = useSearchParams();
+  const path = searchParams.get("path") ?? "";
   const result = useApiData<Commit[]>(
-    `commits:${owner}/${repo}:${ref}`,
+    `commits:${owner}/${repo}:${ref}:${path}`,
     async () => {
       const {data, response} = await api.GET(
         "/api/v3/repos/{owner}/{repo}/commits",
         {
-          params: {path: {owner, repo}, query: {sha: ref}},
+          params: {
+            path: {owner, repo},
+            query: {sha: ref, ...(path ? {path} : {})},
+          },
         },
       );
       return requireApiData(data, response, "Could not load commits.");
@@ -27,6 +32,7 @@ export function CommitsPage() {
       <div className="page-heading">
         <h1>
           <Octicon name="history" /> Commits on {ref}
+          {path ? <> &middot; {path}</> : null}
         </h1>
       </div>
       <Loadable loading={result.loading} error={result.error}>

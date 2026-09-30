@@ -25,6 +25,7 @@ Actions visibility and runner evaluation.
 
 ## Completed Tasks
 
+- `docs/tasks/done/repository-home-last-commit-columns.md`
 - `docs/tasks/done/graphql-user-contributions-collection.md`
 - `docs/tasks/done/pull-detail-request-latency.md`
 - `docs/tasks/done/pat-last-used-write-amplification.md`

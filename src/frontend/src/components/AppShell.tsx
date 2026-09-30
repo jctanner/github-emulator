@@ -47,7 +47,6 @@ export function AppShell({children}: PropsWithChildren) {
         </button>
         <Link className="brand" to="/" aria-label="GitHub Emulator home">
           <Octicon name="mark-github" size={32} />
-          <span>GitHub Emulator</span>
         </Link>
         <nav className="global-nav" aria-label="Global navigation">
           <Link to="/">Dashboard</Link>

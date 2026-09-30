@@ -1,35 +1,50 @@
 import {render, screen} from "@testing-library/react";
 import {MemoryRouter} from "react-router-dom";
-import {afterEach, describe, expect, it, vi} from "vitest";
+import {describe, expect, it} from "vitest";
 
 import {RepositoryActivity} from "./RepositoryActivity";
 
-afterEach(() => vi.unstubAllGlobals());
+const summary = {
+  default_branch: "main",
+  commit_count: 7,
+  branch_count: 3,
+  tag_count: 2,
+};
 
 describe("RepositoryActivity", () => {
-  it("loads counts for and links to the selected branch", async () => {
-    const fetchMock = vi.fn<typeof fetch>().mockResolvedValue(
-      Response.json({
-        default_branch: "main",
-        commit_count: 7,
-        branch_count: 3,
-        tag_count: 2,
-      }),
-    );
-    vi.stubGlobal("fetch", fetchMock);
-
+  it("shows branch and tag counts and links to their lists", () => {
     render(
       <MemoryRouter>
-        <RepositoryActivity owner="octo" repo="demo" ref="feature/test" />
+        <RepositoryActivity
+          owner="octo"
+          repo="demo"
+          summary={{data: summary, loading: false}}
+        />
       </MemoryRouter>,
     );
 
-    expect(await screen.findByText("7")).toBeVisible();
-    expect(screen.getByRole("link", {name: /7 commits/})).toHaveAttribute(
+    expect(screen.getByRole("link", {name: /3 branches/})).toHaveAttribute(
       "href",
-      "/octo/demo/commits/feature%2Ftest",
+      "/octo/demo/branches",
     );
-    const requested = new URL((fetchMock.mock.calls[0][0] as Request).url);
-    expect(requested.searchParams.get("ref")).toBe("feature/test");
+    expect(screen.getByRole("link", {name: /2 tags/})).toHaveAttribute(
+      "href",
+      "/octo/demo/tags",
+    );
+    expect(screen.queryByText(/commits/i)).toBeNull();
+  });
+
+  it("shows placeholders while the counts load", () => {
+    render(
+      <MemoryRouter>
+        <RepositoryActivity
+          owner="octo"
+          repo="demo"
+          summary={{data: null, loading: true}}
+        />
+      </MemoryRouter>,
+    );
+
+    expect(screen.getAllByText("…")).toHaveLength(2);
   });
 });

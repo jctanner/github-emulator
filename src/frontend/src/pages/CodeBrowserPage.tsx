@@ -1,13 +1,16 @@
+import {Fragment} from "react";
 import {Link, useParams} from "react-router-dom";
 
 import {api} from "../api/client";
 import type {components} from "../api/schema";
 import {BranchSelector} from "../components/BranchSelector";
-import {FileTypeIcon} from "../components/FileTypeIcon";
+import {CopyPathButton} from "../components/CopyPathButton";
 import {Loadable} from "../components/Loadable";
 import {Octicon} from "../components/Octicon";
 import {RepositoryActivity} from "../components/RepositoryActivity";
+import {RepositoryTreeList} from "../components/RepositoryTreeList";
 import {requireApiData, useApiData} from "../hooks/useApiData";
+import {useRepositorySummary} from "../hooks/useRepositorySummary";
 import {decodeBase64Content} from "../utils/content";
 
 type Content = components["schemas"]["ContentResponse"];
@@ -18,6 +21,10 @@ interface BrowserData {
 
 export function CodeBrowserPage({blob = false}: {blob?: boolean}) {
   const {owner = "", repo = "", ref = "main", "*": path = ""} = useParams();
+  // Branch/tag/commit totals belong to the repository root; folders show
+  // their own History link instead.
+  const atRoot = !path;
+  const summary = useRepositorySummary(owner, repo, ref, atRoot);
   const result = useApiData<BrowserData>(
     `contents:${owner}/${repo}:${ref}:${path}`,
     async () => {
@@ -54,27 +61,44 @@ export function CodeBrowserPage({blob = false}: {blob?: boolean}) {
   const items = Array.isArray(loadedContent) ? loadedContent : null;
   const file =
     loadedContent && !Array.isArray(loadedContent) ? loadedContent : null;
-  const sortedItems = items
-    ? [...items].sort((left, right) => {
-        if (left.type !== right.type) return left.type === "dir" ? -1 : 1;
-        return left.name.localeCompare(right.name);
-      })
-    : null;
+  const pathSegments = path
+    .split("/")
+    .filter(Boolean)
+    .map((name, index, names) => ({
+      name,
+      path: names.slice(0, index + 1).join("/"),
+    }));
   const content = file ? decodeBase64Content(file.content) : "";
 
   return (
     <>
       <Loadable loading={result.loading} error={result.error}>
         <div className="code-browser-heading">
-          <div className="breadcrumbs" aria-label="Path">
-            <Link to={`/${owner}/${repo}/tree/${encodeURIComponent(ref)}`}>
-              {repo}
-            </Link>
-            {path ? <span>/</span> : null}
-            {path ? <strong>{path}</strong> : null}
+          <div className="code-browser-heading-start">
+            <BranchSelector owner={owner} repo={repo} currentRef={ref} />
+            <div className="breadcrumbs" aria-label="Path">
+              <Link to={`/${owner}/${repo}/tree/${encodeURIComponent(ref)}`}>
+                {repo}
+              </Link>
+              {pathSegments.map((segment, index) => (
+                <Fragment key={segment.path}>
+                  <span>/</span>
+                  {index === pathSegments.length - 1 ? (
+                    <strong>{segment.name}</strong>
+                  ) : (
+                    <Link
+                      to={`/${owner}/${repo}/tree/${encodeURIComponent(ref)}/${segment.path}`}
+                    >
+                      {segment.name}
+                    </Link>
+                  )}
+                </Fragment>
+              ))}
+              {items && path ? <span>/</span> : null}
+              {path ? <CopyPathButton path={path} /> : null}
+            </div>
           </div>
           <div className="button-row">
-            <BranchSelector owner={owner} repo={repo} currentRef={ref} />
             {!file ? (
               <Link
                 className="button compact"
@@ -97,22 +121,19 @@ export function CodeBrowserPage({blob = false}: {blob?: boolean}) {
             ) : null}
           </div>
         </div>
-        {sortedItems ? (
-          <RepositoryActivity owner={owner} repo={repo} ref={ref} />
-        ) : null}
-        {sortedItems ? (
-          <div className="list-box code-tree" aria-label="Repository files">
-            {sortedItems.map((item) => (
-              <div className="list-row file-row" key={item.path}>
-                <FileTypeIcon type={item.type} />
-                <Link
-                  to={`/${owner}/${repo}/${item.type === "dir" ? "tree" : "blob"}/${encodeURIComponent(ref)}/${item.path}`}
-                >
-                  {item.name}
-                </Link>
-              </div>
-            ))}
-          </div>
+        {items ? (
+          <>
+            {atRoot ? (
+              <RepositoryActivity owner={owner} repo={repo} summary={summary} />
+            ) : null}
+            <RepositoryTreeList
+              owner={owner}
+              repo={repo}
+              ref={ref}
+              path={path}
+              commitCount={atRoot ? summary.data?.commit_count : undefined}
+            />
+          </>
         ) : null}
         {file ? (
           <section className="file-view blob-view">

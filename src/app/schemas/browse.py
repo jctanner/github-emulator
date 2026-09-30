@@ -114,6 +114,28 @@ class RepositoryHomeSummaryResponse(BaseModel):
     tag_count: int
 
 
+class TreeCommit(BaseModel):
+    sha: str
+    short_sha: str
+    message: str
+    author_name: str
+    date: str
+
+
+class TreeEntry(BaseModel):
+    name: str
+    path: str
+    type: Literal["file", "dir", "submodule"]
+    last_commit: TreeCommit | None = None
+
+
+class RepositoryTreeResponse(BaseModel):
+    ref: str
+    path: str
+    latest_commit: TreeCommit | None = None
+    entries: list[TreeEntry]
+
+
 class RepositoryNavigationResponse(BaseModel):
     open_issues_count: int
     open_pulls_count: int

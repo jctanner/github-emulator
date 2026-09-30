@@ -81,7 +81,7 @@ a:hover {
 
 .global-nav {
   display: flex;
-  justify-content: flex-end;
+  justify-content: flex-start;
   gap: 16px;
   flex: 1;
 }
@@ -230,6 +230,9 @@ a:hover {
 .repo-nav {
   display: flex;
   gap: 8px;
+  /* Offset each tab's 12px inner padding so the first tab's content lines up
+     with the repository heading and the page body, as on github.com. */
+  margin-left: -12px;
   padding-bottom: 0;
 }
 
@@ -439,8 +442,14 @@ a:hover {
 .repo-activity {
   display: flex;
   gap: 20px;
-  margin-bottom: 16px;
   padding: 0;
+}
+
+.repo-home-toolbar-start {
+  display: flex;
+  align-items: center;
+  gap: 20px;
+  min-width: 0;
 }
 
 .repo-activity a {
@@ -477,6 +486,104 @@ a:hover {
 
 .repo-home-files .list-row {
   padding: 6px 16px;
+}
+
+/* Name | last commit message | age, as on github.com. The message column has a
+   fixed share of the row and truncates with an ellipsis. */
+.file-row .file-name {
+  flex: 0 1 30%;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.file-row .file-commit-message {
+  flex: 1 1 0;
+  min-width: 0;
+  max-width: 480px;
+  overflow: hidden;
+  color: #57606a;
+  font-size: 13px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.file-row .file-commit-age {
+  flex: 0 0 110px;
+  margin-left: auto;
+  color: #57606a;
+  font-size: 13px;
+  text-align: right;
+  white-space: nowrap;
+}
+
+.tree-latest-commit {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+}
+
+.file-row-header {
+  background: #f6f8fa;
+  color: #57606a;
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.file-row-header .file-name,
+.file-row-header .file-commit-message,
+.file-row-header .file-commit-age {
+  color: inherit;
+  font-size: inherit;
+}
+
+.file-type-icon-spacer {
+  flex: 0 0 16px;
+}
+
+.tree-latest-commit .tree-commit-author {
+  flex: 0 0 auto;
+}
+
+.tree-latest-commit .tree-commit-meta {
+  flex: 0 0 auto;
+  margin-left: auto;
+  color: #57606a;
+  font-size: 12px;
+  font-weight: 400;
+}
+
+.tree-latest-commit .tree-commit-message {
+  font-weight: 400;
+  flex: 1 1 0;
+  min-width: 0;
+  max-width: 560px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.tree-latest-commit .tree-commit-sha {
+  flex: 0 0 auto;
+  color: #57606a;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 12px;
+  font-weight: 400;
+}
+
+.tree-latest-commit .tree-commit-count {
+  display: inline-flex;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 5px;
+  color: #57606a;
+  font-size: 13px;
+  font-weight: 400;
+}
+
+.tree-latest-commit .tree-commit-count strong {
+  color: #24292f;
 }
 
 .file-view {
@@ -519,6 +626,28 @@ a:hover {
   justify-content: space-between;
   gap: 16px;
   margin: 24px 0 16px;
+}
+
+.code-browser-heading-start {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  min-width: 0;
+}
+
+.icon-button {
+  display: inline-flex;
+  align-items: center;
+  padding: 4px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: #57606a;
+  cursor: pointer;
+}
+
+.icon-button:hover {
+  background: #eaeef2;
 }
 
 .breadcrumbs {
@@ -693,6 +822,14 @@ a:hover {
 @media (max-width: 640px) {
   .repo-activity {
     flex-wrap: wrap;
+  }
+
+  .repo-home-toolbar-start {
+    flex-wrap: wrap;
+  }
+
+  .file-row .file-commit-message {
+    display: none;
   }
 }
 
@@ -2115,7 +2252,6 @@ footer {
     transform: translateX(-50%);
   }
 
-  .brand span,
   .global-search,
   .header-create,
   .account-name {

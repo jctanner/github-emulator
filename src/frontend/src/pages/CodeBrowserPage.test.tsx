@@ -1,4 +1,4 @@
-import {render, screen} from "@testing-library/react";
+import {fireEvent, render, screen, within} from "@testing-library/react";
 import {MemoryRouter, Route, Routes} from "react-router-dom";
 import {afterEach, describe, expect, it, vi} from "vitest";
 
@@ -32,6 +32,22 @@ describe("CodeBrowserPage", () => {
             }),
           );
         }
+        if (url.pathname.endsWith("/tree")) {
+          return Promise.resolve(
+            Response.json({
+              ref: "feature/one",
+              path: "",
+              latest_commit: {
+                sha: "abcdef1234567",
+                short_sha: "abcdef1",
+                message: "Add docs",
+                author_name: "Octo",
+                date: "2026-09-01T00:00:00Z",
+              },
+              entries: [{name: "docs", path: "docs", type: "dir"}],
+            }),
+          );
+        }
         if (url.pathname.endsWith("/readme")) {
           return Promise.resolve(
             Response.json({
@@ -59,17 +75,17 @@ describe("CodeBrowserPage", () => {
     );
 
     expect(await screen.findByText("# Feature README")).toBeVisible();
-    expect(screen.getByRole("link", {name: "docs"})).toHaveAttribute(
+    expect(await screen.findByRole("link", {name: "docs"})).toHaveAttribute(
       "href",
       "/octo/demo/tree/feature%2Fone/docs",
     );
     expect(await screen.findByText("7")).toBeVisible();
-    expect(screen.getByRole("link", {name: /7 commits/})).toHaveAttribute(
+    expect(screen.getByRole("link", {name: /7 Commits/})).toHaveAttribute(
       "href",
       "/octo/demo/commits/feature%2Fone",
     );
     const refRequests = requested.filter((url) =>
-      ["/readme", "/summary", "/contents/"].some((suffix) =>
+      ["/readme", "/summary", "/contents/", "/tree"].some((suffix) =>
         url.pathname.endsWith(suffix),
       ),
     );
@@ -77,5 +93,59 @@ describe("CodeBrowserPage", () => {
     expect(
       refRequests.every((url) => url.searchParams.get("ref") === "feature/one"),
     ).toBe(true);
+  });
+
+  it("links every breadcrumb segment, copies the path, and omits root counts in a folder", async () => {
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    vi.stubGlobal("navigator", {clipboard: {writeText}});
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockImplementation((input: Request) => {
+        const url = new URL(input.url);
+        if (url.pathname.endsWith("/branches")) {
+          return Promise.resolve(Response.json([]));
+        }
+        if (url.pathname.endsWith("/tree")) {
+          return Promise.resolve(
+            Response.json({
+              ref: "main",
+              path: "a/b",
+              latest_commit: null,
+              entries: [],
+            }),
+          );
+        }
+        return Promise.resolve(Response.json([]));
+      }),
+    );
+
+    render(
+      <MemoryRouter initialEntries={["/octo/demo/tree/main/a/b"]}>
+        <Routes>
+          <Route
+            path="/:owner/:repo/tree/:ref/*"
+            element={<CodeBrowserPage />}
+          />
+        </Routes>
+      </MemoryRouter>,
+    );
+
+    const path = await screen.findByLabelText("Path");
+    expect(within(path).getByRole("link", {name: "demo"})).toHaveAttribute(
+      "href",
+      "/octo/demo/tree/main",
+    );
+    expect(within(path).getByRole("link", {name: "a"})).toHaveAttribute(
+      "href",
+      "/octo/demo/tree/main/a",
+    );
+    expect(within(path).getByText("b").tagName).toBe("STRONG");
+    expect(within(path).getAllByText("/")).toHaveLength(3);
+    expect(
+      screen.queryByRole("navigation", {name: "Repository activity"}),
+    ).toBeNull();
+
+    fireEvent.click(within(path).getByRole("button", {name: "Copy path"}));
+    expect(writeText).toHaveBeenCalledWith("a/b");
   });
 });

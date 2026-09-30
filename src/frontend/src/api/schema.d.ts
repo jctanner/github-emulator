@@ -1310,6 +1310,29 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/_ui/repos/{owner}/{repo}/tree": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Repository Tree
+         * @description List a directory with the latest commit for it and for each entry.
+         *
+         *     The GitHub-compatible contents API carries no commit data, so the file
+         *     browser reads this instead to show the last commit message and age per row.
+         */
+        get: operations["repository_tree_api__ui_repos__owner___repo__tree_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/_ui/session": {
         parameters: {
             query?: never;
@@ -7553,6 +7576,16 @@ export interface components {
             /** Total Count */
             total_count: number;
         };
+        /** RepositoryTreeResponse */
+        RepositoryTreeResponse: {
+            /** Entries */
+            entries: components["schemas"]["TreeEntry"][];
+            latest_commit?: components["schemas"]["TreeCommit"] | null;
+            /** Path */
+            path: string;
+            /** Ref */
+            ref: string;
+        };
         /** RunnerLabelResponse */
         RunnerLabelResponse: {
             /** Id */
@@ -7631,6 +7664,32 @@ export interface components {
             tarball_url: string;
             /** Zipball Url */
             zipball_url: string;
+        };
+        /** TreeCommit */
+        TreeCommit: {
+            /** Author Name */
+            author_name: string;
+            /** Date */
+            date: string;
+            /** Message */
+            message: string;
+            /** Sha */
+            sha: string;
+            /** Short Sha */
+            short_sha: string;
+        };
+        /** TreeEntry */
+        TreeEntry: {
+            last_commit?: components["schemas"]["TreeCommit"] | null;
+            /** Name */
+            name: string;
+            /** Path */
+            path: string;
+            /**
+             * Type
+             * @enum {string}
+             */
+            type: "file" | "dir" | "submodule";
         };
         /**
          * UserCreate
@@ -10225,6 +10284,41 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["RepositoryHomeSummaryResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    repository_tree_api__ui_repos__owner___repo__tree_get: {
+        parameters: {
+            query?: {
+                ref?: string | null;
+                path?: string;
+            };
+            header?: never;
+            path: {
+                owner: string;
+                repo: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RepositoryTreeResponse"];
                 };
             };
             /** @description Validation Error */
