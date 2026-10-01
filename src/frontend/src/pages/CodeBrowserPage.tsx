@@ -1,4 +1,4 @@
-import {Fragment} from "react";
+import {Fragment, useMemo} from "react";
 import {Link, useParams} from "react-router-dom";
 
 import {api} from "../api/client";
@@ -12,6 +12,7 @@ import {RepositoryTreeList} from "../components/RepositoryTreeList";
 import {requireApiData, useApiData} from "../hooks/useApiData";
 import {useRepositorySummary} from "../hooks/useRepositorySummary";
 import {decodeBase64Content} from "../utils/content";
+import {highlightLines} from "../utils/highlight";
 
 type Content = components["schemas"]["ContentResponse"];
 interface BrowserData {
@@ -69,6 +70,10 @@ export function CodeBrowserPage({blob = false}: {blob?: boolean}) {
       path: names.slice(0, index + 1).join("/"),
     }));
   const content = file ? decodeBase64Content(file.content) : "";
+  const highlighted = useMemo(
+    () => (file ? highlightLines(content, file.path) : null),
+    [file, content],
+  );
 
   return (
     <>
@@ -141,7 +146,16 @@ export function CodeBrowserPage({blob = false}: {blob?: boolean}) {
             <ol className="code-lines">
               {content.split("\n").map((line, index) => (
                 <li key={`${index}-${line.slice(0, 20)}`}>
-                  <code>{line || " "}</code>
+                  {highlighted ? (
+                    <code
+                      // highlight.js escapes the source and emits only spans.
+                      dangerouslySetInnerHTML={{
+                        __html: highlighted[index] || " ",
+                      }}
+                    />
+                  ) : (
+                    <code>{line || " "}</code>
+                  )}
                 </li>
               ))}
             </ol>

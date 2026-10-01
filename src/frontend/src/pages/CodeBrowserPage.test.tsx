@@ -149,3 +149,52 @@ describe("CodeBrowserPage", () => {
     expect(writeText).toHaveBeenCalledWith("a/b");
   });
 });
+
+describe("CodeBrowserPage file view", () => {
+  const render_ = (path: string, content: string) => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockImplementation((input: Request) => {
+        const url = new URL(input.url);
+        if (url.pathname.endsWith("/branches")) {
+          return Promise.resolve(Response.json([]));
+        }
+        return Promise.resolve(
+          Response.json({
+            type: "file",
+            name: path,
+            path,
+            content: btoa(content),
+            download_url: null,
+          }),
+        );
+      }),
+    );
+    render(
+      <MemoryRouter initialEntries={[`/octo/demo/blob/main/${path}`]}>
+        <Routes>
+          <Route
+            path="/:owner/:repo/blob/:ref/*"
+            element={<CodeBrowserPage blob />}
+          />
+        </Routes>
+      </MemoryRouter>,
+    );
+  };
+
+  it("syntax-highlights a code file and keeps every line", async () => {
+    render_("scripts/run.sh", '#!/bin/bash\n# note\necho "hi"\n');
+
+    const keyword = await screen.findByText("echo");
+    expect(keyword).toHaveClass("hljs-built_in");
+    expect(screen.getByText("# note")).toHaveClass("hljs-comment");
+    expect(document.querySelectorAll(".code-lines li")).toHaveLength(4);
+  });
+
+  it("shows a file of unknown type as plain text", async () => {
+    render_("notes.unknownext", "just <b>text</b>\n");
+
+    expect(await screen.findByText("just <b>text</b>")).toBeVisible();
+    expect(document.querySelector(".code-lines [class^='hljs-']")).toBeNull();
+  });
+});

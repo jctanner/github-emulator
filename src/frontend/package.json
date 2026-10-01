@@ -14,6 +14,7 @@
     "generate:api": "openapi-typescript openapi.json -o src/api/schema.d.ts"
   },
   "dependencies": {
+    "highlight.js": "11.12.0",
     "openapi-fetch": "^0.14.0",
     "react": "^19.0.0",
     "react-dom": "^19.0.0",
