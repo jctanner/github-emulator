@@ -2,6 +2,7 @@
 
 import os
 import re
+from datetime import datetime, timezone
 from typing import Optional
 
 from sqlalchemy import select
@@ -12,8 +13,9 @@ from app.database import Base
 from app.database_retry import commit_with_sqlite_retry
 from app.services.repository_purge import purge_repository
 from app.models import Organization, Repository, User
+from app.git.bare_repo import create_initial_commit
+from app.services.branch_service import record_branch
 from app.services.git_service import (
-    create_initial_commit,
     delete_bare_repo,
     get_repo_size,
     init_bare_repo,
@@ -21,6 +23,26 @@ from app.services.git_service import (
 
 # Valid repository name pattern: alphanumeric, hyphens, underscores, dots
 REPO_NAME_PATTERN = re.compile(r"^[a-zA-Z0-9._-]+$")
+
+
+async def initialize_repository(
+    db: AsyncSession, repo: Repository, owner: User, auto_init: bool = False,
+) -> None:
+    """Initialize Git and record the initial branch in the same creation path."""
+    await init_bare_repo(repo.disk_path, repo.default_branch)
+    if auto_init:
+        sha = await create_initial_commit(
+            repo.disk_path, repo.default_branch, repo.name,
+            owner.name or owner.login,
+            owner.email or f"{owner.login}@github-emulator.local",
+        )
+        if not sha:
+            raise RuntimeError("Unable to create initial repository commit")
+        await record_branch(db, repo, repo.default_branch, sha)
+        repo.pushed_at = datetime.now(timezone.utc)
+    repo.size = await get_repo_size(repo.disk_path)
+    await db.commit()
+    await db.refresh(repo)
 
 
 async def create_repo(
@@ -114,19 +136,7 @@ async def create_repo(
     await db.commit()
     await db.refresh(repo)
 
-    # Initialize bare repository on disk
-    await init_bare_repo(disk_path, default_branch)
-
-    # Create initial commit if requested
-    if auto_init:
-        owner_name = owner.name or owner.login
-        owner_email = owner.email or f"{owner.login}@users.noreply.localhost"
-        await create_initial_commit(disk_path, default_branch, owner_name, owner_email)
-
-    # Update size
-    repo.size = await get_repo_size(disk_path)
-    await db.commit()
-    await db.refresh(repo)
+    await initialize_repository(db, repo, owner, auto_init)
 
     return repo
 

@@ -4,12 +4,14 @@ import asyncio
 import base64
 import os
 import tempfile
+from datetime import datetime, timezone
 
 from fastapi import APIRouter, HTTPException
 from fastapi.responses import JSONResponse
 from sqlalchemy import select
 
 from app.api.deps import require_contents_write, AuthUser, CurrentUser, DbSession, get_repo_record_or_404
+from app.services.branch_service import record_branch
 from app.config import settings
 from app.schemas.browse import ContentResponse
 from app.schemas.user import _make_node_id
@@ -261,6 +263,9 @@ async def create_or_update_file(
 
     # Update ref
     await _git(repo_path, "update-ref", f"refs/heads/{branch}", commit_sha)
+    await record_branch(db, repository, branch, commit_sha)
+    repository.pushed_at = datetime.now(timezone.utc)
+    await db.commit()
 
     api = f"{BASE}/api/v3"
     result = {

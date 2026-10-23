@@ -163,6 +163,17 @@ async def list_refs(
     return refs
 
 
+@router.get("/repos/{owner}/{repo}/git/matching-refs")
+@router.get("/repos/{owner}/{repo}/git/matching-refs/{ref:path}")
+async def matching_refs(
+    owner: str, repo: str, db: DbSession, current_user: CurrentUser, ref: str = "",
+):
+    """List refs whose fully qualified name starts with the requested prefix."""
+    refs = await list_refs(owner, repo, db, current_user)
+    prefix = ref if ref.startswith("refs/") else f"refs/{ref}"
+    return [item for item in refs if item["ref"].startswith(prefix)]
+
+
 @router.get("/repos/{owner}/{repo}/git/ref/{ref:path}")
 async def get_ref(
     owner: str, repo: str, ref: str, db: DbSession, current_user: CurrentUser

@@ -1,8 +1,6 @@
 """Repository endpoints -- CRUD, listing, and org repos."""
 
-import asyncio
 import os
-from datetime import datetime, timezone
 from typing import Optional
 
 from fastapi import APIRouter, HTTPException, Query, Request, Response
@@ -12,7 +10,6 @@ from app.services import repository_access
 from app.api.deps import AuthUser, CurrentUser, DbSession
 from app.config import settings
 from app.db_loaders import repository_identity_options
-from app.models.branch import Branch
 from app.models.repository import Repository
 from app.models.user import User
 from app.models.organization import Organization, OrgMembership
@@ -155,17 +152,6 @@ def _pagination_links(
     return ", ".join(parts)
 
 
-async def _init_bare_repo(disk_path: str, default_branch: str = "main") -> None:
-    """Initialise a bare git repository on disk."""
-    os.makedirs(disk_path, exist_ok=True)
-    proc = await asyncio.create_subprocess_exec(
-        "git", "init", "--bare", "--initial-branch", default_branch, disk_path,
-        stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.PIPE,
-    )
-    await proc.communicate()
-
-
 # ---------------------------------------------------------------------------
 # Routes
 # ---------------------------------------------------------------------------
@@ -231,30 +217,7 @@ async def create_repo_for_user(body: dict, user: AuthUser, db: DbSession):
     await db.commit()
     await db.refresh(repo)
 
-    # Initialize bare repo on disk
-    await _init_bare_repo(disk_path, repo.default_branch)
-
-    # Create initial commit if auto_init is requested
-    if body.get("auto_init"):
-        from app.git.bare_repo import create_initial_commit
-        commit_sha = await create_initial_commit(
-            disk_path,
-            repo.default_branch,
-            name,
-            user.name or user.login,
-            user.email or f"{user.login}@github-emulator.local",
-        )
-        if commit_sha:
-            repo.pushed_at = datetime.now(timezone.utc)
-            db.add(
-                Branch(
-                    repo_id=repo.id,
-                    name=repo.default_branch,
-                    sha=commit_sha,
-                )
-            )
-            await db.commit()
-            await db.refresh(repo)
+    await repo_service.initialize_repository(db, repo, user, body.get("auto_init", False))
 
     return _repo_json(repo, BASE)
 

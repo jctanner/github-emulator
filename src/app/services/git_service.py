@@ -32,59 +32,14 @@ async def create_initial_commit(
     default_branch: str,
     owner_name: str,
     owner_email: str,
-) -> None:
-    """Create an initial commit with a README.md in a bare repository.
+) -> str | None:
+    """Compatibility wrapper for the shared bare-repository commit writer."""
+    from app.git.bare_repo import create_initial_commit as create_commit
 
-    This uses a temporary working directory, creates the commit, and
-    pushes it into the bare repo.
-
-    Args:
-        disk_path: Filesystem path of the bare repo.
-        default_branch: The branch to create the commit on.
-        owner_name: Name for the commit author.
-        owner_email: Email for the commit author.
-    """
-    # Derive the repo name from the disk_path for the README content
-    repo_name = os.path.basename(disk_path).replace(".git", "")
-    tmp_dir = disk_path + ".tmp_init"
-
-    try:
-        # Clone the bare repo into a temporary directory
-        proc = await asyncio.create_subprocess_exec(
-            "git", "clone", disk_path, tmp_dir,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-        )
-        await proc.communicate()
-
-        # Create README.md
-        readme_path = os.path.join(tmp_dir, "README.md")
-        with open(readme_path, "w") as f:
-            f.write(f"# {repo_name}\n")
-
-        env = os.environ.copy()
-        env["GIT_AUTHOR_NAME"] = owner_name
-        env["GIT_AUTHOR_EMAIL"] = owner_email
-        env["GIT_COMMITTER_NAME"] = owner_name
-        env["GIT_COMMITTER_EMAIL"] = owner_email
-
-        # Configure git in the temp directory
-        await _run_git(tmp_dir, ["checkout", "-b", default_branch], env=env)
-        await _run_git(tmp_dir, ["add", "README.md"], env=env)
-        await _run_git(
-            tmp_dir,
-            ["commit", "-m", "Initial commit"],
-            env=env,
-        )
-        await _run_git(
-            tmp_dir,
-            ["push", "origin", default_branch],
-            env=env,
-        )
-    finally:
-        # Clean up the temporary directory
-        if os.path.exists(tmp_dir):
-            shutil.rmtree(tmp_dir)
+    repo_name = os.path.basename(disk_path).removesuffix(".git")
+    return await create_commit(
+        disk_path, default_branch, repo_name, owner_name, owner_email,
+    )
 
 
 async def get_repo_size(disk_path: str) -> int:

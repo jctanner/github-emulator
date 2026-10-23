@@ -11,6 +11,7 @@ from app.api.deps import AuthUser, CurrentUser, DbSession, get_repo_or_404
 from app.config import settings
 from app.models.repository import Repository
 from app.api.repos import _repo_json
+from app.services.branch_service import record_disk_branches
 
 router = APIRouter(tags=["forks"])
 
@@ -65,6 +66,10 @@ async def create_fork(
             stderr=asyncio.subprocess.PIPE,
         )
         await proc.communicate()
+        if proc.returncode != 0:
+            raise HTTPException(status_code=500, detail="Unable to clone fork repository")
+        await record_disk_branches(db, fork)
+        await db.commit()
 
     return _repo_json(fork, BASE)
 
