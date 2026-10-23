@@ -1,6 +1,9 @@
 import {useState} from "react";
 import {useParams} from "react-router-dom";
 
+import {loadPullReviewActivity} from "../api/reviews";
+import {ReviewAnchor} from "../components/PullReview";
+import {pullReviewEntries} from "../components/pullReviewEntries";
 import {api} from "../api/client";
 import type {components} from "../api/schema";
 import {useSession} from "../auth/SessionContext";
@@ -24,6 +27,7 @@ export function PullDetailPage() {
   const {user} = useSession();
   const [mutationError, setMutationError] = useState<string | null>(null);
   const page = useApiData<{
+    reviewActivity: Awaited<ReturnType<typeof loadPullReviewActivity>>;
     pull: Pull;
     issue: Issue;
     comments: Comment[];
@@ -38,6 +42,7 @@ export function PullDetailPage() {
       commentsResult,
       eventsResult,
       labelsResult,
+      reviewActivity,
     ] = await Promise.all([
       api.GET("/api/v3/repos/{owner}/{repo}/pulls/{pull_number}", {
         params: {path: pullPath},
@@ -54,8 +59,10 @@ export function PullDetailPage() {
       api.GET("/api/v3/repos/{owner}/{repo}/labels", {
         params: {path: {owner, repo}},
       }),
+      loadPullReviewActivity(pullPath),
     ]);
     return {
+      reviewActivity,
       pull: requireApiData(
         pullResult.data,
         pullResult.response,
@@ -137,6 +144,7 @@ export function PullDetailPage() {
     <Loadable loading={page.loading} error={page.error}>
       {page.data ? (
         <>
+          <ReviewAnchor />
           <PullRequestHeader owner={owner} repo={repo} pull={page.data.pull} />
           <div className="conversation-layout">
             <main className="conversation-main">
@@ -185,6 +193,11 @@ export function PullDetailPage() {
                 issueNumber={pullNumber}
                 comments={page.data.comments}
                 events={page.data.events}
+                additionalEntries={pullReviewEntries(
+                  page.data.reviewActivity.reviews,
+                  page.data.reviewActivity.comments,
+                  `/${owner}/${repo}/pulls/${pullNumber}/files`,
+                )}
                 onChanged={page.reload}
               />
               {mutationError ? (

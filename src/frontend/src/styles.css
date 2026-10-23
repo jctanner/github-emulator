@@ -2498,3 +2498,26 @@ footer {
   align-items: center;
   margin-top: 12px;
 }
+
+.review-comment {
+  margin: 12px 16px;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  font-size: 14px;
+  line-height: 1.5;
+}
+
+.review-comment-context {
+  padding: 8px 16px;
+  background: #f6f8fa;
+  overflow-wrap: anywhere;
+}
+
+.review-unplaced {
+  padding: 8px 16px;
+}
+
+.review-comment:target,
+.timeline-item:target {
+  outline: 2px solid #0969da;
+  scroll-margin-top: 24px;
+}

@@ -1,4 +1,4 @@
-import {FormEvent, useState} from "react";
+import {FormEvent, type ReactNode, useState} from "react";
 
 import {api} from "../api/client";
 import type {components} from "../api/schema";
@@ -16,6 +16,7 @@ export function IssueComments({
   comments,
   events,
   onChanged,
+  additionalEntries = [],
 }: {
   owner: string;
   repo: string;
@@ -23,6 +24,7 @@ export function IssueComments({
   comments: Comment[];
   events: IssueEvent[];
   onChanged: () => void;
+  additionalEntries?: {id: string; createdAt: string; content: ReactNode}[];
 }) {
   const {user} = useSession();
   const [body, setBody] = useState("");
@@ -68,6 +70,11 @@ export function IssueComments({
   }
 
   const timeline = [
+    ...additionalEntries.map((entry) => ({
+      kind: "additional" as const,
+      createdAt: entry.createdAt,
+      item: entry,
+    })),
     ...comments.map((comment) => ({
       kind: "comment" as const,
       createdAt: comment.created_at,
@@ -83,7 +90,9 @@ export function IssueComments({
   return (
     <>
       {timeline.map((entry) =>
-        entry.kind === "event" ? (
+        entry.kind === "additional" ? (
+          <div key={entry.item.id}>{entry.item.content}</div>
+        ) : entry.kind === "event" ? (
           <div className="timeline-event" key={`event-${entry.item.id}`}>
             <span className="timeline-event-icon">
               <Octicon name="tag" size={16} />

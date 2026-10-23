@@ -1,9 +1,11 @@
 import {useParams} from "react-router-dom";
 
+import {loadPullReviewActivity} from "../api/reviews";
 import {api} from "../api/client";
 import type {components} from "../api/schema";
 import {Loadable} from "../components/Loadable";
 import {FileDiffList} from "../components/FileDiffList";
+import {ReviewAnchor} from "../components/PullReview";
 import {PullRequestHeader} from "../components/PullRequestHeader";
 import {requireApiData, useApiData} from "../hooks/useApiData";
 
@@ -13,38 +15,42 @@ type PullFile = components["schemas"]["PullFileResponse"];
 export function PullFilesPage() {
   const {owner = "", repo = "", number = "0"} = useParams();
   const pullNumber = Number(number);
-  const result = useApiData<{pull: Pull; files: PullFile[]}>(
-    `pull-files:${owner}/${repo}:${pullNumber}`,
-    async () => {
-      const path = {owner, repo, pull_number: pullNumber};
-      const [pullResult, filesResult] = await Promise.all([
-        api.GET("/api/v3/repos/{owner}/{repo}/pulls/{pull_number}", {
-          params: {path},
-        }),
-        api.GET("/api/v3/repos/{owner}/{repo}/pulls/{pull_number}/files", {
-          params: {path},
-        }),
-      ]);
-      return {
-        pull: requireApiData(
-          pullResult.data,
-          pullResult.response,
-          "Could not load pull request.",
-        ),
-        files: requireApiData(
-          filesResult.data,
-          filesResult.response,
-          "Could not load changed files.",
-        ),
-      };
-    },
-  );
+  const result = useApiData<{
+    pull: Pull;
+    files: PullFile[];
+    reviewActivity: Awaited<ReturnType<typeof loadPullReviewActivity>>;
+  }>(`pull-files:${owner}/${repo}:${pullNumber}`, async () => {
+    const path = {owner, repo, pull_number: pullNumber};
+    const [pullResult, filesResult, reviewActivity] = await Promise.all([
+      api.GET("/api/v3/repos/{owner}/{repo}/pulls/{pull_number}", {
+        params: {path},
+      }),
+      api.GET("/api/v3/repos/{owner}/{repo}/pulls/{pull_number}/files", {
+        params: {path},
+      }),
+      loadPullReviewActivity(path),
+    ]);
+    return {
+      reviewActivity,
+      pull: requireApiData(
+        pullResult.data,
+        pullResult.response,
+        "Could not load pull request.",
+      ),
+      files: requireApiData(
+        filesResult.data,
+        filesResult.response,
+        "Could not load changed files.",
+      ),
+    };
+  });
   const data = result.data;
 
   return (
     <Loadable loading={result.loading} error={result.error}>
       {data ? (
         <>
+          <ReviewAnchor />
           <PullRequestHeader owner={owner} repo={repo} pull={data.pull} />
           <div className="pr-diff-summary">
             <strong>{data.files.length} changed files</strong>
@@ -53,6 +59,7 @@ export function PullFilesPage() {
           </div>
           <FileDiffList
             files={data.files}
+            reviewComments={data.reviewActivity.comments}
             fileHref={(file) =>
               `/${owner}/${repo}/blob/${encodeURIComponent(data.pull.head.ref)}/${file.filename}`
             }
