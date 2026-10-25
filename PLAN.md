@@ -82,6 +82,7 @@ Actions visibility and runner evaluation.
 
 ## Fixed Bugs
 
+- `docs/bugs/fixed/pagination-links-use-the-internal-host.md`
 - `docs/bugs/fixed/pagination-links-drop-query-parameters.md`
 - `docs/bugs/fixed/deleted-repository-leaves-its-history-for-the-next-id.md`
 - `docs/bugs/fixed/conversation-description-and-comment-timestamps.md`

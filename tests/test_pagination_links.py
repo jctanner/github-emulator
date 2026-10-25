@@ -175,3 +175,62 @@ async def test_repo_links_keep_type_and_sort(client, test_user, test_token):
     second = await client.get(links["next"])
     names = [r["name"] for r in first.json()] + [r["name"] for r in second.json()]
     assert names == ["page-repo-a", "page-repo-b"]
+
+
+@pytest.mark.asyncio
+async def test_links_use_public_base_url_not_request_host(client, test_user, test_token):
+    """An ingress may deliver the request with an internal Host; links use BASE_URL."""
+    from app.config import settings
+
+    await _create_repo(client, test_token, "page-host")
+    for title in ("one", "two"):
+        await client.post(
+            f"{API}/repos/testuser/page-host/issues",
+            json={"title": title},
+            headers=auth_headers(test_token),
+        )
+
+    original = settings.BASE_URL
+    settings.BASE_URL = "https://github.local"
+    try:
+        resp = await client.get(
+            f"{API}/repos/testuser/page-host/issues",
+            params={"state": "all", "per_page": 1},
+            headers={"Host": "github-emulator.ai-pipeline.svc.cluster.local"},
+        )
+    finally:
+        settings.BASE_URL = original
+
+    links = _links(resp)
+    assert set(links) == {"next", "last"}
+    for url in links.values():
+        assert url.startswith(f"https://github.local{API}/repos/testuser/page-host/issues?"), url
+        assert _query(url)["state"] == ["all"]
+        assert _query(url)["per_page"] == ["1"]
+
+
+@pytest.mark.asyncio
+async def test_links_keep_base_url_path_prefix(client, test_user, test_token):
+    """A BASE_URL with a path prefix is kept once, not doubled."""
+    from app.config import settings
+
+    await _create_repo(client, test_token, "page-prefix")
+    for title in ("one", "two"):
+        await client.post(
+            f"{API}/repos/testuser/page-prefix/issues",
+            json={"title": title},
+            headers=auth_headers(test_token),
+        )
+
+    original = settings.BASE_URL
+    settings.BASE_URL = "https://proxy.example/github/"
+    try:
+        resp = await client.get(
+            f"{API}/repos/testuser/page-prefix/issues", params={"per_page": 1}
+        )
+    finally:
+        settings.BASE_URL = original
+
+    assert _links(resp)["next"].startswith(
+        f"https://proxy.example/github{API}/repos/testuser/page-prefix/issues?"
+    )
