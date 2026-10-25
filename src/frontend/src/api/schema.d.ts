@@ -1545,6 +1545,26 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v3/admin/organizations": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Admin Create Org
+         * @description Create an organization owned by ``admin`` (GitHub Enterprise; site admins only).
+         */
+        post: operations["admin_create_org_api_v3_admin_organizations_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v3/admin/repos/import": {
         parameters: {
             query?: never;
@@ -2186,12 +2206,64 @@ export interface paths {
         };
         /**
          * List Org Members
-         * @description List organization members.
+         * @description List organization members, optionally only admins or only members.
          */
         get: operations["list_org_members_api_v3_orgs__org__members_get"];
         put?: never;
         post?: never;
         delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v3/orgs/{org}/members/{username}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Check Org Member
+         * @description 204 when the user is an active member of the organization, else 404.
+         */
+        get: operations["check_org_member_api_v3_orgs__org__members__username__get"];
+        put?: never;
+        post?: never;
+        /**
+         * Delete Org Member
+         * @description Remove a member from the organization (org admins, site admins).
+         */
+        delete: operations["delete_org_member_api_v3_orgs__org__members__username__delete"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v3/orgs/{org}/memberships/{username}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get Org Membership
+         * @description One user's membership. Visible to the user, org members and site admins.
+         */
+        get: operations["get_org_membership_api_v3_orgs__org__memberships__username__get"];
+        /**
+         * Set Org Membership
+         * @description Add a user to the organization or change their role (org admins, site admins).
+         */
+        put: operations["set_org_membership_api_v3_orgs__org__memberships__username__put"];
+        post?: never;
+        /**
+         * Delete Org Membership
+         * @description Remove a user from the organization (org admins, site admins).
+         */
+        delete: operations["delete_org_membership_api_v3_orgs__org__memberships__username__delete"];
         options?: never;
         head?: never;
         patch?: never;
@@ -3528,6 +3600,46 @@ export interface paths {
          * @description Get a Git commit object.
          */
         get: operations["get_git_commit_api_v3_repos__owner___repo__git_commits__sha__get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v3/repos/{owner}/{repo}/git/matching-refs": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Matching Refs
+         * @description List refs whose fully qualified name starts with the requested prefix.
+         */
+        get: operations["matching_refs_api_v3_repos__owner___repo__git_matching_refs_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v3/repos/{owner}/{repo}/git/matching-refs/{ref}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Matching Refs
+         * @description List refs whose fully qualified name starts with the requested prefix.
+         */
+        get: operations["matching_refs_api_v3_repos__owner___repo__git_matching_refs__ref__get"];
         put?: never;
         post?: never;
         delete?: never;
@@ -4995,6 +5107,50 @@ export interface paths {
         options?: never;
         head?: never;
         patch?: never;
+        trace?: never;
+    };
+    "/api/v3/user/memberships/orgs": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List Own Memberships
+         * @description The authenticated user's organization memberships.
+         */
+        get: operations["list_own_memberships_api_v3_user_memberships_orgs_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v3/user/memberships/orgs/{org}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get Own Membership
+         * @description The authenticated user's membership of one organization.
+         */
+        get: operations["get_own_membership_api_v3_user_memberships_orgs__org__get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        /**
+         * Update Own Membership
+         * @description Accept a pending membership; ``state`` may only be set to ``active``.
+         */
+        patch: operations["update_own_membership_api_v3_user_memberships_orgs__org__patch"];
         trace?: never;
     };
     "/api/v3/user/orgs": {
@@ -10752,6 +10908,41 @@ export interface operations {
             };
         };
     };
+    admin_create_org_api_v3_admin_organizations_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": {
+                    [key: string]: unknown;
+                };
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["OrganizationResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     admin_import_repo_api_v3_admin_repos_import_post: {
         parameters: {
             query?: never;
@@ -11870,6 +12061,7 @@ export interface operations {
     list_org_members_api_v3_orgs__org__members_get: {
         parameters: {
             query?: {
+                role?: string;
                 page?: number;
                 per_page?: number;
             };
@@ -11889,6 +12081,168 @@ export interface operations {
                 content: {
                     "application/json": unknown;
                 };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    check_org_member_api_v3_orgs__org__members__username__get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                org: string;
+                username: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    delete_org_member_api_v3_orgs__org__members__username__delete: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                org: string;
+                username: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_org_membership_api_v3_orgs__org__memberships__username__get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                org: string;
+                username: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    set_org_membership_api_v3_orgs__org__memberships__username__put: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                org: string;
+                username: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: {
+            content: {
+                "application/json": {
+                    [key: string]: unknown;
+                } | null;
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    delete_org_membership_api_v3_orgs__org__memberships__username__delete: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                org: string;
+                username: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
             };
             /** @description Validation Error */
             422: {
@@ -14955,6 +15309,73 @@ export interface operations {
                 owner: string;
                 repo: string;
                 sha: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    matching_refs_api_v3_repos__owner___repo__git_matching_refs_get: {
+        parameters: {
+            query?: {
+                ref?: string;
+            };
+            header?: never;
+            path: {
+                owner: string;
+                repo: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    matching_refs_api_v3_repos__owner___repo__git_matching_refs__ref__get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                owner: string;
+                repo: string;
+                ref: string;
             };
             cookie?: never;
         };
@@ -18646,6 +19067,107 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content?: never;
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    list_own_memberships_api_v3_user_memberships_orgs_get: {
+        parameters: {
+            query?: {
+                state?: string | null;
+                page?: number;
+                per_page?: number;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_own_membership_api_v3_user_memberships_orgs__org__get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                org: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    update_own_membership_api_v3_user_memberships_orgs__org__patch: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                org: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": {
+                    [key: string]: unknown;
+                };
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
             };
             /** @description Validation Error */
             422: {

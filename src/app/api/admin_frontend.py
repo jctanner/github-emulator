@@ -30,6 +30,7 @@ from app.services.auth_service import hash_password
 from app.services.repo_service import delete_repo
 from app.services.user_service import create_token, create_user
 from app.services.import_service import start_single_import
+from app.services import org_service
 from app.services.workflow_scheduler import cancel_workflow_run
 
 router = APIRouter(prefix="/admin/api", tags=["admin-frontend"])
@@ -195,8 +196,16 @@ async def add_organization(body: dict, user: AuthUser, db: DbSession):
     if not login: raise HTTPException(status_code=422, detail="login is required")
     if (await db.execute(select(Organization).where(Organization.login == login))).scalar_one_or_none():
         raise HTTPException(status_code=409, detail="login already exists")
-    value = Organization(login=login, name=body.get("name"), description=body.get("description"), email=body.get("email"))
-    db.add(value); await db.commit(); await db.refresh(value); return _org(value)
+    # The owner is the named `admin` user, else the calling site admin, so a
+    # new organization always has a member who can manage it.
+    owner = user
+    if body.get("admin"):
+        owner = await org_service.find_user(db, str(body["admin"]).strip())
+        if owner is None: raise HTTPException(status_code=422, detail="admin user does not exist")
+    value = await org_service.create_organization(
+        db, login, owner, name=body.get("name"), description=body.get("description"), email=body.get("email"),
+    )
+    return _org(value)
 
 
 @router.patch("/organizations/{org_id}", response_model=AdminOrganizationResponse)

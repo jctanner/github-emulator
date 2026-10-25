@@ -16,6 +16,7 @@ from sqlalchemy import select, func as sa_func
 from sqlalchemy.orm import joinedload, raiseload, selectinload
 
 from app.api.deps import AuthUser, CurrentUser, DbSession, get_repo_or_404
+from app.api.pagination import pagination_links
 from app.config import settings
 from app.git.bare_repo import (
     get_compare_commit_count,
@@ -610,17 +611,9 @@ async def list_pulls(
     prs = (await db.execute(query)).scalars().all()
 
     headers = {}
-    last_page = max(1, (total + per_page - 1) // per_page)
-    parts: list[str] = []
-    base_url_str = str(request.url).split("?")[0]
-    if page < last_page:
-        parts.append(f'<{base_url_str}?page={page + 1}&per_page={per_page}>; rel="next"')
-        parts.append(f'<{base_url_str}?page={last_page}&per_page={per_page}>; rel="last"')
-    if page > 1:
-        parts.append(f'<{base_url_str}?page={page - 1}&per_page={per_page}>; rel="prev"')
-        parts.append(f'<{base_url_str}?page=1&per_page={per_page}>; rel="first"')
-    if parts:
-        headers["Link"] = ", ".join(parts)
+    link = pagination_links(request, page, per_page, total)
+    if link:
+        headers["Link"] = link
 
     for pr in prs:
         await _attach_resolved_refs(pr, repository)

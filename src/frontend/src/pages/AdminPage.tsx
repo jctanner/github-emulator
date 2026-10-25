@@ -196,10 +196,15 @@ function Organizations() {
     return requireApiData(data, response, "Could not load organizations.");
   });
   const [login, setLogin] = useState("");
+  const [owner, setOwner] = useState("");
   async function create(event: FormEvent) {
     event.preventDefault();
-    await api.POST("/admin/api/organizations", {body: {login}});
+    // Without an owner the API makes the signed-in admin the owner.
+    const body: Record<string, unknown> = {login};
+    if (owner.trim()) body.admin = owner.trim();
+    await api.POST("/admin/api/organizations", {body});
     setLogin("");
+    setOwner("");
     values.reload();
   }
   async function edit(value: Organization) {
@@ -226,6 +231,11 @@ function Organizations() {
           placeholder="Organization login"
           value={login}
           onChange={(event) => setLogin(event.target.value)}
+        />
+        <input
+          placeholder="Owner login (default: you)"
+          value={owner}
+          onChange={(event) => setOwner(event.target.value)}
         />
         <button className="button">Create organization</button>
       </form>

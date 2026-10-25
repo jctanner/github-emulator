@@ -25,6 +25,8 @@ Actions visibility and runner evaluation.
 
 ## Completed Tasks
 
+- `docs/tasks/done/org-membership-api.md`
+- `docs/tasks/done/admin-organization-owner.md`
 - `docs/tasks/done/repository-home-last-commit-columns.md`
 - `docs/tasks/done/graphql-user-contributions-collection.md`
 - `docs/tasks/done/pull-detail-request-latency.md`
@@ -80,6 +82,7 @@ Actions visibility and runner evaluation.
 
 ## Fixed Bugs
 
+- `docs/bugs/fixed/pagination-links-drop-query-parameters.md`
 - `docs/bugs/fixed/deleted-repository-leaves-its-history-for-the-next-id.md`
 - `docs/bugs/fixed/conversation-description-and-comment-timestamps.md`
 - `docs/bugs/fixed/merged-pr-does-not-close-linked-issues.md`
@@ -94,3 +97,4 @@ Actions visibility and runner evaluation.
 
 - `docs/decisions/ADR-0001-actions-runner-strategy.md`
 - `docs/decisions/ADR-0002-artifact-storage-on-disk.md`
+- `docs/decisions/ADR-0003-org-memberships-are-active-on-add.md`

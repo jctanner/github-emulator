@@ -7,6 +7,7 @@ from fastapi.responses import JSONResponse
 from sqlalchemy import select, func as sa_func
 
 from app.api.deps import AuthUser, CurrentUser, DbSession, get_repo_or_404
+from app.api.pagination import pagination_links
 from app.config import settings
 from app.models.comment import IssueComment
 from app.models.issue import Issue
@@ -81,15 +82,9 @@ async def list_comments(
     comments = (await db.execute(query)).scalars().all()
 
     headers = {}
-    last_page = max(1, (total + per_page - 1) // per_page)
-    parts: list[str] = []
-    base_url_str = str(request.url).split("?")[0]
-    if page < last_page:
-        parts.append(f'<{base_url_str}?page={page + 1}&per_page={per_page}>; rel="next"')
-    if page > 1:
-        parts.append(f'<{base_url_str}?page={page - 1}&per_page={per_page}>; rel="prev"')
-    if parts:
-        headers["Link"] = ", ".join(parts)
+    link = pagination_links(request, page, per_page, total)
+    if link:
+        headers["Link"] = link
 
     return JSONResponse(
         content=[

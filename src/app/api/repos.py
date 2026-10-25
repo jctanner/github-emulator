@@ -8,6 +8,7 @@ from sqlalchemy import select, func as sa_func
 
 from app.services import repository_access
 from app.api.deps import AuthUser, CurrentUser, DbSession
+from app.api.pagination import pagination_links
 from app.config import settings
 from app.db_loaders import repository_identity_options
 from app.models.repository import Repository
@@ -136,20 +137,6 @@ def _repo_json(repo: Repository, base_url: str) -> dict:
     }
 
 
-def _pagination_links(
-    request: Request, page: int, per_page: int, total: int
-) -> str:
-    """Build RFC 5988 Link header value for pagination."""
-    base = str(request.url).split("?")[0]
-    last_page = max(1, (total + per_page - 1) // per_page)
-    parts: list[str] = []
-    if page < last_page:
-        parts.append(f'<{base}?page={page + 1}&per_page={per_page}>; rel="next"')
-        parts.append(f'<{base}?page={last_page}&per_page={per_page}>; rel="last"')
-    if page > 1:
-        parts.append(f'<{base}?page={page - 1}&per_page={per_page}>; rel="prev"')
-        parts.append(f'<{base}?page=1&per_page={per_page}>; rel="first"')
-    return ", ".join(parts)
 
 
 # ---------------------------------------------------------------------------
@@ -356,7 +343,7 @@ async def list_user_repos(
     repos = (await db.execute(query)).scalars().all()
 
     response = Response()
-    link = _pagination_links(request, page, per_page, total)
+    link = pagination_links(request, page, per_page, total)
     headers = {}
     if link:
         headers["Link"] = link
@@ -407,7 +394,7 @@ async def list_authenticated_user_repos(
     repos = (await db.execute(query)).scalars().all()
 
     headers = {}
-    link = _pagination_links(request, page, per_page, total)
+    link = pagination_links(request, page, per_page, total)
     if link:
         headers["Link"] = link
 

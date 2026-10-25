@@ -748,3 +748,96 @@ async def test_admin_can_requeue_a_stranded_job_and_fail_a_lost_one(client, admi
     listed = (await client.get("/admin/api/jobs", params={"status": "completed", "runner": "fullsend-agent-runner"}, headers=headers)).json()
     assert listed["items"][0]["current_step"]["message"].startswith("The self-hosted runner lost communication")
     assert (await client.post("/admin/api/jobs/999999/fail", headers=headers)).status_code == 404
+
+
+# --- organization owners ----------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_admin_created_organization_is_owned_by_named_admin(
+    client, admin_token, test_user, test_token
+):
+    created = await client.post(
+        "/admin/api/organizations",
+        json={"login": "owned-org", "admin": "testuser"},
+        headers=auth_headers(admin_token),
+    )
+    assert created.status_code == 201
+
+    membership = await client.get(
+        "/api/v3/user/memberships/orgs/owned-org", headers=auth_headers(test_token)
+    )
+    assert membership.status_code == 200
+    assert membership.json()["role"] == "admin"
+    repo = await client.post(
+        "/api/v3/orgs/owned-org/repos", json={"name": "first"}, headers=auth_headers(test_token)
+    )
+    assert repo.status_code == 201
+
+
+@pytest.mark.asyncio
+async def test_admin_created_organization_defaults_to_calling_admin(client, admin_token):
+    headers = auth_headers(admin_token)
+    created = await client.post(
+        "/admin/api/organizations", json={"login": "default-owner-org"}, headers=headers
+    )
+    assert created.status_code == 201
+
+    admins = await client.get(
+        "/api/v3/orgs/default-owner-org/members", params={"role": "admin"}
+    )
+    assert [m["login"] for m in admins.json()] == ["admin"]
+    repo = await client.post(
+        "/api/v3/orgs/default-owner-org/repos", json={"name": "first"}, headers=headers
+    )
+    assert repo.status_code == 201
+
+
+@pytest.mark.asyncio
+async def test_admin_created_organization_rejects_unknown_owner(client, admin_token):
+    headers = auth_headers(admin_token)
+    created = await client.post(
+        "/admin/api/organizations",
+        json={"login": "orphan-org", "admin": "nobody"},
+        headers=headers,
+    )
+    assert created.status_code == 422
+    assert (await client.get("/api/v3/orgs/orphan-org")).status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_enterprise_admin_organizations_endpoint(client, admin_token, test_user, test_token):
+    headers = auth_headers(admin_token)
+    created = await client.post(
+        "/api/v3/admin/organizations",
+        json={"login": "ghes-org", "admin": "testuser", "profile_name": "GHES Org"},
+        headers=headers,
+    )
+    assert created.status_code == 201
+    assert created.json()["login"] == "ghes-org"
+    assert created.json()["name"] == "GHES Org"
+    assert (
+        await client.get("/api/v3/orgs/ghes-org/members/testuser")
+    ).status_code == 204
+
+    missing_admin = await client.post(
+        "/api/v3/admin/organizations", json={"login": "no-admin-org"}, headers=headers
+    )
+    assert missing_admin.status_code == 422
+    unknown = await client.post(
+        "/api/v3/admin/organizations",
+        json={"login": "unknown-admin-org", "admin": "nobody"},
+        headers=headers,
+    )
+    assert unknown.status_code == 422
+    duplicate = await client.post(
+        "/api/v3/admin/organizations",
+        json={"login": "ghes-org", "admin": "testuser"},
+        headers=headers,
+    )
+    assert duplicate.status_code == 422
+    not_site_admin = await client.post(
+        "/api/v3/admin/organizations",
+        json={"login": "user-made-org", "admin": "testuser"},
+        headers=auth_headers(test_token),
+    )
+    assert not_site_admin.status_code == 403

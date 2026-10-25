@@ -8,6 +8,7 @@ from fastapi.responses import JSONResponse
 from sqlalchemy import select, func as sa_func
 
 from app.api.deps import AuthUser, CurrentUser, DbSession, get_repo_or_404
+from app.api.pagination import pagination_links
 from app.config import settings
 from app.models.issue import Issue, IssueLabel, IssueAssignee
 from app.models.label import Label
@@ -136,17 +137,6 @@ def _issue_json(issue: Issue, base_url: str) -> dict:
     return payload
 
 
-def _pagination_links(request: Request, page: int, per_page: int, total: int) -> str:
-    base = str(request.url).split("?")[0]
-    last_page = max(1, (total + per_page - 1) // per_page)
-    parts: list[str] = []
-    if page < last_page:
-        parts.append(f'<{base}?page={page + 1}&per_page={per_page}>; rel="next"')
-        parts.append(f'<{base}?page={last_page}&per_page={per_page}>; rel="last"')
-    if page > 1:
-        parts.append(f'<{base}?page={page - 1}&per_page={per_page}>; rel="prev"')
-        parts.append(f'<{base}?page=1&per_page={per_page}>; rel="first"')
-    return ", ".join(parts)
 
 
 # ---------------------------------------------------------------------------
@@ -208,7 +198,7 @@ async def list_issues(
     issues = (await db.execute(query)).scalars().all()
 
     headers = {}
-    link = _pagination_links(request, page, per_page, total)
+    link = pagination_links(request, page, per_page, total)
     if link:
         headers["Link"] = link
 
