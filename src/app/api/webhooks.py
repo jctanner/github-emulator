@@ -1,19 +1,53 @@
-"""Webhook endpoints -- CRUD and delivery listing."""
+"""Webhook endpoints -- CRUD, ping and test, and delivery listing."""
 
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, HTTPException, Query, Response
 from sqlalchemy import select
 
 from app.api.deps import AuthUser, CurrentUser, DbSession, get_repo_or_404
 from app.config import settings
 from app.models.webhook import Webhook, WebhookDelivery
 from app.schemas.user import _fmt_dt, _make_node_id
+from app.services.git_service import get_ref_sha
+from app.services.webhook_service import schedule_hook_delivery, subscribed
+from app.services.workflow_service import _repository_payload, _user_payload
 
 router = APIRouter(tags=["webhooks"])
 
 BASE = settings.BASE_URL
 
 
-def _hook_json(hook: Webhook, owner: str, repo_name: str, base_url: str) -> dict:
+def _last_response(delivery: WebhookDelivery | None) -> dict:
+    """GitHub's ``last_response`` for a hook's latest delivery."""
+    if delivery is None:
+        return {"code": None, "status": "unused", "message": None}
+    if delivery.success:
+        return {"code": delivery.status_code, "status": "active", "message": "OK"}
+    if not delivery.status_code:
+        return {"code": None, "status": "active", "message": delivery.response_body or "failed to connect"}
+    return {
+        "code": delivery.status_code,
+        "status": "active",
+        "message": f"Invalid HTTP Response: {delivery.status_code}",
+    }
+
+
+async def _latest_delivery(db, hook_id: int) -> WebhookDelivery | None:
+    result = await db.execute(
+        select(WebhookDelivery)
+        .where(WebhookDelivery.webhook_id == hook_id)
+        .order_by(WebhookDelivery.id.desc())
+        .limit(1)
+    )
+    return result.scalar_one_or_none()
+
+
+def _hook_json(
+    hook: Webhook,
+    owner: str,
+    repo_name: str,
+    base_url: str,
+    last_delivery: WebhookDelivery | None = None,
+) -> dict:
     api = f"{base_url}/api/v3"
     return {
         "type": "Repository",
@@ -32,7 +66,7 @@ def _hook_json(hook: Webhook, owner: str, repo_name: str, base_url: str) -> dict
         "test_url": f"{api}/repos/{owner}/{repo_name}/hooks/{hook.id}/tests",
         "ping_url": f"{api}/repos/{owner}/{repo_name}/hooks/{hook.id}/pings",
         "deliveries_url": f"{api}/repos/{owner}/{repo_name}/hooks/{hook.id}/deliveries",
-        "last_response": {"code": None, "status": "unused", "message": None},
+        "last_response": _last_response(last_delivery),
     }
 
 
@@ -51,7 +85,9 @@ async def list_hooks(
         .limit(per_page)
     )
     hooks = (await db.execute(query)).scalars().all()
-    return [_hook_json(h, owner, repo, BASE) for h in hooks]
+    return [
+        _hook_json(h, owner, repo, BASE, await _latest_delivery(db, h.id)) for h in hooks
+    ]
 
 
 @router.post("/repos/{owner}/{repo}/hooks", status_code=201)
@@ -78,7 +114,10 @@ async def create_hook(
     db.add(hook)
     await db.commit()
     await db.refresh(hook)
-    return _hook_json(hook, owner, repo, BASE)
+    body = _hook_json(hook, owner, repo, BASE)
+    # GitHub pings every new hook.
+    schedule_hook_delivery(db, hook, "ping", _ping_payload(hook, repository, user, body))
+    return body
 
 
 @router.get("/repos/{owner}/{repo}/hooks/{hook_id}")
@@ -93,7 +132,7 @@ async def get_hook(
     hook = result.scalar_one_or_none()
     if hook is None:
         raise HTTPException(status_code=404, detail="Not Found")
-    return _hook_json(hook, owner, repo, BASE)
+    return _hook_json(hook, owner, repo, BASE, await _latest_delivery(db, hook.id))
 
 
 @router.patch("/repos/{owner}/{repo}/hooks/{hook_id}")
@@ -125,7 +164,7 @@ async def update_hook(
 
     await db.commit()
     await db.refresh(hook)
-    return _hook_json(hook, owner, repo, BASE)
+    return _hook_json(hook, owner, repo, BASE, await _latest_delivery(db, hook.id))
 
 
 @router.delete("/repos/{owner}/{repo}/hooks/{hook_id}", status_code=204)
@@ -180,3 +219,63 @@ async def list_deliveries(
         }
         for d in deliveries
     ]
+
+
+def _ping_payload(hook: Webhook, repository, user, hook_body: dict) -> dict:
+    return {
+        "zen": "Keep it logically awesome.",
+        "hook_id": hook.id,
+        "hook": hook_body,
+        "repository": _repository_payload(repository),
+        "sender": _user_payload(user),
+    }
+
+
+async def _repo_hook_or_404(owner: str, repo: str, hook_id: int, db):
+    repository = await get_repo_or_404(owner, repo, db)
+    result = await db.execute(
+        select(Webhook).where(Webhook.id == hook_id, Webhook.repo_id == repository.id)
+    )
+    hook = result.scalar_one_or_none()
+    if hook is None:
+        raise HTTPException(status_code=404, detail="Not Found")
+    return repository, hook
+
+
+@router.post("/repos/{owner}/{repo}/hooks/{hook_id}/pings", status_code=204)
+async def ping_hook(owner: str, repo: str, hook_id: int, user: AuthUser, db: DbSession):
+    """Send a ping event to the hook."""
+    repository, hook = await _repo_hook_or_404(owner, repo, hook_id, db)
+    body = _hook_json(hook, owner, repo, BASE)
+    schedule_hook_delivery(db, hook, "ping", _ping_payload(hook, repository, user, body))
+    return Response(status_code=204)
+
+
+@router.post("/repos/{owner}/{repo}/hooks/{hook_id}/tests", status_code=204)
+async def test_push_hook(owner: str, repo: str, hook_id: int, user: AuthUser, db: DbSession):
+    """Trigger the hook with a push of the default branch's head.
+
+    As on GitHub, nothing is sent unless the hook is subscribed to push.
+    """
+    repository, hook = await _repo_hook_or_404(owner, repo, hook_id, db)
+    if not subscribed(hook, "push"):
+        return Response(status_code=204)
+    branch = repository.default_branch or "main"
+    sha = None
+    if repository.disk_path:
+        sha = await get_ref_sha(repository.disk_path, branch)
+    sha = sha or "0" * 40
+    payload = {
+        "ref": f"refs/heads/{branch}",
+        "before": sha,
+        "after": sha,
+        "created": False,
+        "deleted": False,
+        "forced": False,
+        "commits": [],
+        "repository": _repository_payload(repository),
+        "pusher": {"name": user.login, "email": user.email or ""},
+        "sender": _user_payload(user),
+    }
+    schedule_hook_delivery(db, hook, "push", payload)
+    return Response(status_code=204)

@@ -78,11 +78,11 @@ Actions visibility and runner evaluation.
 
 ## Open Bugs
 
-- `docs/bugs/open/repository-webhooks-are-never-delivered.md`
 - `docs/bugs/open/stale-actions-runner-registrations-accumulate.md`
 
 ## Fixed Bugs
 
+- `docs/bugs/fixed/repository-webhooks-are-never-delivered.md`
 - `docs/bugs/fixed/pagination-links-use-the-internal-host.md`
 - `docs/bugs/fixed/pagination-links-drop-query-parameters.md`
 - `docs/bugs/fixed/deleted-repository-leaves-its-history-for-the-next-id.md`

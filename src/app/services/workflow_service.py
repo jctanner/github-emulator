@@ -95,6 +95,7 @@ async def detect_workflows(repo_disk_path: str, ref: str = "HEAD") -> list[dict]
     return workflows
 
 
+from app.services.webhook_service import schedule_webhooks
 from app.services.workflow_triggers import evaluate_trigger
 
 def expand_matrix(job_config: dict) -> list[dict]:
@@ -1209,7 +1210,13 @@ async def dispatch_event(
     ref: str | None = None,
     sha: str | None = None,
 ) -> list[WorkflowRun]:
-    """Dispatch one successful repository activity to matching workflows."""
+    """Dispatch one successful repository activity to matching workflows,
+    and to the repository's webhooks."""
+    # Webhooks receive every activity, whether or not Actions can run for it.
+    try:
+        await schedule_webhooks(db, repository.id, repository.organization_id, event, payload)
+    except Exception:
+        logger.exception("Scheduling %s webhooks for %s failed", event, repository.full_name)
     if not repository.disk_path or not actor:
         return []
     if repository.actions_enabled is False:
@@ -1343,10 +1350,27 @@ async def process_push_event(
         "deleted": deleted,
         "forced": forced,
         "commits": commits,
-        "repository": {"id": repository.id, "full_name": repository.full_name},
+        "repository": _repository_payload(repository),
         "pusher": {"name": user.login, "email": user.email or ""},
-        "sender": {"login": user.login, "id": user.id},
+        "sender": _user_payload(user),
     }
+    if created or deleted:
+        # GitHub sends a create or delete webhook for a branch a push adds or
+        # removes, besides the push itself.
+        ref_event = {
+            "ref": head_branch,
+            "ref_type": "branch",
+            "pusher_type": "user",
+            "repository": _repository_payload(repository),
+            "sender": _user_payload(user),
+        }
+        if created:
+            ref_event["master_branch"] = repository.default_branch or "main"
+            ref_event["description"] = repository.description
+        await schedule_webhooks(
+            db, repository.id, repository.organization_id,
+            "create" if created else "delete", ref_event,
+        )
     runs = await dispatch_event(
         db, repository, user, "push", "", payload,
         ref=head_branch, sha=head_sha,

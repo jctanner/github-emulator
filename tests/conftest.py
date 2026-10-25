@@ -84,6 +84,30 @@ async def app(db_engine, tmp_path):
     yield test_app
 
 
+@pytest_asyncio.fixture(autouse=True)
+async def webhook_requests(db_engine):
+    """Record webhook deliveries instead of sending them.
+
+    Yields the list of requests the hooks received. Deliveries run in the
+    background; the fixture waits for them before the test's database goes.
+    """
+    import httpx
+
+    from app.services import webhook_service
+
+    received: list[httpx.Request] = []
+
+    def receive(request: httpx.Request) -> httpx.Response:
+        received.append(request)
+        return httpx.Response(202, json={"received": True})
+
+    previous = webhook_service.transport
+    webhook_service.transport = httpx.MockTransport(receive)
+    yield received
+    await webhook_service.wait_for_deliveries()
+    webhook_service.transport = previous
+
+
 @pytest_asyncio.fixture
 async def client(app):
     """Create an async HTTP test client."""

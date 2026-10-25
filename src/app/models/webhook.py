@@ -32,7 +32,13 @@ class Webhook(Base):
     )
 
     # Relationships
-    deliveries = relationship("WebhookDelivery", back_populates="webhook", lazy="selectin")
+    # A hook's delivery history goes with it, as on GitHub.
+    deliveries = relationship(
+        "WebhookDelivery",
+        back_populates="webhook",
+        lazy="selectin",
+        cascade="all, delete-orphan",
+    )
 
 
 class WebhookDelivery(Base):
