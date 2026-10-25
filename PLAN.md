@@ -78,6 +78,7 @@ Actions visibility and runner evaluation.
 
 ## Open Bugs
 
+- `docs/bugs/open/repository-webhooks-are-never-delivered.md`
 - `docs/bugs/open/stale-actions-runner-registrations-accumulate.md`
 
 ## Fixed Bugs
