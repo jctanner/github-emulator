@@ -21,7 +21,7 @@ import {Markdown} from "../components/Markdown";
 type Pull = components["schemas"]["PRResponse"];
 type Issue = components["schemas"]["IssueResponse"];
 type Comment = components["schemas"]["IssueCommentResponse"];
-type IssueEvent = components["schemas"]["IssueEventResponse"];
+type IssueEvent = components["schemas"]["TimelineItemResponse"];
 
 export function PullDetailPage() {
   const {owner = "", repo = "", number = "0"} = useParams();
@@ -56,8 +56,8 @@ export function PullDetailPage() {
       api.GET("/api/v3/repos/{owner}/{repo}/issues/{issue_number}/comments", {
         params: {path: issuePath},
       }),
-      api.GET("/api/v3/repos/{owner}/{repo}/issues/{issue_number}/events", {
-        params: {path: issuePath},
+      api.GET("/api/v3/repos/{owner}/{repo}/issues/{issue_number}/timeline", {
+        params: {path: issuePath, query: {per_page: 100}},
       }),
       api.GET("/api/v3/repos/{owner}/{repo}/labels", {
         params: {path: {owner, repo}},
@@ -82,7 +82,7 @@ export function PullDetailPage() {
         "Could not load comments.",
       ),
       events: requireApiData(
-        eventsResult.data,
+        eventsResult.data?.filter((item) => item.event !== "commented"),
         eventsResult.response,
         "Could not load pull request history.",
       ),
@@ -201,6 +201,7 @@ export function PullDetailPage() {
                 issueNumber={pullNumber}
                 comments={page.data.comments}
                 events={page.data.events}
+                onPull
                 additionalEntries={pullReviewEntries(
                   page.data.reviewActivity.reviews,
                   page.data.reviewActivity.comments,

@@ -76,7 +76,7 @@ function mockApi(posted: unknown[] = []) {
             patch: "@@ -12,0 +13 @@\n+hello",
           },
         ]);
-      if (path.endsWith("/events") || path.endsWith("/labels"))
+      if (path.endsWith("/timeline") || path.endsWith("/labels"))
         return Response.json([]);
       if (path.endsWith("/issues/2")) return Response.json({labels: []});
       return Response.json({

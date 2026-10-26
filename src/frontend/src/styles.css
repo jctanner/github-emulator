@@ -2165,6 +2165,47 @@ a:hover {
   color: #656d76;
 }
 
+.cross-reference > div {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+}
+
+.cross-reference-source {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  color: #1f2328;
+}
+
+.cross-reference-source strong {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.cross-reference-state {
+  display: inline-flex;
+  flex: 0 0 auto;
+}
+
+.cross-reference-state.xref-open {
+  color: #1a7f37;
+}
+
+.cross-reference-state.xref-closed {
+  color: #8250df;
+}
+
+.cross-reference-state.is-pull.xref-closed {
+  color: #cf222e;
+}
+
+.cross-reference-state.xref-merged {
+  color: #8250df;
+}
+
 .timeline-event time {
   margin-left: 4px;
   color: #656d76;

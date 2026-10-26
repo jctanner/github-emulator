@@ -1270,6 +1270,27 @@ export interface paths {
         patch: operations["edit_user_admin_api_users__user_id__patch"];
         trace?: never;
     };
+    "/api/_ui/repos/{owner}/{repo}/issues/{number}/live": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Issue Live Updates
+         * @description Server-sent events: ``changed`` whenever the issue or pull request
+         *     with this number, or anything shown on its page, changes.
+         */
+        get: operations["issue_live_updates_api__ui_repos__owner___repo__issues__number__live_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/_ui/repos/{owner}/{repo}/navigation": {
         parameters: {
             query?: never;
@@ -3868,6 +3889,48 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v3/repos/{owner}/{repo}/hooks/{hook_id}/pings": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Ping Hook
+         * @description Send a ping event to the hook.
+         */
+        post: operations["ping_hook_api_v3_repos__owner___repo__hooks__hook_id__pings_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v3/repos/{owner}/{repo}/hooks/{hook_id}/tests": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Test Push Hook
+         * @description Trigger the hook with a push of the default branch's head.
+         *
+         *     As on GitHub, nothing is sent unless the hook is subscribed to push.
+         */
+        post: operations["test_push_hook_api_v3_repos__owner___repo__hooks__hook_id__tests_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v3/repos/{owner}/{repo}/installation": {
         parameters: {
             query?: never;
@@ -4153,6 +4216,26 @@ export interface paths {
          * @description Delete an issue reaction.
          */
         delete: operations["delete_issue_reaction_api_v3_repos__owner___repo__issues__issue_number__reactions__reaction_id__delete"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v3/repos/{owner}/{repo}/issues/{issue_number}/timeline": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List Issue Timeline
+         * @description Comments and events in order, including cross-references.
+         */
+        get: operations["list_issue_timeline_api_v3_repos__owner___repo__issues__issue_number__timeline_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
         options?: never;
         head?: never;
         patch?: never;
@@ -7821,6 +7904,49 @@ export interface components {
             /** Zipball Url */
             zipball_url: string;
         };
+        /**
+         * TimelineItemResponse
+         * @description One entry of ``GET /repos/{owner}/{repo}/issues/{n}/timeline``.
+         *
+         *     As on GitHub, the fields depend on ``event``: a ``commented`` entry is the
+         *     comment with ``event`` and ``actor`` added; a ``cross-referenced`` entry
+         *     has no id and carries ``source``; label events are as in ``/events``.
+         */
+        TimelineItemResponse: {
+            actor?: components["schemas"]["SimpleUser"] | null;
+            /** Author Association */
+            author_association?: string | null;
+            /** Body */
+            body?: string | null;
+            /** Created At */
+            created_at: string;
+            /** Event */
+            event: string;
+            /** Html Url */
+            html_url?: string | null;
+            /** Id */
+            id?: number | null;
+            /** Issue Url */
+            issue_url?: string | null;
+            label?: components["schemas"]["IssueEventLabel"] | null;
+            /** Node Id */
+            node_id?: string | null;
+            source?: components["schemas"]["TimelineSource"] | null;
+            /** Updated At */
+            updated_at?: string | null;
+            /** Url */
+            url?: string | null;
+            user?: components["schemas"]["SimpleUser"] | null;
+        };
+        /**
+         * TimelineSource
+         * @description What a cross-referenced event points back at.
+         */
+        TimelineSource: {
+            issue: components["schemas"]["IssueResponse"];
+            /** Type */
+            type: string;
+        };
         /** TreeCommit */
         TreeCommit: {
             /** Author Name */
@@ -10374,6 +10500,39 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["AdminUserResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    issue_live_updates_api__ui_repos__owner___repo__issues__number__live_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                owner: string;
+                repo: string;
+                number: number;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
                 };
             };
             /** @description Validation Error */
@@ -15930,6 +16089,68 @@ export interface operations {
             };
         };
     };
+    ping_hook_api_v3_repos__owner___repo__hooks__hook_id__pings_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                owner: string;
+                repo: string;
+                hook_id: number;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    test_push_hook_api_v3_repos__owner___repo__hooks__hook_id__tests_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                owner: string;
+                repo: string;
+                hook_id: number;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     repo_installation_api_v3_repos__owner___repo__installation_get: {
         parameters: {
             query?: never;
@@ -16708,6 +16929,42 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content?: never;
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    list_issue_timeline_api_v3_repos__owner___repo__issues__issue_number__timeline_get: {
+        parameters: {
+            query?: {
+                page?: number;
+                per_page?: number;
+            };
+            header?: never;
+            path: {
+                owner: string;
+                repo: string;
+                issue_number: number;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["TimelineItemResponse"][];
+                };
             };
             /** @description Validation Error */
             422: {

@@ -15,7 +15,7 @@ import {Markdown} from "../components/Markdown";
 
 type Issue = components["schemas"]["IssueResponse"];
 type Comment = components["schemas"]["IssueCommentResponse"];
-type IssueEvent = components["schemas"]["IssueEventResponse"];
+type IssueEvent = components["schemas"]["TimelineItemResponse"];
 
 export function IssueDetailPage() {
   const {owner = "", repo = "", number = "0"} = useParams();
@@ -38,8 +38,8 @@ export function IssueDetailPage() {
         api.GET("/api/v3/repos/{owner}/{repo}/issues/{issue_number}/comments", {
           params: {path},
         }),
-        api.GET("/api/v3/repos/{owner}/{repo}/issues/{issue_number}/events", {
-          params: {path},
+        api.GET("/api/v3/repos/{owner}/{repo}/issues/{issue_number}/timeline", {
+          params: {path, query: {per_page: 100}},
         }),
         api.GET("/api/v3/repos/{owner}/{repo}/labels", {
           params: {path: {owner, repo}},
@@ -57,7 +57,7 @@ export function IssueDetailPage() {
         "Could not load comments.",
       ),
       events: requireApiData(
-        eventsResult.data,
+        eventsResult.data?.filter((item) => item.event !== "commented"),
         eventsResult.response,
         "Could not load issue history.",
       ),

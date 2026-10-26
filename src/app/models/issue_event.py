@@ -21,8 +21,14 @@ class IssueEvent(Base):
     )
     event: Mapped[str] = mapped_column(String, nullable=False)
     label: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    # For a cross-referenced event: the issue or pull request whose body or
+    # comment mentioned this one.
+    source_issue_id: Mapped[int | None] = mapped_column(
+        Integer, ForeignKey("issues.id"), nullable=True
+    )
     created_at: Mapped[datetime] = mapped_column(
         DateTime, server_default=func.now(), nullable=False
     )
 
     actor = relationship("User", lazy="selectin")
+    source_issue = relationship("Issue", foreign_keys=[source_issue_id], lazy="selectin")

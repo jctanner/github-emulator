@@ -1,4 +1,5 @@
 import {FormEvent, type ReactNode, useState} from "react";
+import {Link} from "react-router-dom";
 
 import {api} from "../api/client";
 import type {components} from "../api/schema";
@@ -8,7 +9,63 @@ import {Octicon} from "./Octicon";
 import {Markdown} from "./Markdown";
 
 type Comment = components["schemas"]["IssueCommentResponse"];
-type IssueEvent = components["schemas"]["IssueEventResponse"];
+type IssueEvent = components["schemas"]["TimelineItemResponse"];
+type Source = components["schemas"]["TimelineSource"]["issue"];
+
+// "owner/repo" from an issue's repository_url (".../repos/owner/repo").
+function repositoryName(source: Source) {
+  return source.repository_url.split("/repos/")[1] ?? "";
+}
+
+function sourceState(source: Source) {
+  if (!source.pull_request) return source.state;
+  if (source.pull_request.merged_at) return "merged";
+  return source.state;
+}
+
+// GitHub's "mentioned this issue" entry, pointing back at the issue or pull
+// request whose text mentioned this one.
+function CrossReference({event, onPull}: {event: IssueEvent; onPull: boolean}) {
+  const source = event.source?.issue;
+  if (!source) return null;
+  const repository = repositoryName(source);
+  const kind = source.pull_request ? "pulls" : "issues";
+  const state = sourceState(source);
+  return (
+    <div className="timeline-event cross-reference">
+      <span className="timeline-event-icon">
+        <Octicon name="cross-reference" size={16} />
+      </span>
+      <div>
+        <span>
+          <strong>{event.actor?.login}</strong> mentioned this{" "}
+          {onPull ? "pull request" : "issue"}{" "}
+          <time dateTime={event.created_at}>
+            {new Date(event.created_at).toLocaleString()}
+          </time>
+        </span>
+        <Link
+          className="cross-reference-source"
+          to={`/${repository}/${kind}/${source.number}`}
+        >
+          <span
+            className={`cross-reference-state xref-${state}${source.pull_request ? " is-pull" : ""}`}
+            title={state}
+          >
+            <Octicon
+              name={source.pull_request ? "pull-request" : "issue"}
+              size={16}
+            />
+          </span>
+          <strong>{source.title}</strong>
+          <span className="muted">
+            {repository}#{source.number}
+          </span>
+        </Link>
+      </div>
+    </div>
+  );
+}
 
 export function IssueComments({
   owner,
@@ -18,6 +75,7 @@ export function IssueComments({
   events,
   onChanged,
   additionalEntries = [],
+  onPull = false,
 }: {
   owner: string;
   repo: string;
@@ -26,6 +84,7 @@ export function IssueComments({
   events: IssueEvent[];
   onChanged: () => void;
   additionalEntries?: {id: string; createdAt: string; content: ReactNode}[];
+  onPull?: boolean;
 }) {
   const {user} = useSession();
   const [body, setBody] = useState("");
@@ -81,9 +140,11 @@ export function IssueComments({
       createdAt: comment.created_at,
       item: comment,
     })),
-    ...events.map((issueEvent) => ({
+    ...events.map((issueEvent, index) => ({
       kind: "event" as const,
       createdAt: issueEvent.created_at,
+      // A cross-reference has no id of its own.
+      key: issueEvent.id ?? `ref-${issueEvent.source?.issue.id}-${index}`,
       item: issueEvent,
     })),
   ].sort((left, right) => left.createdAt.localeCompare(right.createdAt));
@@ -93,13 +154,20 @@ export function IssueComments({
       {timeline.map((entry) =>
         entry.kind === "additional" ? (
           <div key={entry.item.id}>{entry.item.content}</div>
+        ) : entry.kind === "event" &&
+          entry.item.event === "cross-referenced" ? (
+          <CrossReference
+            key={`event-${entry.key}`}
+            event={entry.item}
+            onPull={onPull}
+          />
         ) : entry.kind === "event" ? (
-          <div className="timeline-event" key={`event-${entry.item.id}`}>
+          <div className="timeline-event" key={`event-${entry.key}`}>
             <span className="timeline-event-icon">
               <Octicon name="tag" size={16} />
             </span>
             <span>
-              <strong>{entry.item.actor.login}</strong>{" "}
+              <strong>{entry.item.actor?.login}</strong>{" "}
               {entry.item.event === "labeled" ? "added" : "removed"}{" "}
               {entry.item.label ? <LabelPill label={entry.item.label} /> : null}{" "}
               <time dateTime={entry.item.created_at}>
