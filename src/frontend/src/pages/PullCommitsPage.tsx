@@ -5,6 +5,7 @@ import type {components} from "../api/schema";
 import {Loadable} from "../components/Loadable";
 import {PullRequestHeader} from "../components/PullRequestHeader";
 import {requireApiData, useApiData} from "../hooks/useApiData";
+import {useLiveUpdates} from "../hooks/useLiveUpdates";
 
 type Pull = components["schemas"]["PRResponse"];
 type Commit = components["schemas"]["PullCommitResponse"];
@@ -38,6 +39,8 @@ export function PullCommitsPage() {
       };
     },
   );
+
+  useLiveUpdates(owner, repo, pullNumber, result.reload);
 
   return (
     <Loadable loading={result.loading} error={result.error}>

@@ -3,7 +3,8 @@
 import asyncio
 import os
 
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, HTTPException, Query, Request
+from fastapi.responses import StreamingResponse
 from sqlalchemy import func, select
 
 from app.api.deps import CurrentUser, DbSession, get_repo_record_or_404
@@ -11,6 +12,7 @@ from app.git.bare_repo import get_commit_count, get_log, get_tag_count, list_tre
 from app.models.branch import Branch
 from app.models.issue import Issue
 from app.models.pull_request import PullRequest
+from app.services.live_updates import Subscription
 from app.schemas.browse import (
     RepositoryHomeSummaryResponse,
     RepositoryNavigationResponse,
@@ -32,6 +34,54 @@ async def _get_visible_repository(owner: str, repo: str, db: DbSession, current_
     ):
         raise HTTPException(status_code=404, detail="Not Found")
     return repository
+
+
+# A comment line this often keeps proxies from closing a quiet stream.
+LIVE_HEARTBEAT_SECONDS = 20.0
+
+
+@router.get("/{owner}/{repo}/issues/{number}/live")
+async def issue_live_updates(
+    owner: str,
+    repo: str,
+    number: int,
+    request: Request,
+    db: DbSession,
+    current_user: CurrentUser,
+):
+    """Server-sent events: ``changed`` whenever the issue or pull request
+    with this number, or anything shown on its page, changes."""
+    repository = await _get_visible_repository(owner, repo, db, current_user)
+    row = (
+        await db.execute(
+            select(Issue.id, PullRequest.id)
+            .outerjoin(PullRequest, PullRequest.issue_id == Issue.id)
+            .where(Issue.repo_id == repository.id, Issue.number == number)
+        )
+    ).first()
+    if row is None:
+        raise HTTPException(status_code=404, detail="Not Found")
+    issue_id, pull_id = row
+    topics = [("issue", issue_id)] + ([("pull", pull_id)] if pull_id else [])
+    # Return the connection now: an open session would hold a SQLite read
+    # transaction for as long as the page stays open.
+    await db.close()
+
+    async def stream():
+        with Subscription(topics) as subscription:
+            # Reconnect quickly after a deploy or a dropped connection.
+            yield "retry: 2000\n\n"
+            while not await request.is_disconnected():
+                if await subscription.wait(LIVE_HEARTBEAT_SECONDS):
+                    yield "data: changed\n\n"
+                else:
+                    yield ": heartbeat\n\n"
+
+    return StreamingResponse(
+        stream(),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
 
 
 @router.get(

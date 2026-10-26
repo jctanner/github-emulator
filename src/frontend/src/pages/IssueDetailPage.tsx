@@ -10,6 +10,7 @@ import {Loadable} from "../components/Loadable";
 import {Octicon} from "../components/Octicon";
 import {useRepositoryLayout} from "../components/RepositoryContext";
 import {requireApiData, useApiData} from "../hooks/useApiData";
+import {useLiveUpdates} from "../hooks/useLiveUpdates";
 
 type Issue = components["schemas"]["IssueResponse"];
 type Comment = components["schemas"]["IssueCommentResponse"];
@@ -65,6 +66,11 @@ export function IssueDetailPage() {
         "Could not load labels.",
       ),
     };
+  });
+
+  useLiveUpdates(owner, repo, issueNumber, () => {
+    page.reload();
+    reloadNavigation();
   });
 
   async function toggleState() {

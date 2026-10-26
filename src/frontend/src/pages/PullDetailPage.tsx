@@ -15,6 +15,7 @@ import {PullRequestHeader} from "../components/PullRequestHeader";
 import {Reviewers} from "../components/ReviewChanges";
 import {useRepositoryLayout} from "../components/RepositoryContext";
 import {requireApiData, useApiData} from "../hooks/useApiData";
+import {useLiveUpdates} from "../hooks/useLiveUpdates";
 
 type Pull = components["schemas"]["PRResponse"];
 type Issue = components["schemas"]["IssueResponse"];
@@ -90,6 +91,11 @@ export function PullDetailPage() {
         "Could not load labels.",
       ),
     };
+  });
+
+  useLiveUpdates(owner, repo, pullNumber, () => {
+    page.reload();
+    reloadNavigation();
   });
 
   async function toggleState() {

@@ -9,6 +9,7 @@ import {ReviewAnchor} from "../components/PullReview";
 import {PullRequestHeader} from "../components/PullRequestHeader";
 import {ReviewChanges} from "../components/ReviewChanges";
 import {requireApiData, useApiData} from "../hooks/useApiData";
+import {useLiveUpdates} from "../hooks/useLiveUpdates";
 
 type Pull = components["schemas"]["PRResponse"];
 type PullFile = components["schemas"]["PullFileResponse"];
@@ -45,6 +46,7 @@ export function PullFilesPage() {
       ),
     };
   });
+  useLiveUpdates(owner, repo, pullNumber, result.reload);
   const data = result.data;
 
   return (
