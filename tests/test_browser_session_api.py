@@ -86,6 +86,27 @@ async def test_users_created_through_the_admin_api_can_sign_in(client):
 
 
 @pytest.mark.asyncio
+async def test_signed_out_page_requests_get_no_basic_challenge(client):
+    # A challenge on the web UI's own fetch would open the browser's native
+    # sign-in dialog over the login page.
+    page_fetch = await client.get(
+        f"{UI_API}/session",
+        headers={"Sec-Fetch-Mode": "cors", "Sec-Fetch-Site": "same-origin"},
+    )
+    assert page_fetch.status_code == 401
+    assert "www-authenticate" not in page_fetch.headers
+
+    # API clients and direct browser navigation still get the challenge.
+    api_client = await client.get(f"{UI_API}/session")
+    assert api_client.headers["www-authenticate"] == 'Basic realm="GitHub Emulator"'
+    navigation = await client.get(
+        "/api/v3/user", headers={"Sec-Fetch-Mode": "navigate"}
+    )
+    assert navigation.status_code == 401
+    assert navigation.headers["www-authenticate"] == 'Basic realm="GitHub Emulator"'
+
+
+@pytest.mark.asyncio
 async def test_browser_session_rejects_invalid_credentials(client):
     response = await client.post(
         f"{UI_API}/session",

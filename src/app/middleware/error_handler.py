@@ -111,11 +111,22 @@ async def github_error_handler(request: Request, exc: GitHubError) -> JSONRespon
 async def http_401_handler(request: Request, exc: Exception) -> JSONResponse:
     """Handle 401 Unauthorized."""
     resp = _build_error_response(401, "Requires authentication")
-    # Preserve WWW-Authenticate header so git clients know to send credentials
+    # Preserve WWW-Authenticate header so git clients know to send credentials,
+    # but not on a page's own fetch: there a Basic challenge makes the browser
+    # open its native sign-in dialog, and the web UI signs in with its own form.
+    scripted = _scripted_browser_request(request)
     if hasattr(exc, "headers") and exc.headers:
         for k, v in exc.headers.items():
-            resp.headers[k] = v
+            if not (scripted and k.lower() == "www-authenticate"):
+                resp.headers[k] = v
     return resp
+
+
+def _scripted_browser_request(request: Request) -> bool:
+    """Whether a browser sent this request from script rather than by
+    navigating to it. Only browsers send Sec-Fetch-Mode."""
+    mode = request.headers.get("sec-fetch-mode")
+    return mode is not None and mode != "navigate"
 
 
 async def http_403_handler(request: Request, exc: Exception) -> JSONResponse:

@@ -84,6 +84,7 @@ Actions visibility and runner evaluation.
 
 ## Fixed Bugs
 
+- `docs/bugs/fixed/login-page-opens-a-basic-auth-dialog.md`
 - `docs/bugs/fixed/repository-webhooks-are-never-delivered.md`
 - `docs/bugs/fixed/pagination-links-use-the-internal-host.md`
 - `docs/bugs/fixed/pagination-links-drop-query-parameters.md`
