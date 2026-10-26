@@ -1,18 +1,23 @@
 import {useMemo} from "react";
 
-import {renderMarkdown} from "../utils/markdown";
+import {renderMarkdown, type UrlResolver} from "../utils/markdown";
 
 /** Issue, pull request, comment and README text, rendered as on GitHub. */
 export function Markdown({
   text,
   file = false,
+  resolveUrl,
   className = "markdown-body",
 }: {
   text: string;
   file?: boolean;
+  resolveUrl?: UrlResolver;
   className?: string;
 }) {
-  const html = useMemo(() => renderMarkdown(text, {file}), [text, file]);
+  const html = useMemo(
+    () => renderMarkdown(text, {file, resolveUrl}),
+    [text, file, resolveUrl],
+  );
   return (
     <div
       className={`${className} markdown-rendered`}

@@ -18,7 +18,7 @@ README files render as GitHub-flavored Markdown instead of raw text.
 - `components/Markdown.tsx` is used by the issue and pull-request pages,
   `IssueComments`, `PullReview` and `pullReviewEntries`.
 - The code browser renders a `README.md` or `README.markdown` as Markdown and
-  any other README as plain text.
+  any other README as plain text. (Extended below.)
 - `.markdown-rendered` styles follow GitHub's spacing for headings, lists,
   task lists, code, tables, quotes and rules.
 
@@ -34,3 +34,23 @@ version.
 - Deployed with `make host-rebuild-github`. In headless Chrome a comment on
   `admin/review-ui-check#2` rendered its heading, table, two task checkboxes,
   highlighted Python and a new-tab link, and its `<script>` did not run.
+
+## Repository Markdown files (2026-10-26)
+
+- A `.md`, `.markdown`, `.mdown` or `.mkd` file's blob page opens rendered,
+  with a **Preview** / **Code** switch in the file header, as on GitHub.
+- The repository home page's README is rendered too; it had still been
+  plain text.
+- `components/RepositoryMarkdown.tsx` renders a repository file. Relative
+  links resolve against the file's folder at the same ref, a leading `/`
+  meaning the repository root: files go to `blob/`, paths ending in `/` to
+  `tree/`, and images to the file's raw URL. Clicking a link to another
+  emulator page navigates within the app.
+- `.file-view` title-bar styles now apply only to the view's own header and
+  heading, so Markdown `h2`s no longer get the grey title bar.
+- Evidence: a `CodeBrowserPage` test covers rendering, link and image
+  resolution and the switch (79 frontend tests pass). In headless Chrome,
+  `experiment/markov-test-repo`'s
+  `examples/markov-workflows/markov-vs-claude-workflows.md` rendered its
+  headings and table, **Code** showed its 93 lines, and the repository home
+  page rendered its README.

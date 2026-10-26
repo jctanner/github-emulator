@@ -33,8 +33,72 @@ DOMPurify.addHook("afterSanitizeAttributes", (node) => {
   }
 });
 
+/** File names GitHub renders as Markdown. */
+export const MARKDOWN_FILE = /\.(md|markdown|mdown|mkd)$/i;
+
+/** Rewrites a relative link or image source; anything else is unchanged. */
+export type UrlResolver = (url: string, kind: "link" | "image") => string;
+
 /** HTML for GitHub-flavored Markdown, sanitized so it is safe to insert. */
-export function renderMarkdown(text: string, {file = false} = {}): string {
+export function renderMarkdown(
+  text: string,
+  {file = false, resolveUrl}: {file?: boolean; resolveUrl?: UrlResolver} = {},
+): string {
   const html = (file ? fileParser : commentParser).parse(text, {async: false});
-  return DOMPurify.sanitize(html, {ADD_ATTR: ["target"]});
+  const clean = DOMPurify.sanitize(html, {ADD_ATTR: ["target"]});
+  if (!resolveUrl) return clean;
+  const holder = document.createElement("template");
+  holder.innerHTML = clean;
+  for (const link of holder.content.querySelectorAll("a[href]")) {
+    link.setAttribute("href", resolveUrl(link.getAttribute("href")!, "link"));
+  }
+  for (const image of holder.content.querySelectorAll("img[src]")) {
+    image.setAttribute("src", resolveUrl(image.getAttribute("src")!, "image"));
+  }
+  return holder.innerHTML;
+}
+
+function isRelative(url: string) {
+  return !/^([a-z][a-z0-9+.-]*:|\/\/|#)/i.test(url);
+}
+
+// Resolve `target` against the directory `base`; a leading "/" is the
+// repository root, as on GitHub.
+function joinPath(base: string, target: string) {
+  const parts = target.startsWith("/") ? [] : base.split("/").filter(Boolean);
+  for (const part of target.split("/")) {
+    if (part === "..") parts.pop();
+    else if (part && part !== ".") parts.push(part);
+  }
+  return parts.join("/");
+}
+
+/**
+ * Resolves a repository file's relative links as GitHub does: links go to the
+ * file or folder page at the same ref, images to the raw file.
+ */
+export function repositoryUrlResolver({
+  owner,
+  repo,
+  ref,
+  path,
+  rawBase,
+}: {
+  owner: string;
+  repo: string;
+  ref: string;
+  path: string;
+  rawBase: string;
+}): UrlResolver {
+  const directory = path.split("/").slice(0, -1).join("/");
+  return (url, kind) => {
+    if (!isRelative(url)) return url;
+    const [, target = "", suffix = ""] = /^([^?#]*)(.*)$/.exec(url) ?? [];
+    if (!target) return url;
+    const resolved = joinPath(directory, target);
+    if (kind === "image") return `${rawBase}/${resolved}${suffix}`;
+    // A trailing slash names a folder; GitHub redirects either way.
+    const view = target.endsWith("/") ? "tree" : "blob";
+    return `/ui/${owner}/${repo}/${view}/${encodeURIComponent(ref)}/${resolved}${suffix}`;
+  };
 }

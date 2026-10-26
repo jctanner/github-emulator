@@ -151,7 +151,11 @@ describe("CodeBrowserPage", () => {
 });
 
 describe("CodeBrowserPage file view", () => {
-  const render_ = (path: string, content: string) => {
+  const render_ = (
+    path: string,
+    content: string,
+    downloadUrl: string | null = null,
+  ) => {
     vi.stubGlobal(
       "fetch",
       vi.fn().mockImplementation((input: Request) => {
@@ -165,7 +169,7 @@ describe("CodeBrowserPage file view", () => {
             name: path,
             path,
             content: btoa(content),
-            download_url: null,
+            download_url: downloadUrl,
           }),
         );
       }),
@@ -196,5 +200,35 @@ describe("CodeBrowserPage file view", () => {
 
     expect(await screen.findByText("just <b>text</b>")).toBeVisible();
     expect(document.querySelector(".code-lines [class^='hljs-']")).toBeNull();
+  });
+
+  it("renders a Markdown file, resolving relative links, with its source a click away", async () => {
+    render_(
+      "docs/guide.md",
+      "# Guide\n\nSee [the readme](../README.md), [setup](setup.md#install), " +
+        "[the docs](./) and [Markov](https://example.com/markov).\n\n![diagram](img/flow.png)\n",
+      "https://github.local/octo/demo/raw/main/docs/guide.md",
+    );
+
+    expect(
+      await screen.findByRole("heading", {name: "Guide"}),
+    ).toBeInTheDocument();
+    const href = (name: string) =>
+      screen.getByRole("link", {name}).getAttribute("href");
+    expect(href("the readme")).toBe("/ui/octo/demo/blob/main/README.md");
+    expect(href("setup")).toBe("/ui/octo/demo/blob/main/docs/setup.md#install");
+    expect(href("the docs")).toBe("/ui/octo/demo/tree/main/docs");
+    expect(href("Markov")).toBe("https://example.com/markov");
+    expect(screen.getByRole("img", {name: "diagram"})).toHaveAttribute(
+      "src",
+      "https://github.local/octo/demo/raw/main/docs/img/flow.png",
+    );
+    expect(document.querySelector(".code-lines")).toBeNull();
+
+    fireEvent.click(screen.getByRole("button", {name: "Code"}));
+    expect(screen.getByText("# Guide")).toBeInTheDocument();
+    expect(document.querySelector(".markdown-rendered")).toBeNull();
+    fireEvent.click(screen.getByRole("button", {name: "Preview"}));
+    expect(screen.getByRole("heading", {name: "Guide"})).toBeInTheDocument();
   });
 });

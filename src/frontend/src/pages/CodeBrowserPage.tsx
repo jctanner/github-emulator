@@ -1,4 +1,4 @@
-import {Fragment, useMemo} from "react";
+import {Fragment, useMemo, useState} from "react";
 import {Link, useParams} from "react-router-dom";
 
 import {api} from "../api/client";
@@ -13,7 +13,8 @@ import {requireApiData, useApiData} from "../hooks/useApiData";
 import {useRepositorySummary} from "../hooks/useRepositorySummary";
 import {decodeBase64Content} from "../utils/content";
 import {highlightLines} from "../utils/highlight";
-import {Markdown} from "../components/Markdown";
+import {MARKDOWN_FILE} from "../utils/markdown";
+import {RepositoryMarkdown} from "../components/RepositoryMarkdown";
 
 type Content = components["schemas"]["ContentResponse"];
 interface BrowserData {
@@ -75,6 +76,11 @@ export function CodeBrowserPage({blob = false}: {blob?: boolean}) {
     () => (file ? highlightLines(content, file.path) : null),
     [file, content],
   );
+  // A Markdown file opens rendered, as on GitHub; this remembers which path
+  // was switched to its source.
+  const [codePath, setCodePath] = useState<string | null>(null);
+  const markdownFile = file && MARKDOWN_FILE.test(file.name) ? file : null;
+  const showPreview = markdownFile !== null && codePath !== markdownFile.path;
 
   return (
     <>
@@ -143,23 +149,56 @@ export function CodeBrowserPage({blob = false}: {blob?: boolean}) {
         ) : null}
         {file ? (
           <section className="file-view blob-view">
-            <header>{file.path}</header>
-            <ol className="code-lines">
-              {content.split("\n").map((line, index) => (
-                <li key={`${index}-${line.slice(0, 20)}`}>
-                  {highlighted ? (
-                    <code
-                      // highlight.js escapes the source and emits only spans.
-                      dangerouslySetInnerHTML={{
-                        __html: highlighted[index] || " ",
-                      }}
-                    />
-                  ) : (
-                    <code>{line || " "}</code>
-                  )}
-                </li>
-              ))}
-            </ol>
+            <header>
+              {markdownFile ? (
+                <div
+                  className="segmented-control"
+                  role="group"
+                  aria-label="File view"
+                >
+                  <button
+                    type="button"
+                    aria-pressed={showPreview}
+                    onClick={() => setCodePath(null)}
+                  >
+                    Preview
+                  </button>
+                  <button
+                    type="button"
+                    aria-pressed={!showPreview}
+                    onClick={() => setCodePath(markdownFile.path)}
+                  >
+                    Code
+                  </button>
+                </div>
+              ) : null}
+              <span>{file.path}</span>
+            </header>
+            {showPreview ? (
+              <RepositoryMarkdown
+                owner={owner}
+                repo={repo}
+                gitRef={ref}
+                file={file}
+              />
+            ) : (
+              <ol className="code-lines">
+                {content.split("\n").map((line, index) => (
+                  <li key={`${index}-${line.slice(0, 20)}`}>
+                    {highlighted ? (
+                      <code
+                        // highlight.js escapes the source and emits only spans.
+                        dangerouslySetInnerHTML={{
+                          __html: highlighted[index] || " ",
+                        }}
+                      />
+                    ) : (
+                      <code>{line || " "}</code>
+                    )}
+                  </li>
+                ))}
+              </ol>
+            )}
           </section>
         ) : null}
         {result.data?.readme ? (
@@ -167,10 +206,12 @@ export function CodeBrowserPage({blob = false}: {blob?: boolean}) {
             <h2>
               <Octicon name="book" /> README
             </h2>
-            {/\.(md|markdown)$/i.test(result.data.readme.name) ? (
-              <Markdown
-                file
-                text={decodeBase64Content(result.data.readme.content)}
+            {MARKDOWN_FILE.test(result.data.readme.name) ? (
+              <RepositoryMarkdown
+                owner={owner}
+                repo={repo}
+                gitRef={ref}
+                file={result.data.readme}
               />
             ) : (
               <pre>{decodeBase64Content(result.data.readme.content)}</pre>

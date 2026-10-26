@@ -5,11 +5,13 @@ import type {components} from "../api/schema";
 import {BranchSelector} from "../components/BranchSelector";
 import {Octicon} from "../components/Octicon";
 import {RepositoryActivity} from "../components/RepositoryActivity";
+import {RepositoryMarkdown} from "../components/RepositoryMarkdown";
 import {RepositoryTreeList} from "../components/RepositoryTreeList";
 import {useRepository} from "../components/RepositoryContext";
 import {requireApiData, useApiData} from "../hooks/useApiData";
 import {useRepositorySummary} from "../hooks/useRepositorySummary";
 import {decodeBase64Content} from "../utils/content";
+import {MARKDOWN_FILE} from "../utils/markdown";
 
 type Content = components["schemas"]["ContentResponse"];
 
@@ -55,7 +57,16 @@ export function RepositoryPage() {
           <h2>
             <Octicon name="book" /> README
           </h2>
-          <pre>{decodeBase64Content(readme.data.content)}</pre>
+          {MARKDOWN_FILE.test(readme.data.name) ? (
+            <RepositoryMarkdown
+              owner={owner}
+              repo={repo}
+              gitRef={ref}
+              file={readme.data}
+            />
+          ) : (
+            <pre>{decodeBase64Content(readme.data.content)}</pre>
+          )}
         </section>
       ) : null}
     </>
