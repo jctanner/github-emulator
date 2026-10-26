@@ -40,6 +40,16 @@ function mockApi(posted: unknown[] = []) {
     "fetch",
     vi.fn(async (request: Request) => {
       const path = new URL(request.url).pathname;
+      if (request.method === "POST" && path.endsWith("/issues/2/comments")) {
+        const {body} = (await request.json()) as {body: string};
+        issueComments.push({
+          id: 2,
+          user: {login: "admin"},
+          body,
+          created_at: "2026-10-23T11:00:00Z",
+        });
+        return Response.json(issueComments.at(-1), {status: 201});
+      }
       if (request.method === "POST" && path.endsWith("/reviews")) {
         posted.push(await request.json());
         return Response.json({id: 71, state: "APPROVED"}, {status: 201});
@@ -194,5 +204,29 @@ describe("pull request review pages", () => {
       await screen.findByRole("heading", {name: "Reviewers"})
     ).closest("section")!;
     expect(reviewers).toHaveTextContent("markov-botCommented");
+  });
+
+  it("shows a new comment without unloading the page", async () => {
+    mockApi();
+    session.user = {login: "admin"};
+    const {container} = render(
+      <MemoryRouter initialEntries={["/experiment/demo/pulls/2"]}>
+        <Routes>
+          <Route
+            path="/:owner/:repo/pulls/:number"
+            element={<PullDetailPage />}
+          />
+        </Routes>
+      </MemoryRouter>,
+    );
+    const heading = await screen.findByRole("heading", {name: /README fix/});
+    const box = container.querySelector("#new-comment")!;
+    fireEvent.change(box, {target: {value: "Thanks!"}});
+    fireEvent.click(screen.getByRole("button", {name: "Comment"}));
+    expect(await screen.findByText("Thanks!")).toBeVisible();
+    expect(screen.queryByText("Loading…")).toBeNull();
+    // The same page instance, not a remount.
+    expect(heading).toBeInTheDocument();
+    expect(box).toHaveValue("");
   });
 });

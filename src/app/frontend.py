@@ -7,6 +7,14 @@ from fastapi.staticfiles import StaticFiles
 from starlette.exceptions import HTTPException
 
 
+# Vite names every asset by its content hash, so a cached copy can never be
+# stale. index.html names the current assets, so browsers must revalidate it
+# on each visit; without this they cache it heuristically and keep running
+# the previous build after a deploy.
+ASSET_CACHE = "public, max-age=31536000, immutable"
+SHELL_CACHE = "no-cache"
+
+
 class FrontendStaticFiles(StaticFiles):
     """Serve built assets and return `index.html` for client-side routes."""
 
@@ -14,6 +22,14 @@ class FrontendStaticFiles(StaticFiles):
         super().__init__(directory=str(directory), html=True, check_dir=False)
 
     async def get_response(self, path: str, scope):
+        response = await self._resolve(path, scope)
+        if response.status_code in (200, 304):
+            response.headers["Cache-Control"] = (
+                ASSET_CACHE if self._looks_like_asset(path) else SHELL_CACHE
+            )
+        return response
+
+    async def _resolve(self, path: str, scope):
         try:
             response = await super().get_response(path, scope)
         except HTTPException as exc:

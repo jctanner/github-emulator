@@ -21,17 +21,28 @@ export function useApiData<T>(
   });
   const [revision, setRevision] = useState(0);
   const reload = useCallback(() => setRevision((value) => value + 1), []);
+  // The key whose data is on screen. Reloading it refetches in the
+  // background and swaps the result in, so the page stays mounted (scroll
+  // position, open menus, drafts) instead of flashing "Loading…"; only a
+  // new key starts from the loading state.
+  const shownKey = useRef<string | null>(null);
 
   useEffect(() => {
     let active = true;
-    setState({data: null, error: null, loading: true, reload});
+    if (shownKey.current !== key) {
+      shownKey.current = null;
+      setState({data: null, error: null, loading: true, reload});
+    }
     void loaderRef
       .current()
       .then((data) => {
-        if (active) setState({data, error: null, loading: false, reload});
+        if (!active) return;
+        shownKey.current = key;
+        setState({data, error: null, loading: false, reload});
       })
       .catch((caught: unknown) => {
         if (active) {
+          shownKey.current = null;
           setState({
             data: null,
             error: caught instanceof Error ? caught.message : "Request failed.",

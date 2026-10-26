@@ -247,7 +247,7 @@ function BranchSettings({owner, repo}: {owner: string; repo: string}) {
         </section>
         <form
           className="editor-form settings-form"
-          key={`${selected}:${protection.loading}`}
+          key={`${selected}:${JSON.stringify(protection.data)}`}
           onSubmit={(event) => void save(event)}
         >
           <h2>Protect a branch</h2>

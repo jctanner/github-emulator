@@ -25,6 +25,7 @@ Actions visibility and runner evaluation.
 
 ## Completed Tasks
 
+- `docs/tasks/done/web-ui-reload-in-place.md`
 - `docs/tasks/done/pull-request-web-review-submission.md`
 - `docs/tasks/done/org-membership-api.md`
 - `docs/tasks/done/admin-organization-owner.md`
