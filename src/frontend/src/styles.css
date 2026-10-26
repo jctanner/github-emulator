@@ -2220,6 +2220,120 @@ a:hover {
   white-space: pre-wrap;
 }
 
+/* Rendered Markdown keeps only the spacing its own elements give it. */
+.markdown-rendered {
+  white-space: normal;
+  overflow-wrap: break-word;
+}
+
+.markdown-rendered > :first-child {
+  margin-top: 0;
+}
+
+.markdown-rendered > :last-child {
+  margin-bottom: 0;
+}
+
+.markdown-rendered :is(p, ul, ol, blockquote, pre, table, details) {
+  margin: 0 0 16px;
+}
+
+.markdown-rendered :is(h1, h2, h3, h4, h5, h6) {
+  margin: 24px 0 16px;
+  font-weight: 600;
+  line-height: 1.25;
+}
+
+.markdown-rendered :is(h1, h2) {
+  padding-bottom: 0.3em;
+  border-bottom: 1px solid #d1d9e0;
+}
+
+.markdown-rendered h1 {
+  font-size: 2em;
+}
+
+.markdown-rendered h2 {
+  font-size: 1.5em;
+}
+
+.markdown-rendered h3 {
+  font-size: 1.25em;
+}
+
+.markdown-rendered :is(ul, ol) {
+  padding-left: 2em;
+}
+
+.markdown-rendered li + li {
+  margin-top: 0.25em;
+}
+
+.markdown-rendered li:has(> input[type="checkbox"]) {
+  list-style: none;
+}
+
+.markdown-rendered li > input[type="checkbox"] {
+  margin: 0 0.3em 0.2em -1.4em;
+  vertical-align: middle;
+}
+
+.markdown-rendered blockquote {
+  padding: 0 1em;
+  color: #59636e;
+  border-left: 0.25em solid #d1d9e0;
+}
+
+.markdown-rendered code {
+  padding: 0.2em 0.4em;
+  font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, monospace;
+  font-size: 85%;
+  background: rgb(129 139 152 / 12%);
+  border-radius: 6px;
+}
+
+.markdown-rendered pre {
+  padding: 16px;
+  overflow: auto;
+  font-size: 85%;
+  line-height: 1.45;
+  background: #f6f8fa;
+  border-radius: 6px;
+}
+
+.markdown-rendered pre code {
+  padding: 0;
+  font-size: 100%;
+  background: transparent;
+}
+
+.markdown-rendered table {
+  display: block;
+  max-width: 100%;
+  overflow: auto;
+  border-collapse: collapse;
+}
+
+.markdown-rendered :is(th, td) {
+  padding: 6px 13px;
+  border: 1px solid #d1d9e0;
+}
+
+.markdown-rendered tr:nth-child(2n) {
+  background: #f6f8fa;
+}
+
+.markdown-rendered img {
+  max-width: 100%;
+}
+
+.markdown-rendered hr {
+  height: 0.25em;
+  margin: 24px 0;
+  background: #d1d9e0;
+  border: 0;
+}
+
 footer {
   width: min(1216px, calc(100% - 32px));
   margin: 64px auto 24px;

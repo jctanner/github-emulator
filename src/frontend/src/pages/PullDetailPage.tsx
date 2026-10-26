@@ -16,6 +16,7 @@ import {Reviewers} from "../components/ReviewChanges";
 import {useRepositoryLayout} from "../components/RepositoryContext";
 import {requireApiData, useApiData} from "../hooks/useApiData";
 import {useLiveUpdates} from "../hooks/useLiveUpdates";
+import {Markdown} from "../components/Markdown";
 
 type Pull = components["schemas"]["PRResponse"];
 type Issue = components["schemas"]["IssueResponse"];
@@ -190,9 +191,9 @@ export function PullDetailPage() {
                     </details>
                   ) : null}
                 </header>
-                <div className="markdown-body">
-                  {page.data.pull.body ?? "No description provided."}
-                </div>
+                <Markdown
+                  text={page.data.pull.body || "_No description provided._"}
+                />
               </article>
               <IssueComments
                 owner={owner}

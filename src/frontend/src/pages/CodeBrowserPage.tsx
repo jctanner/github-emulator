@@ -13,6 +13,7 @@ import {requireApiData, useApiData} from "../hooks/useApiData";
 import {useRepositorySummary} from "../hooks/useRepositorySummary";
 import {decodeBase64Content} from "../utils/content";
 import {highlightLines} from "../utils/highlight";
+import {Markdown} from "../components/Markdown";
 
 type Content = components["schemas"]["ContentResponse"];
 interface BrowserData {
@@ -166,7 +167,14 @@ export function CodeBrowserPage({blob = false}: {blob?: boolean}) {
             <h2>
               <Octicon name="book" /> README
             </h2>
-            <pre>{decodeBase64Content(result.data.readme.content)}</pre>
+            {/\.(md|markdown)$/i.test(result.data.readme.name) ? (
+              <Markdown
+                file
+                text={decodeBase64Content(result.data.readme.content)}
+              />
+            ) : (
+              <pre>{decodeBase64Content(result.data.readme.content)}</pre>
+            )}
           </section>
         ) : null}
         {blob && items ? (

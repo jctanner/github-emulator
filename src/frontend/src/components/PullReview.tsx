@@ -2,6 +2,7 @@ import {useEffect} from "react";
 import {Link, useLocation} from "react-router-dom";
 
 import type {ReviewComment} from "../api/reviews";
+import {Markdown} from "./Markdown";
 
 export function ReviewCommentCard({
   comment,
@@ -43,7 +44,7 @@ export function ReviewCommentCard({
           </>
         ) : null}
       </div>
-      <div className="markdown-body">{comment.body}</div>
+      <Markdown text={comment.body} />
     </article>
   );
 }

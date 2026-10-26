@@ -1,5 +1,6 @@
 import type {PullReview, ReviewComment} from "../api/reviews";
 import {ReviewCommentCard} from "./PullReview";
+import {Markdown} from "./Markdown";
 
 export function pullReviewEntries(
   reviews: PullReview[],
@@ -39,7 +40,7 @@ export function pullReviewEntries(
             </a>
           </header>
           {review.body ? (
-            <div className="markdown-body">{review.body}</div>
+            <Markdown text={review.body} />
           ) : null}
           {comments
             .filter((c) => c.pull_request_review_id === review.id)

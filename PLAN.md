@@ -27,6 +27,7 @@ Actions visibility and runner evaluation.
 
 - `docs/tasks/done/live-issue-and-pull-updates.md`
 - `docs/tasks/done/web-ui-reload-in-place.md`
+- `docs/tasks/done/web-ui-markdown-rendering.md`
 - `docs/tasks/done/pull-request-web-review-submission.md`
 - `docs/tasks/done/org-membership-api.md`
 - `docs/tasks/done/admin-organization-owner.md`

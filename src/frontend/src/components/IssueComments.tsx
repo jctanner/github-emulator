@@ -5,6 +5,7 @@ import type {components} from "../api/schema";
 import {useSession} from "../auth/SessionContext";
 import {LabelPill} from "./LabelPill";
 import {Octicon} from "./Octicon";
+import {Markdown} from "./Markdown";
 
 type Comment = components["schemas"]["IssueCommentResponse"];
 type IssueEvent = components["schemas"]["IssueEventResponse"];
@@ -170,7 +171,7 @@ export function IssueComments({
                 </div>
               </div>
             ) : (
-              <div className="markdown-body">{entry.item.body}</div>
+              <Markdown text={entry.item.body} />
             )}
           </article>
         ),

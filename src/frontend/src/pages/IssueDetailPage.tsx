@@ -11,6 +11,7 @@ import {Octicon} from "../components/Octicon";
 import {useRepositoryLayout} from "../components/RepositoryContext";
 import {requireApiData, useApiData} from "../hooks/useApiData";
 import {useLiveUpdates} from "../hooks/useLiveUpdates";
+import {Markdown} from "../components/Markdown";
 
 type Issue = components["schemas"]["IssueResponse"];
 type Comment = components["schemas"]["IssueCommentResponse"];
@@ -164,9 +165,9 @@ export function IssueDetailPage() {
                     </details>
                   ) : null}
                 </header>
-                <div className="markdown-body">
-                  {page.data.issue.body ?? "No description provided."}
-                </div>
+                <Markdown
+                  text={page.data.issue.body || "_No description provided._"}
+                />
               </article>
               <IssueComments
                 owner={owner}

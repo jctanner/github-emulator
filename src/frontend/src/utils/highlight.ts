@@ -124,3 +124,14 @@ export function highlightLines(code: string, path: string): string[] | null {
   );
   return lines.length === code.split("\n").length ? lines : null;
 }
+
+/**
+ * Highlighted HTML for a Markdown code fence tagged `language` (a name or an
+ * alias such as py or sh), or null when the language is not known.
+ */
+export function highlightFence(code: string, language: string): string | null {
+  if (!language || code.length > MAX_CHARS || !hljs.getLanguage(language)) {
+    return null;
+  }
+  return hljs.highlight(code, {language, ignoreIllegals: true}).value;
+}
