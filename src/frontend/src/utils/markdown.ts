@@ -24,7 +24,10 @@ const fileParser = parser(false);
 
 // Links out of the emulator open in a new tab without handing it this page.
 DOMPurify.addHook("afterSanitizeAttributes", (node) => {
-  if (node.tagName === "A" && /^https?:/i.test(node.getAttribute("href") ?? "")) {
+  if (
+    node.tagName === "A" &&
+    /^https?:/i.test(node.getAttribute("href") ?? "")
+  ) {
     node.setAttribute("target", "_blank");
     node.setAttribute("rel", "noopener noreferrer");
   }

@@ -39,9 +39,7 @@ export function pullReviewEntries(
               )}
             </a>
           </header>
-          {review.body ? (
-            <Markdown text={review.body} />
-          ) : null}
+          {review.body ? <Markdown text={review.body} /> : null}
           {comments
             .filter((c) => c.pull_request_review_id === review.id)
             .map((comment) => (
