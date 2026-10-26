@@ -66,3 +66,16 @@ export async function loadPullReviewActivity(path: PullPath) {
       .sort((a, b) => a.created_at.localeCompare(b.created_at) || a.id - b.id),
   };
 }
+
+// Each reviewer's standing verdict: a later comment-only review does not
+// replace an earlier approval or change request, as in GitHub's sidebar.
+export function reviewerStates(reviews: Pick<PullReview, "user" | "state">[]) {
+  const states = new Map<string, string>();
+  for (const review of reviews) {
+    const login = review.user?.login;
+    if (!login) continue;
+    if (review.state !== "COMMENTED" || !states.has(login))
+      states.set(login, review.state);
+  }
+  return [...states.entries()].map(([login, state]) => ({login, state}));
+}

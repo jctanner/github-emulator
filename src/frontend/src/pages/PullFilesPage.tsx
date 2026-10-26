@@ -7,6 +7,7 @@ import {Loadable} from "../components/Loadable";
 import {FileDiffList} from "../components/FileDiffList";
 import {ReviewAnchor} from "../components/PullReview";
 import {PullRequestHeader} from "../components/PullRequestHeader";
+import {ReviewChanges} from "../components/ReviewChanges";
 import {requireApiData, useApiData} from "../hooks/useApiData";
 
 type Pull = components["schemas"]["PRResponse"];
@@ -56,6 +57,12 @@ export function PullFilesPage() {
             <strong>{data.files.length} changed files</strong>
             <span className="diff-additions">+{data.pull.additions}</span>
             <span className="diff-deletions">-{data.pull.deletions}</span>
+            <ReviewChanges
+              owner={owner}
+              repo={repo}
+              pull={data.pull}
+              onSubmitted={result.reload}
+            />
           </div>
           <FileDiffList
             files={data.files}

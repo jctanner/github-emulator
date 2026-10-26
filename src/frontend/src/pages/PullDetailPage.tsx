@@ -12,6 +12,7 @@ import {LabelManager} from "../components/LabelManager";
 import {Loadable} from "../components/Loadable";
 import {Octicon} from "../components/Octicon";
 import {PullRequestHeader} from "../components/PullRequestHeader";
+import {Reviewers} from "../components/ReviewChanges";
 import {useRepositoryLayout} from "../components/RepositoryContext";
 import {requireApiData, useApiData} from "../hooks/useApiData";
 
@@ -229,6 +230,10 @@ export function PullDetailPage() {
               )}
             </main>
             <aside className="conversation-sidebar">
+              <Reviewers
+                reviews={page.data.reviewActivity.reviews}
+                filesHref={`/${owner}/${repo}/pulls/${pullNumber}/files`}
+              />
               <LabelManager
                 owner={owner}
                 repo={repo}

@@ -1,15 +1,19 @@
-import {render, screen} from "@testing-library/react";
+import {fireEvent, render, screen, waitFor} from "@testing-library/react";
 import {MemoryRouter, Route, Routes} from "react-router-dom";
 import {afterEach, describe, expect, it, vi} from "vitest";
 
 import {PullDetailPage} from "./PullDetailPage";
 import {PullFilesPage} from "./PullFilesPage";
 
-vi.mock("../auth/SessionContext", () => ({useSession: () => ({user: null})}));
+const session = vi.hoisted(() => ({user: null as {login: string} | null}));
+vi.mock("../auth/SessionContext", () => ({useSession: () => session}));
 vi.mock("../components/RepositoryContext", () => ({
   useRepositoryLayout: () => ({reloadNavigation: vi.fn()}),
 }));
-afterEach(() => vi.unstubAllGlobals());
+afterEach(() => {
+  vi.unstubAllGlobals();
+  session.user = null;
+});
 
 const comment = {
   id: 20,
@@ -23,11 +27,23 @@ const comment = {
   position: null,
   in_reply_to_id: null,
 };
-function mockApi() {
+function mockApi(posted: unknown[] = []) {
+  const issueComments = [
+    {
+      id: 1,
+      user: {login: "admin"},
+      body: "/mk-review",
+      created_at: "2026-10-23T09:00:00Z",
+    },
+  ];
   vi.stubGlobal(
     "fetch",
-    vi.fn((request: Request) => {
+    vi.fn(async (request: Request) => {
       const path = new URL(request.url).pathname;
+      if (request.method === "POST" && path.endsWith("/reviews")) {
+        posted.push(await request.json());
+        return Response.json({id: 71, state: "APPROVED"}, {status: 201});
+      }
       if (path.endsWith("/reviews"))
         return Response.json([
           {
@@ -40,14 +56,7 @@ function mockApi() {
         ]);
       if (path.endsWith("/pulls/2/comments")) return Response.json([comment]);
       if (path.endsWith("/issues/2/comments"))
-        return Response.json([
-          {
-            id: 1,
-            user: {login: "admin"},
-            body: "/mk-review",
-            created_at: "2026-10-23T09:00:00Z",
-          },
-        ]);
+        return Response.json(issueComments);
       if (path.endsWith("/files"))
         return Response.json([
           {
@@ -119,5 +128,71 @@ describe("pull request review pages", () => {
     expect(
       container.querySelector("#discussion_r20")?.previousElementSibling,
     ).toHaveTextContent("+hello");
+  });
+
+  it("submits an approval from Files changed", async () => {
+    const posted: unknown[] = [];
+    mockApi(posted);
+    session.user = {login: "reviewer"};
+    render(
+      <MemoryRouter initialEntries={["/experiment/demo/pulls/2/files"]}>
+        <Routes>
+          <Route
+            path="/:owner/:repo/pulls/:number/files"
+            element={<PullFilesPage />}
+          />
+        </Routes>
+      </MemoryRouter>,
+    );
+    fireEvent.click(
+      await screen.findByRole("button", {name: /Review changes/}),
+    );
+    fireEvent.change(screen.getByLabelText("Review summary"), {
+      target: {value: "Looks good"},
+    });
+    fireEvent.click(screen.getByRole("radio", {name: /Approve/}));
+    fireEvent.click(screen.getByRole("button", {name: "Submit review"}));
+    await waitFor(() =>
+      expect(posted).toEqual([{event: "APPROVE", body: "Looks good"}]),
+    );
+  });
+
+  it("lets authors only comment on their own pull request", async () => {
+    mockApi();
+    session.user = {login: "admin"};
+    render(
+      <MemoryRouter initialEntries={["/experiment/demo/pulls/2/files"]}>
+        <Routes>
+          <Route
+            path="/:owner/:repo/pulls/:number/files"
+            element={<PullFilesPage />}
+          />
+        </Routes>
+      </MemoryRouter>,
+    );
+    fireEvent.click(
+      await screen.findByRole("button", {name: /Review changes/}),
+    );
+    expect(screen.getByRole("radio", {name: /Comment/})).toBeEnabled();
+    expect(screen.getByRole("radio", {name: /Approve/})).toBeDisabled();
+    expect(screen.getByRole("radio", {name: /Request changes/})).toBeDisabled();
+  });
+
+  it("shows each reviewer's verdict in the conversation sidebar", async () => {
+    mockApi();
+    render(
+      <MemoryRouter initialEntries={["/experiment/demo/pulls/2"]}>
+        <Routes>
+          <Route
+            path="/:owner/:repo/pulls/:number"
+            element={<PullDetailPage />}
+          />
+        </Routes>
+      </MemoryRouter>,
+    );
+    const reviewers = (
+      await screen.findByRole("heading", {name: "Reviewers"})
+    ).closest("section")!;
+    expect(reviewers).toHaveTextContent("markov-botCommented");
   });
 });

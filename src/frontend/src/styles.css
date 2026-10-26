@@ -2521,3 +2521,101 @@ footer {
   outline: 2px solid #0969da;
   scroll-margin-top: 24px;
 }
+
+.review-changes {
+  position: relative;
+  margin-left: auto;
+}
+
+.review-changes > .button {
+  margin-top: 0;
+}
+
+.review-changes-popover {
+  position: absolute;
+  z-index: 20;
+  top: 40px;
+  right: 0;
+  display: flex;
+  width: min(420px, calc(100vw - 32px));
+  flex-direction: column;
+  gap: 10px;
+  padding: 16px;
+  border: 1px solid #d0d7de;
+  border-radius: 6px;
+  background: #ffffff;
+  box-shadow: 0 8px 24px rgb(140 149 159 / 25%);
+}
+
+.review-changes-popover h3 {
+  margin: 0;
+  font-size: 14px;
+}
+
+.review-changes-popover textarea {
+  width: 100%;
+  padding: 8px 12px;
+  border: 1px solid #d0d7de;
+  border-radius: 6px;
+  font: inherit;
+  resize: vertical;
+}
+
+.review-choice {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  cursor: pointer;
+}
+
+.review-choice input {
+  margin-top: 3px;
+}
+
+.review-choice > span {
+  display: flex;
+  flex-direction: column;
+}
+
+.review-choice small {
+  color: #656d76;
+}
+
+.review-choice.disabled {
+  cursor: not-allowed;
+  opacity: 0.6;
+}
+
+.review-changes-popover .button-row .button {
+  margin-top: 0;
+}
+
+.reviewer-list {
+  margin: 8px 0;
+  padding: 0;
+  list-style: none;
+}
+
+.reviewer-list li {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 2px 0;
+  font-size: 12px;
+}
+
+.review-state {
+  color: #656d76;
+}
+
+.review-state-APPROVED {
+  color: #1a7f37;
+}
+
+.review-state-CHANGES_REQUESTED {
+  color: #cf222e;
+}
+
+.reviewers > a {
+  font-size: 12px;
+}
