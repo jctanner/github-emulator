@@ -71,6 +71,21 @@ async def test_browser_session_login_current_user_and_logout(
 
 
 @pytest.mark.asyncio
+async def test_users_created_through_the_admin_api_can_sign_in(client):
+    created = await client.post(
+        "/api/v3/admin/users",
+        json={"login": "seeded", "password": "seeded-pass", "email": "seeded@example.invalid"},
+    )
+    assert created.status_code == 201
+    login = await client.post(
+        f"{UI_API}/session",
+        json={"username": "seeded", "password": "seeded-pass"},
+    )
+    assert login.status_code == 200
+    assert login.json()["user"]["login"] == "seeded"
+
+
+@pytest.mark.asyncio
 async def test_browser_session_rejects_invalid_credentials(client):
     response = await client.post(
         f"{UI_API}/session",

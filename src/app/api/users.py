@@ -15,6 +15,7 @@ from app.models.import_job import ImportJob
 from app.models.user import User
 from app.models.token import PersonalAccessToken
 from app.schemas.user import UserCreate, UserResponse, UserUpdate
+from app.services.auth_service import hash_password
 from app.services.import_service import start_single_import
 
 router = APIRouter(tags=["users"])
@@ -91,11 +92,9 @@ async def admin_create_user(body: UserCreate, db: DbSession):
     if existing.scalar_one_or_none() is not None:
         raise HTTPException(status_code=422, detail="Login already exists")
 
-    hashed = hashlib.sha256(body.password.encode()).hexdigest()
-
     user = User(
         login=body.login,
-        hashed_password=hashed,
+        hashed_password=hash_password(body.password),
         name=body.name,
         email=body.email,
         site_admin=body.site_admin,
