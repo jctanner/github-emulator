@@ -83,10 +83,12 @@ Actions visibility and runner evaluation.
 
 ## Open Bugs
 
+- `docs/bugs/open/git-commits-endpoint-returns-only-the-subject.md`
 - `docs/bugs/open/stale-actions-runner-registrations-accumulate.md`
 
 ## Fixed Bugs
 
+- `docs/bugs/fixed/graphql-create-commit-on-branch-is-missing.md`
 - `docs/bugs/fixed/job-log-page-polls-forever-and-pull-list-runs-git-per-row.md`
 - `docs/bugs/fixed/checkout-ignores-sparse-checkout-cone-mode.md`
 - `docs/bugs/fixed/login-page-opens-a-basic-auth-dialog.md`

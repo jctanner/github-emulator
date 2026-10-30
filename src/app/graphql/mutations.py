@@ -12,7 +12,8 @@ from sqlalchemy import select
 from app.graphql.types.user import GitHubUser, user_from_model
 from app.graphql.types.repository import Repository, repository_from_model
 from app.graphql.types.issue import Issue, issue_from_model, IssueComment, comment_from_model
-from app.graphql.types.pull_request import PullRequest, pull_request_from_model
+from app.graphql.types.pull_request import Commit, PullRequest, pull_request_from_model
+from graphql import GraphQLError
 
 
 def _decode_node_id(node_id: str) -> int:
@@ -164,6 +165,45 @@ class AddLabelsToLabelableInput:
     client_mutation_id: Optional[str] = None
 
 
+@strawberry.input
+class CommittableBranch:
+    branch_name: Optional[str] = None
+    repository_name_with_owner: Optional[str] = None
+    id: Optional[strawberry.ID] = None
+
+
+@strawberry.input
+class CommitMessage:
+    headline: str
+    body: Optional[str] = None
+
+
+@strawberry.input
+class FileAddition:
+    path: str
+    contents: str  # Base64String
+
+
+@strawberry.input
+class FileDeletion:
+    path: str
+
+
+@strawberry.input
+class FileChanges:
+    additions: Optional[list[FileAddition]] = None
+    deletions: Optional[list[FileDeletion]] = None
+
+
+@strawberry.input
+class CreateCommitOnBranchInput:
+    branch: CommittableBranch
+    expected_head_oid: str  # GitObjectID
+    message: CommitMessage
+    file_changes: Optional[FileChanges] = None
+    client_mutation_id: Optional[str] = None
+
+
 # ---------------------------------------------------------------------------
 # Payload types
 # ---------------------------------------------------------------------------
@@ -280,6 +320,18 @@ Labelable = Annotated[
 class AddLabelsToLabelablePayload:
     labelable: Optional[Labelable] = None
     client_mutation_id: Optional[str] = None
+
+
+@strawberry.type
+class CreateCommitOnBranchPayload:
+    commit: Optional[Commit] = None
+    client_mutation_id: Optional[str] = None
+
+
+def _typed_error(error_type: str, message: str) -> GraphQLError:
+    """A GraphQL error carrying GitHub's top-level ``type`` (lifted from
+    ``extensions`` by the router in ``app.main``)."""
+    return GraphQLError(message, extensions={"type": error_type})
 
 
 # ---------------------------------------------------------------------------
@@ -1193,5 +1245,90 @@ class Mutation:
 
         return UpdatePullRequestPayload(
             pull_request=pull_request_from_model(pr),
+            client_mutation_id=input.client_mutation_id,
+        )
+
+    @strawberry.mutation
+    async def create_commit_on_branch(
+        self, info: Info, input: CreateCommitOnBranchInput
+    ) -> CreateCommitOnBranchPayload:
+        """Commit file additions and deletions to an existing branch.
+
+        GitHub's web-UI commit path: the author is the authenticated account
+        and the committer is GitHub, files are regular (100644) and sent
+        inline, and the commit applies only if the branch still points at
+        ``expectedHeadOid``. Errors carry GitHub's ``type`` (NOT_FOUND,
+        FORBIDDEN, STALE_DATA, UNPROCESSABLE).
+        """
+        from app.git.bare_repo import MissingPathError, StaleBranchError, commit_files
+        from app.models.repository import Repository as RepoModel
+        from app.services.branch_service import record_branch
+        from app.services.repository_access import can_write_contents
+
+        current_user = _require_auth(info)
+        db = info.context["db"]
+
+        target = input.branch
+        if target.id is not None or not target.repository_name_with_owner or not target.branch_name:
+            raise _typed_error(
+                "UNPROCESSABLE",
+                "branch requires repositoryNameWithOwner and branchName (branch id is not supported)",
+            )
+        name = target.repository_name_with_owner
+        branch = target.branch_name.removeprefix("refs/heads/")
+        repo = (
+            await db.execute(select(RepoModel).where(RepoModel.full_name == name))
+        ).scalar_one_or_none()
+        if repo is None:
+            raise _typed_error("NOT_FOUND", f"Could not resolve to a Repository with the name '{name}'.")
+        if not await can_write_contents(db, repo, current_user):
+            raise _typed_error(
+                "FORBIDDEN",
+                f"{current_user.login} does not have the correct permissions to execute `CreateCommitOnBranch`",
+            )
+
+        changes = input.file_changes or FileChanges()
+        additions: list[tuple[str, bytes]] = []
+        for addition in changes.additions or []:
+            try:
+                additions.append((addition.path, base64.b64decode(addition.contents, validate=True)))
+            except Exception:
+                raise _typed_error("UNPROCESSABLE", f"Invalid Base64 contents for {addition.path}") from None
+        deletions = [deletion.path for deletion in changes.deletions or []]
+        message = input.message.headline
+        if input.message.body:
+            message += "\n\n" + input.message.body
+
+        try:
+            oid = await commit_files(
+                repo.disk_path,
+                branch,
+                input.expected_head_oid,
+                additions,
+                deletions,
+                message,
+                author=(current_user.name or current_user.login,
+                        current_user.email or f"{current_user.login}@users.noreply.github.com"),
+                committer=("GitHub", "noreply@github.com"),
+            )
+        except StaleBranchError as exc:
+            if exc.actual is None:
+                raise _typed_error(
+                    "NOT_FOUND", f"Could not resolve to a Ref with the name 'refs/heads/{branch}'."
+                ) from None
+            raise _typed_error(
+                "STALE_DATA",
+                f'Expected branch to point to "{exc.expected}" but it did not. Pull and try again. '
+                f"({exc})",
+            ) from None
+        except MissingPathError as exc:
+            raise _typed_error("UNPROCESSABLE", f"A path was requested for deletion which does not exist as of commit oid `{input.expected_head_oid}`: {exc}") from None
+
+        await record_branch(db, repo, branch, oid)
+        repo.pushed_at = datetime.now(timezone.utc)
+        await db.commit()
+
+        return CreateCommitOnBranchPayload(
+            commit=Commit(oid=oid, message=message),
             client_mutation_id=input.client_mutation_id,
         )

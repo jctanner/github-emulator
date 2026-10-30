@@ -237,6 +237,92 @@ async def write_file(
     return commit_sha
 
 
+class StaleBranchError(RuntimeError):
+    """The branch moved after the caller read it (compare-and-swap failed)."""
+
+    def __init__(self, branch: str, actual: str | None, expected: str):
+        super().__init__(f"{branch} is at {actual} but expected {expected}")
+        self.branch, self.actual, self.expected = branch, actual, expected
+
+
+class MissingPathError(RuntimeError):
+    """A deletion named a path the parent tree does not have."""
+
+
+async def commit_files(
+    disk_path: str,
+    branch: str,
+    expected_head: str,
+    additions: list[tuple[str, bytes]],
+    deletions: list[str],
+    message: str,
+    author: tuple[str, str],
+    committer: tuple[str, str],
+) -> str:
+    """Commit several file changes to ``branch`` as one commit, atomically.
+
+    The commit's parent is ``expected_head``; the ref moves only if it still
+    points there (``git update-ref <ref> <new> <old>``), so a concurrent push
+    makes this fail with :class:`StaleBranchError` instead of being lost. Files
+    are written as regular files (mode 100644). Deleting a path that the
+    parent tree lacks raises :class:`MissingPathError`. Returns the new commit
+    SHA.
+    """
+    env = os.environ.copy()
+    env["GIT_DIR"] = disk_path
+    env["GIT_AUTHOR_NAME"], env["GIT_AUTHOR_EMAIL"] = author
+    env["GIT_COMMITTER_NAME"], env["GIT_COMMITTER_EMAIL"] = committer
+
+    async def git(*args: str, input_data: bytes | None = None, extra: dict | None = None) -> str:
+        proc = await asyncio.create_subprocess_exec(
+            "git", *args,
+            stdin=asyncio.subprocess.PIPE if input_data is not None else None,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+            env={**env, **(extra or {})},
+        )
+        stdout, stderr = await proc.communicate(input=input_data)
+        if proc.returncode != 0:
+            raise RuntimeError(f"git {args[0]} failed: {stderr.decode().strip()}")
+        return stdout.decode().strip()
+
+    actual = await resolve_ref(disk_path, f"refs/heads/{branch}")
+    if actual != expected_head:
+        raise StaleBranchError(branch, actual, expected_head)
+
+    fd, tmp_index = tempfile.mkstemp(prefix="git_index_")
+    os.close(fd)
+    os.unlink(tmp_index)
+    index = {"GIT_INDEX_FILE": tmp_index}
+    try:
+        await git("read-tree", f"{expected_head}^{{tree}}", extra=index)
+        for path in deletions:
+            listed = await git("ls-files", "--", path, extra=index)
+            if not listed:
+                raise MissingPathError(path)
+        if deletions:
+            # A mode-0 entry removes the path; unlike --force-remove this needs
+            # no work tree, and the repository is bare.
+            removal = "".join(f"0 {'0' * 40}\t{path}\n" for path in deletions)
+            await git("update-index", "--index-info", input_data=removal.encode(), extra=index)
+        for path, content in additions:
+            blob = await git("hash-object", "-w", "--stdin", input_data=content)
+            await git("update-index", "--add", "--cacheinfo", f"100644,{blob},{path}", extra=index)
+        tree = await git("write-tree", extra=index)
+    finally:
+        if os.path.exists(tmp_index):
+            os.unlink(tmp_index)
+
+    commit = await git("commit-tree", tree, "-p", expected_head, "-m", message)
+    try:
+        await git("update-ref", f"refs/heads/{branch}", commit, expected_head)
+    except RuntimeError:
+        raise StaleBranchError(
+            branch, await resolve_ref(disk_path, f"refs/heads/{branch}"), expected_head
+        ) from None
+    return commit
+
+
 async def delete_bare_repo(disk_path: str) -> None:
     """Delete a bare git repository from disk."""
     if os.path.isdir(disk_path):

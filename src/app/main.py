@@ -271,7 +271,21 @@ def create_app() -> FastAPI:
                 pass
             return {"db": db, "user": user, "request": request}
 
-        graphql_router = GraphQLRouter(
+        class GitHubGraphQLRouter(GraphQLRouter):
+            """Report error types the way GitHub does: as a top-level ``type``
+            on each error (NOT_FOUND, FORBIDDEN, STALE_DATA, ...), which
+            clients such as Fullsend's classify on. Resolvers set it in the
+            error's ``extensions``."""
+
+            async def process_result(self, request, result):
+                response = await super().process_result(request, result)
+                for error in response.get("errors") or []:
+                    error_type = (error.get("extensions") or {}).get("type")
+                    if error_type:
+                        error["type"] = error_type
+                return response
+
+        graphql_router = GitHubGraphQLRouter(
             schema,
             context_getter=get_graphql_context,
         )
