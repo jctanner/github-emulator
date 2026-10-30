@@ -27,6 +27,7 @@ from app.git.bare_repo import (
     get_compare_stats,
     get_log,
     normalize_branch_ref,
+    normalize_branch_refs,
 )
 from app.models.branch import Branch
 from app.models.issue import Issue
@@ -261,27 +262,28 @@ def _pr_json(pr: PullRequest, base_url: str, *, include_stats: bool = True) -> d
 
 async def _attach_resolved_refs(pr: PullRequest, repository: Repository) -> None:
     """Attach normalized refs and SHAs for response and git operations."""
+    await _attach_resolved_refs_many([pr], repository)
+
+
+async def _attach_resolved_refs_many(prs: list[PullRequest], repository: Repository) -> None:
+    """Resolve every pull request's head and base with one Git process.
+
+    A list response used to spawn two or more ``git rev-parse`` processes per
+    row, about 0.1 s each, so a 30-row page took seconds.
+    """
     owner_login = _repo_namespace(repository)
-    head_ref = pr.head_ref
-    head_sha = pr.head_sha
-    base_ref = pr.base_ref
-    base_sha = pr.base_sha
-
-    if repository.disk_path and os.path.isdir(repository.disk_path):
-        head_ref, resolved_head_sha = await normalize_branch_ref(
-            repository.disk_path, pr.head_ref, owner_login
-        )
-        base_ref, resolved_base_sha = await normalize_branch_ref(
-            repository.disk_path, pr.base_ref, owner_login
-        )
-        head_sha = resolved_head_sha or head_sha
-        base_sha = resolved_base_sha or base_sha
-
-    pr.resolved_head_ref = head_ref
-    pr.resolved_base_ref = base_ref
-    pr.resolved_head_sha = head_sha
-    pr.resolved_base_sha = base_sha
-    pr.resolved_head_label = f"{_repo_namespace(pr.head_repository or repository)}:{head_ref}"
+    resolved: dict[str, tuple[str, str | None]] = {}
+    if prs and repository.disk_path and os.path.isdir(repository.disk_path):
+        refs = [ref for pr in prs for ref in (pr.head_ref, pr.base_ref)]
+        resolved = await normalize_branch_refs(repository.disk_path, refs, owner_login)
+    for pr in prs:
+        head_ref, resolved_head_sha = resolved.get(pr.head_ref, (pr.head_ref, None))
+        base_ref, resolved_base_sha = resolved.get(pr.base_ref, (pr.base_ref, None))
+        pr.resolved_head_ref = head_ref
+        pr.resolved_base_ref = base_ref
+        pr.resolved_head_sha = resolved_head_sha or pr.head_sha
+        pr.resolved_base_sha = resolved_base_sha or pr.base_sha
+        pr.resolved_head_label = f"{_repo_namespace(pr.head_repository or repository)}:{head_ref}"
 
 
 async def _attach_pr_stats(pr: PullRequest, repository: Repository) -> None:
@@ -684,8 +686,7 @@ async def list_pulls(
     if link:
         headers["Link"] = link
 
-    for pr in prs:
-        await _attach_resolved_refs(pr, repository)
+    await _attach_resolved_refs_many(prs, repository)
 
     return JSONResponse(
         content=[_pr_json(pr, BASE, include_stats=False) for pr in prs],

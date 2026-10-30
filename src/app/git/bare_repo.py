@@ -584,6 +584,65 @@ async def resolve_ref(disk_path: str, ref: str) -> str | None:
     return stdout.decode().strip() or None
 
 
+async def resolve_refs(disk_path: str, refs: list[str]) -> dict[str, str | None]:
+    """Resolve many refs to object SHAs with one ``git cat-file`` process.
+
+    Each name is looked up the way ``git rev-parse --verify`` looks it up;
+    names that do not resolve map to None. A list response resolves every row
+    this way instead of spawning one process per ref.
+    """
+    names = sorted({ref for ref in refs if ref and "\n" not in ref})
+    if not names:
+        return {}
+    env = os.environ.copy()
+    env["GIT_DIR"] = disk_path
+    proc = await asyncio.create_subprocess_exec(
+        "git", "cat-file", "--batch-check=%(objectname)",
+        stdin=asyncio.subprocess.PIPE,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+        env=env,
+    )
+    stdout, _ = await proc.communicate(("\n".join(names) + "\n").encode())
+    lines = stdout.decode().splitlines()
+    if proc.returncode != 0 or len(lines) != len(names):
+        # Fall back to one lookup per name rather than guess at a pairing.
+        return {name: await resolve_ref(disk_path, name) for name in names}
+    resolved: dict[str, str | None] = {}
+    for name, line in zip(names, lines):
+        # Unresolvable names come back as "<name> missing" or "<name> ambiguous".
+        sha = line.strip()
+        resolved[name] = sha if sha and " " not in sha else None
+    return resolved
+
+
+def _branch_ref_candidates(ref: str, owner_login: str | None) -> list[str]:
+    candidates = [ref]
+    if ":" in ref:
+        maybe_owner, maybe_branch = ref.split(":", 1)
+        if maybe_branch and (owner_login is None or maybe_owner == owner_login):
+            candidates.insert(0, maybe_branch)
+    return candidates
+
+
+async def normalize_branch_refs(
+    disk_path: str, refs: list[str], owner_login: str | None = None
+) -> dict[str, tuple[str, str | None]]:
+    """Batch form of :func:`normalize_branch_ref`, keyed by the input ref."""
+    wanted = [c for ref in refs if ref for c in _branch_ref_candidates(ref, owner_login)]
+    resolved = await resolve_refs(disk_path, wanted)
+    result: dict[str, tuple[str, str | None]] = {}
+    for ref in refs:
+        if not ref:
+            result[ref] = (ref, None)
+            continue
+        result[ref] = next(
+            ((c, resolved[c]) for c in _branch_ref_candidates(ref, owner_login) if resolved.get(c)),
+            (ref, None),
+        )
+    return result
+
+
 async def normalize_branch_ref(
     disk_path: str, ref: str, owner_login: str | None = None
 ) -> tuple[str, str | None]:
@@ -596,13 +655,7 @@ async def normalize_branch_ref(
     if not ref:
         return ref, None
 
-    candidates = [ref]
-    if ":" in ref:
-        maybe_owner, maybe_branch = ref.split(":", 1)
-        if maybe_branch and (owner_login is None or maybe_owner == owner_login):
-            candidates.insert(0, maybe_branch)
-
-    for candidate in candidates:
+    for candidate in _branch_ref_candidates(ref, owner_login):
         sha = await resolve_ref(disk_path, candidate)
         if sha:
             return candidate, sha

@@ -50,9 +50,17 @@ After the fix: issue list 0.37 s, job log 0.12 s, pull list 3.2 s.
   two counter tests now assert the counts on single pull request responses
   only.
 
-## Remaining
+## Follow-up: ref resolution
 
-The pull list still runs `normalize_branch_ref` twice per row in
-`_attach_resolved_refs` (about 0.1 s per pull request, 3.2 s for 30). That
-predates this fix; resolving all refs with one `git for-each-ref` per request
-would remove it.
+The pull list still ran `normalize_branch_ref` twice per row in
+`_attach_resolved_refs` (one `git rev-parse --verify` per candidate ref,
+about 0.1 s per pull request, 3.2 s for 30). `_attach_resolved_refs_many` now
+resolves every row's head and base with one `git cat-file --batch-check`
+process (`resolve_refs`, `normalize_branch_refs` in `src/app/git/bare_repo.py`),
+and the single-PR path uses the same code with one item. The 30-row list then
+took 0.11–0.18 s.
+
+`tests/test_batch_ref_resolution.py` checks that the batched resolver returns
+exactly what `resolve_ref` / `normalize_branch_ref` return for branches,
+`refs/heads/...`, tags, full and short SHAs, `owner:branch` labels (own and
+foreign owner), missing names and the empty ref.
