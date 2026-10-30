@@ -616,12 +616,27 @@ async def get_compare_diff(disk_path: str, base_ref: str, head_ref: str) -> list
     Uses git diff base...head so pull requests compare from the merge base to
     the proposed head branch. Falls back to base..head for unrelated histories.
     """
+    output = await get_compare_diff_raw(disk_path, base_ref, head_ref)
+    if output is None:
+        return []
+    return _parse_git_diff(output.decode(errors="replace"))
+
+
+async def get_compare_diff_raw(
+    disk_path: str, base_ref: str, head_ref: str
+) -> bytes | None:
+    """Return Git's aggregate patch bytes, or None when comparison fails.
+
+    An empty successful diff is b"", distinct from missing or invalid refs.
+    Keep the original bytes so downloads preserve all Git patch metadata.
+    """
     env = os.environ.copy()
     env["GIT_DIR"] = disk_path
 
     async def run_diff(revision_range: str):
         proc = await asyncio.create_subprocess_exec(
-            "git", "diff", "--find-renames", "--patch", revision_range,
+            "git", "diff", "--no-ext-diff", "--no-textconv", "--no-color",
+            "--find-renames", "--patch", revision_range, "--",
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
             env=env,
@@ -632,9 +647,9 @@ async def get_compare_diff(disk_path: str, base_ref: str, head_ref: str) -> list
     if returncode != 0:
         (stdout, _), returncode = await run_diff(f"{base_ref}..{head_ref}")
     if returncode != 0:
-        return []
+        return None
 
-    return _parse_git_diff(stdout.decode(errors="replace"))
+    return stdout
 
 
 async def get_compare_commit_count(

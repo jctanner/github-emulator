@@ -36,6 +36,8 @@ def test_fresh_database_upgrades_to_head(tmp_path, monkeypatch):
     assert "users" in inspector.get_table_names()
     assert "workflow_jobs" in inspector.get_table_names()
     assert "issue_events" in inspector.get_table_names()
+    assert "ix_issue_comments_issue_id" in {index["name"] for index in inspector.get_indexes("issue_comments")}
+    assert "ix_pr_review_comments_pull_request_id" in {index["name"] for index in inspector.get_indexes("pr_review_comments")}
     with engine.connect() as connection:
         # Compare against the script directory's head rather than a literal:
         # pinning a revision means every new migration breaks this test, which

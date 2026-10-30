@@ -6,21 +6,24 @@ import os
 import shutil
 import tempfile
 from datetime import datetime, timezone
-from typing import Optional
+from typing import Annotated, Optional
 
 logger = logging.getLogger(__name__)
 
-from fastapi import APIRouter, HTTPException, Query, Request
-from fastapi.responses import JSONResponse
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
+from fastapi.responses import JSONResponse, Response
 from sqlalchemy import select, func as sa_func
 from sqlalchemy.orm import joinedload, raiseload, selectinload
 
-from app.api.deps import AuthUser, CurrentUser, DbSession, get_repo_or_404
+from app.api.deps import (
+    AuthUser, CurrentUser, DbSession, get_current_user, get_repo_or_404,
+)
 from app.api.pagination import pagination_links
 from app.config import settings
 from app.git.bare_repo import (
     get_compare_commit_count,
     get_compare_diff,
+    get_compare_diff_raw,
     get_compare_stats,
     get_log,
     normalize_branch_ref,
@@ -29,6 +32,7 @@ from app.models.branch import Branch
 from app.models.issue import Issue
 from app.models.pull_request import PullRequest
 from app.models.repository import Repository
+from app.models.user import User
 from app.schemas.user import SimpleUser, _fmt_dt, _make_node_id
 from app.schemas.pull_request import (
     PRMergeResponse,
@@ -38,6 +42,7 @@ from app.schemas.pull_request import (
 )
 
 router = APIRouter(tags=["pulls"])
+diff_router = APIRouter(tags=["pulls"])
 
 BASE = settings.BASE_URL
 
@@ -45,6 +50,58 @@ BASE = settings.BASE_URL
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
+async def _diff_current_user(
+    request: Request, owner: str, repo: str, pull_number: int, db: DbSession,
+) -> User | None:
+    """Authorize a web diff URL as the equivalent PR API read.
+
+    The shared auth gateway maps API paths to repository visibility, Actions
+    job permissions, and installation-token repository selections. Give it
+    the canonical API path so web aliases cannot bypass any of those checks.
+    Headers, browser cookies, and request state stay shared with the request.
+    """
+    path = f"/api/v3/repos/{owner}/{repo}/pulls/{pull_number}"
+    scope = {**request.scope, "path": path, "raw_path": path.encode("utf-8")}
+    return await get_current_user(Request(scope), db)
+
+
+async def _pull_diff_response(pr: PullRequest, repository: Repository) -> Response:
+    if not repository.disk_path or not os.path.isdir(repository.disk_path):
+        raise HTTPException(status_code=404, detail="Pull request diff unavailable")
+
+    await _attach_resolved_refs(pr, repository)
+    # Once merged, the base branch contains the head. Use the saved PR SHAs
+    # to retain the proposed changes even after merge or branch deletion.
+    base_sha = pr.base_sha if pr.merged else pr.resolved_base_sha
+    head_sha = pr.head_sha if pr.merged else pr.resolved_head_sha
+    output = await get_compare_diff_raw(repository.disk_path, base_sha, head_sha)
+    if output is None:
+        raise HTTPException(status_code=404, detail="Pull request diff unavailable")
+    return Response(content=output, media_type="text/plain", headers={"Vary": "Accept"})
+
+
+@diff_router.get("/ui/{owner}/{repo}/pulls/{pull_number}.diff")
+@diff_router.get("/{owner}/{repo}/pull/{pull_number}.diff")
+async def download_pull_diff(
+    owner: str,
+    repo: str,
+    pull_number: int,
+    db: DbSession,
+    current_user: Annotated[User | None, Depends(_diff_current_user)],
+) -> Response:
+    """Serve an aggregate diff at UI and GitHub-compatible web URLs."""
+    repository = await get_repo_or_404(owner, repo, db)
+    result = await db.execute(
+        _pr_query()
+        .join(Issue, PullRequest.issue_id == Issue.id)
+        .where(PullRequest.repo_id == repository.id, Issue.number == pull_number)
+    )
+    pr = result.scalar_one_or_none()
+    if pr is None:
+        raise HTTPException(status_code=404, detail="Not Found")
+    return await _pull_diff_response(pr, repository)
+
 
 def _repo_owner(repository: Repository):
     """Return the namespace owner, not an organization repository's creator."""
@@ -182,10 +239,10 @@ def _pr_json(pr: PullRequest, base_url: str) -> dict:
         "merged": pr.merged,
         "mergeable": pr.mergeable,
         "merged_by": merged_by,
-        "comments": 0,
-        "review_comments": 0,
+        "comments": issue.comments_count or 0,
+        "review_comments": pr.review_comments_count or 0,
         "maintainer_can_modify": True,
-        "commits": getattr(pr, "resolved_commits_count", 1),
+        "commits": getattr(pr, "resolved_commits_count", 0),
         "additions": getattr(pr, "resolved_additions", 0),
         "deletions": getattr(pr, "resolved_deletions", 0),
         "changed_files": getattr(pr, "resolved_changed_files", 0),
@@ -220,18 +277,20 @@ async def _attach_resolved_refs(pr: PullRequest, repository: Repository) -> None
 async def _attach_pr_stats(pr: PullRequest, repository: Repository) -> None:
     """Attach Git-derived summary counts used by the pull-request response."""
     if not repository.disk_path or not os.path.isdir(repository.disk_path):
-        pr.resolved_commits_count = 1
+        pr.resolved_commits_count = 0
         pr.resolved_additions = 0
         pr.resolved_deletions = 0
         pr.resolved_changed_files = 0
         return
 
+    base = pr.base_sha if pr.merged else pr.resolved_base_sha
+    head = pr.head_sha if pr.merged else pr.resolved_head_sha
     commits_count, stats = await asyncio.gather(
         get_compare_commit_count(
-            repository.disk_path, pr.resolved_base_ref, pr.resolved_head_ref
+            repository.disk_path, base, head
         ),
         get_compare_stats(
-            repository.disk_path, pr.resolved_base_ref, pr.resolved_head_ref
+            repository.disk_path, base, head
         ),
     )
     additions, deletions, changed_files = stats
@@ -593,7 +652,7 @@ async def list_pulls(
     if sort == "updated":
         sort_col = Issue.updated_at
     elif sort == "popularity":
-        sort_col = Issue.created_at
+        sort_col = Issue.comments_count
     elif sort == "long-running":
         sort_col = Issue.created_at
     else:
@@ -617,6 +676,7 @@ async def list_pulls(
 
     for pr in prs:
         await _attach_resolved_refs(pr, repository)
+        await _attach_pr_stats(pr, repository)
 
     return JSONResponse(
         content=[_pr_json(pr, BASE) for pr in prs],
@@ -693,6 +753,7 @@ async def create_pull(
     )
     pr = result.scalar_one()
     await _attach_resolved_refs(pr, repository)
+    await _attach_pr_stats(pr, repository)
     from app.services.workflow_service import build_activity_payload, dispatch_event
     await dispatch_event(
         db,
@@ -720,7 +781,8 @@ async def create_pull(
     response_model=PRResponse,
 )
 async def get_pull(
-    owner: str, repo: str, pull_number: int, db: DbSession, current_user: CurrentUser
+    owner: str, repo: str, pull_number: int, db: DbSession, current_user: CurrentUser,
+    request: Request, response: Response,
 ):
     """Get a single pull request."""
     repository = await get_repo_or_404(owner, repo, db)
@@ -733,6 +795,25 @@ async def get_pull(
     pr = result.scalar_one_or_none()
     if pr is None:
         raise HTTPException(status_code=404, detail="Not Found")
+
+    # Honour explicit diff requests; ordinary browser/API accepts retain JSON.
+    response.headers["Vary"] = "Accept"
+    for item in request.headers.get("accept", "").split(","):
+        media_type, *parameters = item.strip().lower().split(";")
+        if media_type not in {
+            "application/vnd.github.diff", "application/vnd.github.v3.diff",
+        }:
+            continue
+        quality = 1.0
+        for parameter in parameters:
+            key, _, value = parameter.strip().partition("=")
+            if key == "q":
+                try:
+                    quality = float(value)
+                except ValueError:
+                    quality = 0.0
+        if quality > 0:
+            return await _pull_diff_response(pr, repository)
 
     await _attach_resolved_refs(pr, repository)
     await _attach_pr_stats(pr, repository)
@@ -794,6 +875,7 @@ async def update_pull(
     pr = result.scalar_one()
     issue = pr.issue
     await _attach_resolved_refs(pr, repository)
+    await _attach_pr_stats(pr, repository)
     from app.services.workflow_service import build_activity_payload, dispatch_event
     action = "edited"
     if issue.state != old_state:
@@ -899,6 +981,9 @@ async def merge_pull(
         include_commit_messages=True,
     )
 
+    # Preserve the actual pre-merge comparison for later diff downloads.
+    pr.base_sha = pr.resolved_base_sha
+    pr.head_sha = pr.resolved_head_sha
     pr.merged = True
     pr.merged_at = now
     pr.merged_by_id = user.id

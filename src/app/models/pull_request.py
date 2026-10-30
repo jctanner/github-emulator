@@ -1,7 +1,9 @@
 from datetime import datetime
 
-from sqlalchemy import Boolean, DateTime, ForeignKey, Integer, String
-from sqlalchemy.orm import Mapped, mapped_column, relationship
+from sqlalchemy import Boolean, DateTime, ForeignKey, Integer, String, func, select
+from sqlalchemy.orm import Mapped, column_property, mapped_column, relationship
+
+from app.models.comment import PRReviewComment
 
 from app.database import Base
 
@@ -35,6 +37,13 @@ class PullRequest(Base):
     )
     merge_commit_sha: Mapped[str | None] = mapped_column(String, nullable=True)
     draft: Mapped[bool] = mapped_column(Boolean, default=False)
+
+    review_comments_count = column_property(
+        select(func.count(PRReviewComment.id))
+        .where(PRReviewComment.pull_request_id == id)
+        .correlate_except(PRReviewComment)
+        .scalar_subquery()
+    )
 
     # Relationships
     issue = relationship("Issue", back_populates="pull_request", lazy="selectin")

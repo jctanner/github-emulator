@@ -74,7 +74,7 @@ class IssueResponse(BaseModel):
         base_url: str,
         owner_login: str,
         repo_name: str,
-        comments_count: int = 0,
+        comments_count: int | None = None,
         milestone_response: Optional[MilestoneResponse] = None,
     ) -> "IssueResponse":
         """Construct an IssueResponse from a DB issue object."""
@@ -123,7 +123,7 @@ class IssueResponse(BaseModel):
             assignee=assignee,
             assignees=assignee_list,
             milestone=milestone_response,
-            comments=comments_count,
+            comments=(issue.comments_count or 0) if comments_count is None else comments_count,
             created_at=_fmt_dt(issue.created_at),
             updated_at=_fmt_dt(issue.updated_at),
             closed_at=_fmt_dt(issue.closed_at),

@@ -112,7 +112,7 @@ async def search_issues(
     elif sort == "updated":
         sort_col = Issue.updated_at
     elif sort == "comments":
-        sort_col = Issue.created_at  # approximate
+        sort_col = Issue.comments_count
     else:
         sort_col = Issue.updated_at
 

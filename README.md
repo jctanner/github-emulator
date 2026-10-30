@@ -198,6 +198,22 @@ curl -s -X POST http://localhost:8000/repos/admin/my-repo/issues \
   | python3 -m json.tool
 ```
 
+### Download a pull-request diff
+
+Append `.diff` to a PR's UI URL to download its aggregate Git unified diff:
+
+```text
+http://localhost:8000/ui/<owner>/<repo>/pulls/<number>.diff
+```
+
+The GitHub-style `/<owner>/<repo>/pull/<number>.diff` URL advertised by the
+PR API works too. API clients can request the same diff from
+`GET /api/v3/repos/<owner>/<repo>/pulls/<number>` with
+`Accept: application/vnd.github.diff` (or `application/vnd.github.v3.diff`).
+Private repositories require authentication with read access; scoped job and
+installation tokens also need pull-request read permission. Merged PRs retain
+their saved pre-merge comparison, including after head-branch deletion.
+
 ### Use with `gh` CLI
 
 The emulator uses Caddy to generate a self-signed TLS certificate. By default

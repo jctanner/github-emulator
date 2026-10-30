@@ -10,7 +10,7 @@ class IssueComment(Base):
     __tablename__ = "issue_comments"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
-    issue_id: Mapped[int] = mapped_column(Integer, ForeignKey("issues.id"), nullable=False)
+    issue_id: Mapped[int] = mapped_column(Integer, ForeignKey("issues.id"), nullable=False, index=True)
     user_id: Mapped[int] = mapped_column(Integer, ForeignKey("users.id"), nullable=False)
     body: Mapped[str] = mapped_column(Text, nullable=False)
 
@@ -30,7 +30,7 @@ class PRReviewComment(Base):
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     pull_request_id: Mapped[int] = mapped_column(
-        Integer, ForeignKey("pull_requests.id"), nullable=False
+        Integer, ForeignKey("pull_requests.id"), nullable=False, index=True
     )
     review_id: Mapped[int | None] = mapped_column(
         Integer, ForeignKey("reviews.id"), nullable=True

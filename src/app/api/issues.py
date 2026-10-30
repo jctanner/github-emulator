@@ -104,7 +104,7 @@ def _issue_json(issue: Issue, base_url: str) -> dict:
         "assignee": assignees[0] if assignees else None,
         "assignees": assignees,
         "milestone": milestone,
-        "comments": 0,
+        "comments": issue.comments_count or 0,
         "created_at": _fmt_dt(issue.created_at),
         "updated_at": _fmt_dt(issue.updated_at),
         "closed_at": _fmt_dt(issue.closed_at),
@@ -181,7 +181,7 @@ async def list_issues(
     if sort == "updated":
         sort_col = Issue.updated_at
     elif sort == "comments":
-        sort_col = Issue.created_at  # approximate
+        sort_col = Issue.comments_count
     else:
         sort_col = Issue.created_at
 

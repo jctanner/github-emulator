@@ -293,6 +293,10 @@ def create_app() -> FastAPI:
     from app.api.raw_content import router as raw_router
     app.include_router(raw_router)
 
+    # Web diff downloads must precede the /ui SPA history fallback.
+    from app.api.pulls import diff_router
+    app.include_router(diff_router)
+
     # -- Git Smart HTTP protocol handler --------------------------------------
     from app.git.smart_http import router as git_router
     app.include_router(git_router, tags=["git"])

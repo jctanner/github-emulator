@@ -9,8 +9,11 @@ from sqlalchemy import (
     Text,
     UniqueConstraint,
     func,
+    select,
 )
-from sqlalchemy.orm import Mapped, mapped_column, relationship
+from sqlalchemy.orm import Mapped, column_property, mapped_column, relationship
+
+from app.models.comment import IssueComment
 
 from app.database import Base
 
@@ -45,6 +48,14 @@ class Issue(Base):
         DateTime, server_default=func.now(), onupdate=func.now()
     )
     closed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+
+    # Read from the source rows so REST/GraphQL writers and existing data agree.
+    comments_count = column_property(
+        select(func.count(IssueComment.id))
+        .where(IssueComment.issue_id == id)
+        .correlate_except(IssueComment)
+        .scalar_subquery()
+    )
 
     # Relationships
     user = relationship("User", foreign_keys=[user_id], lazy="selectin")
