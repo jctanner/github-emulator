@@ -1854,13 +1854,17 @@ class RunnerClient:
                 stderr=subprocess.STDOUT, check=True,
             )
             if sparse:
+                # sparse-checkout-cone-mode: false takes gitignore-style
+                # patterns such as /OWNERS, which cone mode rejects.
+                cone = str(options.get("sparse-checkout-cone-mode", "true")).strip().lower() != "false"
+                mode = "--cone" if cone else "--no-cone"
                 subprocess.run(
-                    ["git", "sparse-checkout", "init", "--cone"], cwd=target, env=env,
+                    ["git", "sparse-checkout", "init", mode], cwd=target, env=env,
                     text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                     check=True,
                 )
                 subprocess.run(
-                    ["git", "sparse-checkout", "set", *sparse], cwd=target, env=env,
+                    ["git", "sparse-checkout", "set", mode, *sparse], cwd=target, env=env,
                     text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                     check=True,
                 )
