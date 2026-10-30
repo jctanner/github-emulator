@@ -87,6 +87,7 @@ Actions visibility and runner evaluation.
 
 ## Fixed Bugs
 
+- `docs/bugs/fixed/job-log-page-polls-forever-and-pull-list-runs-git-per-row.md`
 - `docs/bugs/fixed/checkout-ignores-sparse-checkout-cone-mode.md`
 - `docs/bugs/fixed/login-page-opens-a-basic-auth-dialog.md`
 - `docs/bugs/fixed/repository-webhooks-are-never-delivered.md`

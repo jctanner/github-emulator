@@ -147,8 +147,14 @@ def _pr_query(*, include_issue_labels: bool = False):
     return select(PullRequest).options(*options)
 
 
-def _pr_json(pr: PullRequest, base_url: str) -> dict:
-    """Build a GitHub-compatible pull-request JSON object."""
+def _pr_json(pr: PullRequest, base_url: str, *, include_stats: bool = True) -> dict:
+    """Build a GitHub-compatible pull-request JSON object.
+
+    ``include_stats=False`` builds the list form. GitHub's list endpoint returns
+    no ``commits``, ``additions``, ``deletions`` or ``changed_files``; computing
+    them costs two Git subprocesses per pull request, which made a 30-row list
+    take seconds.
+    """
     api = f"{base_url}/api/v3"
     issue = pr.issue
     repo = pr.repository
@@ -176,7 +182,7 @@ def _pr_json(pr: PullRequest, base_url: str) -> dict:
         f"{_repo_namespace(head_repo) if head_repo else owner_login}:{head_ref}",
     )
 
-    return {
+    payload = {
         "url": pr_url,
         "id": pr.id,
         "node_id": _make_node_id("PullRequest", pr.id),
@@ -242,11 +248,15 @@ def _pr_json(pr: PullRequest, base_url: str) -> dict:
         "comments": issue.comments_count or 0,
         "review_comments": pr.review_comments_count or 0,
         "maintainer_can_modify": True,
-        "commits": getattr(pr, "resolved_commits_count", 0),
-        "additions": getattr(pr, "resolved_additions", 0),
-        "deletions": getattr(pr, "resolved_deletions", 0),
-        "changed_files": getattr(pr, "resolved_changed_files", 0),
     }
+    if include_stats:
+        payload.update({
+            "commits": getattr(pr, "resolved_commits_count", 0),
+            "additions": getattr(pr, "resolved_additions", 0),
+            "deletions": getattr(pr, "resolved_deletions", 0),
+            "changed_files": getattr(pr, "resolved_changed_files", 0),
+        })
+    return payload
 
 
 async def _attach_resolved_refs(pr: PullRequest, repository: Repository) -> None:
@@ -676,10 +686,9 @@ async def list_pulls(
 
     for pr in prs:
         await _attach_resolved_refs(pr, repository)
-        await _attach_pr_stats(pr, repository)
 
     return JSONResponse(
-        content=[_pr_json(pr, BASE) for pr in prs],
+        content=[_pr_json(pr, BASE, include_stats=False) for pr in prs],
         headers=headers,
     )
 

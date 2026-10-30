@@ -107,12 +107,21 @@ async def test_git_counters_consistent_in_pr_responses(client, db_session, test_
     await write_file(repository.disk_path, "feature", "feature.txt", b"replacement\nsecond line\n", "Revise feature", "Test User", "test@test.com")
     await write_file(repository.disk_path, "feature", "README.md", b"Replaced README\nwith two lines\n", "Replace README", "Test User", "test@test.com")
     expected = {"commits": 3, "additions": 4, "deletions": 1, "changed_files": 2}
-    for response in [await client.get(root + "/pulls/1"), await client.get(root + "/pulls"), await client.patch(root + "/pulls/1", json={"title": "Updated"}, headers=auth_headers(test_token)), await client.post(root + "/pulls", json={"title": "Second PR", "head": "feature", "base": "main"}, headers=auth_headers(test_token))]:
+    for response in [await client.get(root + "/pulls/1"), await client.patch(root + "/pulls/1", json={"title": "Updated"}, headers=auth_headers(test_token)), await client.post(root + "/pulls", json={"title": "Second PR", "head": "feature", "base": "main"}, headers=auth_headers(test_token))]:
         assert response.status_code in (200, 201), response.text
         data = response.json()
-        if isinstance(data, list):
-            data = data[0]
         assert {key: data[key] for key in expected} == expected
+
+
+async def test_pr_list_omits_git_counters(client, db_session, test_token):
+    # GitHub's list returns the simple pull-request shape, without these four,
+    # and computing them costs Git subprocesses per row.
+    name = await _create_real_pr_with_diff(client, db_session, test_token)
+    response = await client.get(f"{API}/repos/testuser/{name}/pulls")
+    assert response.status_code == 200, response.text
+    data = response.json()[0]
+    assert not {"commits", "additions", "deletions", "changed_files"} & data.keys()
+    assert data["number"] == 1
 
 
 async def test_merged_pr_stats_survive_head_branch_deletion(client, db_session, test_token):
@@ -123,10 +132,7 @@ async def test_merged_pr_stats_survive_head_branch_deletion(client, db_session, 
     assert response.status_code == 200, response.text
     response = await client.delete(root + "/git/refs/heads/feature", headers=headers)
     assert response.status_code == 204, response.text
-    for endpoint in [root + "/pulls/1", root + "/pulls?state=all"]:
-        response = await client.get(endpoint)
-        assert response.status_code == 200
-        data = response.json()
-        if isinstance(data, list):
-            data = data[0]
-        assert {key: data[key] for key in ["commits", "additions", "deletions", "changed_files"]} == {"commits": 1, "additions": 1, "deletions": 0, "changed_files": 1}
+    response = await client.get(root + "/pulls/1")
+    assert response.status_code == 200
+    data = response.json()
+    assert {key: data[key] for key in ["commits", "additions", "deletions", "changed_files"]} == {"commits": 1, "additions": 1, "deletions": 0, "changed_files": 1}
