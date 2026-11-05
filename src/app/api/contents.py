@@ -300,16 +300,50 @@ async def delete_file(
     }
 
 
+README_NAMES = ["README.md", "README.rst", "README.txt", "README", "readme.md"]
+
+
+async def _readme_response(owner: str, repo: str, db, ref: str | None, directory: str = "") -> dict:
+    """Return the README in ``directory`` (the repository root when empty), as GitHub does."""
+    repository = await get_repo_record_or_404(owner, repo, db)
+
+    if not repository.disk_path or not os.path.isdir(repository.disk_path):
+        raise HTTPException(status_code=404, detail="Not Found")
+
+    branch = ref or repository.default_branch
+    directory = directory.strip("/")
+    if directory and any(part in ("", ".", "..") for part in directory.split("/")):
+        raise HTTPException(status_code=404, detail="Not Found")
+
+    # Try common README filenames
+    for readme_name in README_NAMES:
+        path = f"{directory}/{readme_name}" if directory else readme_name
+        try:
+            blob_sha = (await _git(repository.disk_path, "rev-parse", f"{branch}:{path}")).strip()
+            content_bytes = await _git_bytes(repository.disk_path, "cat-file", "blob", blob_sha)
+            return _file_response(owner, repo, path, content_bytes, blob_sha, branch, BASE)
+        except RuntimeError:
+            continue
+
+    raise HTTPException(status_code=404, detail="Not Found")
+
+
 @router.get("/repos/{owner}/{repo}/readme", response_model=ContentResponse)
 async def get_readme(
     owner: str, repo: str, db: DbSession, current_user: CurrentUser,
     ref: str | None = None,
 ):
     """Get the README for a repository."""
-    repository = await get_repo_record_or_404(owner, repo, db)
+    return await _readme_response(owner, repo, db, ref)
 
-    if not repository.disk_path or not os.path.isdir(repository.disk_path):
-        raise HTTPException(status_code=404, detail="Not Found")
+
+@router.get("/repos/{owner}/{repo}/readme/{dir:path}", response_model=ContentResponse)
+async def get_directory_readme(
+    owner: str, repo: str, dir: str, db: DbSession, current_user: CurrentUser,
+    ref: str | None = None,
+):
+    """Get the README in a directory (GitHub's ``GET /repos/{owner}/{repo}/readme/{dir}``)."""
+    return await _readme_response(owner, repo, db, ref, dir)
 
     branch = ref or repository.default_branch
 

@@ -95,6 +95,67 @@ describe("CodeBrowserPage", () => {
     ).toBe(true);
   });
 
+  it("shows a folder's own README below its listing", async () => {
+    const requested: URL[] = [];
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockImplementation((input: Request) => {
+        const url = new URL(input.url);
+        requested.push(url);
+        if (decodeURIComponent(url.pathname).endsWith("/readme/var/demos")) {
+          return Promise.resolve(
+            Response.json({
+              type: "file",
+              name: "README.md",
+              path: "var/demos/README.md",
+              content: "IyBEZW1vcw==",
+            }),
+          );
+        }
+        if (url.pathname.endsWith("/tree")) {
+          return Promise.resolve(
+            Response.json({
+              ref: "main",
+              path: "var/demos",
+              latest_commit: null,
+              entries: [
+                {name: "README.md", path: "var/demos/README.md", type: "file"},
+              ],
+            }),
+          );
+        }
+        if (url.pathname.includes("/contents/")) {
+          return Promise.resolve(
+            Response.json([
+              {type: "file", name: "README.md", path: "var/demos/README.md"},
+            ]),
+          );
+        }
+        return Promise.resolve(Response.json([]));
+      }),
+    );
+
+    render(
+      <MemoryRouter initialEntries={["/octo/demo/tree/main/var/demos"]}>
+        <Routes>
+          <Route
+            path="/:owner/:repo/tree/:ref/*"
+            element={<CodeBrowserPage />}
+          />
+        </Routes>
+      </MemoryRouter>,
+    );
+
+    expect(await screen.findByRole("heading", {name: "Demos"})).toBeVisible();
+    const readme = requested.find((url) =>
+      decodeURIComponent(url.pathname).endsWith("/readme/var/demos"),
+    );
+    expect(readme?.searchParams.get("ref")).toBe("main");
+    expect(requested.some((url) => url.pathname.endsWith("/readme"))).toBe(
+      false,
+    );
+  });
+
   it("links every breadcrumb segment, copies the path, and omits root counts in a folder", async () => {
     const writeText = vi.fn().mockResolvedValue(undefined);
     vi.stubGlobal("navigator", {clipboard: {writeText}});

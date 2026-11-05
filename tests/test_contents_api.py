@@ -207,3 +207,29 @@ async def test_get_root_directory(client, test_user, test_token, test_repo_with_
     # Just test we can list a known file
     resp = await client.get(f"{API}/repos/{owner}/{repo_name}/contents/README.md")
     assert resp.status_code == 200
+
+
+@pytest.mark.asyncio
+async def test_get_directory_readme(client, test_user, test_token, test_repo_with_init):
+    """GET /repos/{owner}/{repo}/readme/{dir} returns that directory's README, as GitHub does."""
+    owner, repo_name, _ = test_repo_with_init
+    resp = await client.put(
+        f"{API}/repos/{owner}/{repo_name}/contents/docs/guide/README.md",
+        json={"message": "Add a nested README", "content": base64.b64encode(b"# Guide\n").decode()},
+        headers=auth_headers(test_token),
+    )
+    assert resp.status_code == 201
+
+    resp = await client.get(f"{API}/repos/{owner}/{repo_name}/readme/docs/guide")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["name"] == "README.md"
+    assert data["path"] == "docs/guide/README.md"
+    assert base64.b64decode(data["content"]) == b"# Guide\n"
+
+    # The root README is unchanged, and a directory without one is a 404.
+    root = (await client.get(f"{API}/repos/{owner}/{repo_name}/readme")).json()
+    assert root["path"] == "README.md"
+    assert (await client.get(f"{API}/repos/{owner}/{repo_name}/readme/docs")).status_code == 404
+    # httpx normalizes "..", so a literal dot segment is sent encoded.
+    assert (await client.get(f"{API}/repos/{owner}/{repo_name}/readme/docs/%2E%2E")).status_code == 404

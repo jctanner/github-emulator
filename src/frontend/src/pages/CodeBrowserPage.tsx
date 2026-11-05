@@ -40,16 +40,22 @@ export function CodeBrowserPage({blob = false}: {blob?: boolean}) {
         response,
         "Could not load repository content.",
       );
-      if (path || !Array.isArray(content)) return {content, readme: null};
+      if (!Array.isArray(content)) return {content, readme: null};
 
-      const readmeResult = await api.GET(
-        "/api/v3/repos/{owner}/{repo}/readme",
-        {params: {path: {owner, repo}, query: {ref}}},
-      );
+      // A directory shows its own README below the listing, as on GitHub:
+      // the repository's at the root, the directory's elsewhere.
+      const readmeResult = path
+        ? await api.GET("/api/v3/repos/{owner}/{repo}/readme/{dir}", {
+            params: {path: {owner, repo, dir: path}, query: {ref}},
+          })
+        : await api.GET("/api/v3/repos/{owner}/{repo}/readme", {
+            params: {path: {owner, repo}, query: {ref}},
+          });
       return {
         content,
         readme:
-          readmeResult.response.status === 404
+          readmeResult.response.status === 404 ||
+          (readmeResult.data as {type?: string} | undefined)?.type !== "file"
             ? null
             : requireApiData(
                 readmeResult.data,

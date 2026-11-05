@@ -4697,6 +4697,26 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v3/repos/{owner}/{repo}/readme/{dir}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get Directory Readme
+         * @description Get the README in a directory (GitHub's ``GET /repos/{owner}/{repo}/readme/{dir}``).
+         */
+        get: operations["get_directory_readme_api_v3_repos__owner___repo__readme__dir__get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v3/repos/{owner}/{repo}/releases": {
         parameters: {
             query?: never;
@@ -5573,6 +5593,26 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/ui/{owner}/{repo}/pulls/{pull_number}.diff": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Download Pull Diff
+         * @description Serve an aggregate diff at UI and GitHub-compatible web URLs.
+         */
+        get: operations["download_pull_diff_ui__owner___repo__pulls__pull_number__diff_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/{owner_}/{repo_}/_apis/distributedtask/actions/archives/{owner}/{repo}/{sha}/archive.{fmt}": {
         parameters: {
             query?: never;
@@ -6246,6 +6286,26 @@ export interface paths {
          * @description Issue a short-lived bearer token for the runner listener.
          */
         post: operations["dt_oauth_token__owner___repo___apis_oauth2_token_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/{owner}/{repo}/pull/{pull_number}.diff": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Download Pull Diff
+         * @description Serve an aggregate diff at UI and GitHub-compatible web URLs.
+         */
+        get: operations["download_pull_diff__owner___repo__pull__pull_number__diff_get"];
+        put?: never;
+        post?: never;
         delete?: never;
         options?: never;
         head?: never;
@@ -18193,6 +18253,41 @@ export interface operations {
             };
         };
     };
+    get_directory_readme_api_v3_repos__owner___repo__readme__dir__get: {
+        parameters: {
+            query?: {
+                ref?: string | null;
+            };
+            header?: never;
+            path: {
+                owner: string;
+                repo: string;
+                dir: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ContentResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     list_releases_api_v3_repos__owner___repo__releases_get: {
         parameters: {
             query?: {
@@ -20070,6 +20165,39 @@ export interface operations {
             };
         };
     };
+    download_pull_diff_ui__owner___repo__pulls__pull_number__diff_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                owner: string;
+                repo: string;
+                pull_number: number;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     dt_action_archive__owner____repo____apis_distributedtask_actions_archives__owner___repo___sha__archive__fmt__get: {
         parameters: {
             query?: never;
@@ -21192,6 +21320,39 @@ export interface operations {
             };
             header?: never;
             path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    download_pull_diff__owner___repo__pull__pull_number__diff_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                owner: string;
+                repo: string;
+                pull_number: number;
+            };
             cookie?: never;
         };
         requestBody?: never;
