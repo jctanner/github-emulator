@@ -98,8 +98,10 @@ class GitHubUser:
         else:
             query = query.order_by(RepoModel.updated_at.desc())
 
+        from app.graphql.authz import visible_only
+
         result = await db.execute(query)
-        all_repos = result.scalars().all()
+        all_repos = await visible_only(info, result.scalars().all())
 
         return build_connection(
             all_repos, repository_from_model, len(all_repos),

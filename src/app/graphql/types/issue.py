@@ -142,7 +142,9 @@ class Issue:
         from app.models.milestone import Milestone
         db = info.context["db"]
         result = await db.execute(
-            select(Milestone).where(Milestone.id == self._milestone_id)
+            # Only the issue's own repository's milestone: an association made
+            # before inputs were validated may name another repository's.
+            select(Milestone).where(Milestone.id == self._milestone_id, Milestone.repo_id == self._repo_id)
         )
         ms = result.scalar_one_or_none()
         if ms:
@@ -165,7 +167,7 @@ class Issue:
         result = await db.execute(
             select(LabelModel)
             .join(IssueLabel, LabelModel.id == IssueLabel.label_id)
-            .where(IssueLabel.issue_id == self.database_id)
+            .where(IssueLabel.issue_id == self.database_id, LabelModel.repo_id == self._repo_id)
             .order_by(LabelModel.name.asc())
         )
         all_labels = result.scalars().all()

@@ -502,6 +502,41 @@ async def _minimizable_from_row(info: Info, kind: str, row):
     return review_comment_from_model(row, await thread_context(info, row.pull_request_id))
 
 
+async def _visible_or_none(info: Info, row, repo_id):
+    """``row`` if the caller may see the repository ``repo_id``, else None.
+
+    A mutation's target in a repository the caller cannot see is treated as
+    one that does not exist: the mutation fails with the same not-found error,
+    writes nothing, and returns nothing from that repository.
+    """
+    from app.graphql.authz import visible
+    from app.models.repository import Repository as RepoModel
+
+    if row is None or repo_id is None:
+        return None
+    db = info.context["db"]
+    repo = (await db.execute(select(RepoModel).where(RepoModel.id == repo_id))).scalar_one_or_none()
+    return row if await visible(info, repo) else None
+
+
+async def _same_repository_ids(db, model, ids, repo_id: int, what: str) -> list[int]:
+    """Decode ``ids`` and require each to name a ``model`` row in ``repo_id``.
+
+    Labels and milestones are per repository; accepting another repository's
+    would attach (and then reveal) its name and description here.
+    """
+    decoded = [_decode_node_id(item) for item in ids]
+    if not decoded:
+        return []
+    found = set(
+        (await db.execute(select(model.id).where(model.id.in_(decoded), model.repo_id == repo_id))).scalars().all()
+    )
+    missing = [str(item) for item in decoded if item not in found]
+    if missing:
+        raise ValueError(f"{what} with id {', '.join(missing)} not found")
+    return decoded
+
+
 def _typed_error(error_type: str, message: str) -> GraphQLError:
     """A GraphQL error carrying GitHub's top-level ``type`` (lifted from
     ``extensions`` by the router in ``app.main``)."""
@@ -562,6 +597,7 @@ class Mutation:
             )
             issue = result.scalar_one_or_none()
 
+        issue = await _visible_or_none(info, issue, issue.repo_id if issue else None)
         if not issue:
             raise ValueError(f"Labelable with id {labelable_id} not found")
 
@@ -597,6 +633,8 @@ class Mutation:
     async def create_issue(self, info: Info, input: CreateIssueInput) -> CreateIssuePayload:
         """Create a new issue on a repository."""
         from app.models.issue import Issue as IssueModel, IssueLabel, IssueAssignee
+        from app.models.label import Label as LabelModel
+        from app.models.milestone import Milestone as MilestoneModel
         from app.models.repository import Repository as RepoModel
 
         current_user = _require_auth(info)
@@ -607,6 +645,7 @@ class Mutation:
             select(RepoModel).where(RepoModel.id == repo_id)
         )
         repo = result.scalar_one_or_none()
+        repo = await _visible_or_none(info, repo, repo.id if repo else None)
         if not repo:
             raise ValueError(f"Repository with id {repo_id} not found")
 
@@ -621,15 +660,18 @@ class Mutation:
             title=input.title,
             body=input.body,
             state="open",
-            milestone_id=_decode_node_id(input.milestone_id) if input.milestone_id else None,
+            milestone_id=(
+                (await _same_repository_ids(db, MilestoneModel, [input.milestone_id], repo.id, "Milestone"))[0]
+                if input.milestone_id else None
+            ),
         )
+        label_ids = await _same_repository_ids(db, LabelModel, input.label_ids or [], repo.id, "Label")
         db.add(new_issue)
         await db.flush()
 
         # Add labels
-        if input.label_ids:
-            for label_id in input.label_ids:
-                db.add(IssueLabel(issue_id=new_issue.id, label_id=_decode_node_id(label_id)))
+        for label_id in label_ids:
+            db.add(IssueLabel(issue_id=new_issue.id, label_id=label_id))
 
         # Add assignees
         if input.assignee_ids:
@@ -660,6 +702,7 @@ class Mutation:
             select(IssueModel).where(IssueModel.id == issue_id)
         )
         issue = result.scalar_one_or_none()
+        issue = await _visible_or_none(info, issue, issue.repo_id if issue else None)
         if not issue:
             raise ValueError(f"Issue with id {issue_id} not found")
 
@@ -677,17 +720,25 @@ class Mutation:
                 elif new_state == "open" and old_state == "closed":
                     issue.closed_at = None
         if input.milestone_id is not None:
-            issue.milestone_id = _decode_node_id(input.milestone_id) if input.milestone_id != "0" else None
+            from app.models.milestone import Milestone as MilestoneModel
+
+            issue.milestone_id = (
+                (await _same_repository_ids(db, MilestoneModel, [input.milestone_id], issue.repo_id, "Milestone"))[0]
+                if input.milestone_id != "0" else None
+            )
 
         # Update labels if provided
         if input.label_ids is not None:
+            from app.models.label import Label as LabelModel
+
+            label_ids = await _same_repository_ids(db, LabelModel, input.label_ids, issue.repo_id, "Label")
             # Remove existing labels
             from sqlalchemy import delete
             await db.execute(
                 delete(IssueLabel).where(IssueLabel.issue_id == issue.id)
             )
-            for label_id in input.label_ids:
-                db.add(IssueLabel(issue_id=issue.id, label_id=_decode_node_id(label_id)))
+            for label_id in label_ids:
+                db.add(IssueLabel(issue_id=issue.id, label_id=label_id))
 
         # Update assignees if provided
         if input.assignee_ids is not None:
@@ -720,6 +771,7 @@ class Mutation:
             select(IssueModel).where(IssueModel.id == issue_id)
         )
         issue = result.scalar_one_or_none()
+        issue = await _visible_or_none(info, issue, issue.repo_id if issue else None)
         if not issue:
             raise ValueError(f"Issue with id {issue_id} not found")
 
@@ -760,6 +812,7 @@ class Mutation:
             select(IssueModel).where(IssueModel.id == issue_id)
         )
         issue = result.scalar_one_or_none()
+        issue = await _visible_or_none(info, issue, issue.repo_id if issue else None)
         if not issue:
             raise ValueError(f"Issue with id {issue_id} not found")
 
@@ -801,6 +854,7 @@ class Mutation:
             select(IssueModel).where(IssueModel.id == subject_id)
         )
         issue = result.scalar_one_or_none()
+        issue = await _visible_or_none(info, issue, issue.repo_id if issue else None)
         if not issue:
             raise ValueError(f"Subject with id {subject_id} not found")
 
@@ -837,6 +891,7 @@ class Mutation:
             select(RepoModel).where(RepoModel.id == repo_id)
         )
         repo = result.scalar_one_or_none()
+        repo = await _visible_or_none(info, repo, repo.id if repo else None)
         if not repo:
             raise ValueError(f"Repository with id {repo_id} not found")
 
@@ -948,6 +1003,7 @@ class Mutation:
             select(PRModel).where(PRModel.id == pr_id)
         )
         pr = result.scalar_one_or_none()
+        pr = await _visible_or_none(info, pr, pr.repo_id if pr else None)
         if not pr:
             raise ValueError(f"Pull request with id {pr_id} not found")
 
@@ -1041,6 +1097,7 @@ class Mutation:
         pr_id = _decode_node_id(input.pull_request_id)
         result = await db.execute(select(PRModel).where(PRModel.id == pr_id))
         pr = result.scalar_one_or_none()
+        pr = await _visible_or_none(info, pr, pr.repo_id if pr else None)
         if pr is None:
             raise ValueError(f"Pull request with id {pr_id} not found")
         if pr.merged:
@@ -1094,6 +1151,7 @@ class Mutation:
         pr_id = _decode_node_id(input.pull_request_id)
         result = await db.execute(select(PRModel).where(PRModel.id == pr_id))
         pr = result.scalar_one_or_none()
+        pr = await _visible_or_none(info, pr, pr.repo_id if pr else None)
         if pr is None:
             raise ValueError(f"Pull request with id {pr_id} not found")
         request_result = await db.execute(
@@ -1120,6 +1178,13 @@ class Mutation:
         db = info.context["db"]
 
         subject_id = _decode_node_id(input.subject_id)
+        from app.models.issue import Issue as IssueModel
+
+        # Reactions here are on issues. A missing subject and one in a hidden
+        # repository fail alike, so neither reveals which hidden issues exist.
+        subject = (await db.execute(select(IssueModel).where(IssueModel.id == subject_id))).scalar_one_or_none()
+        if await _visible_or_none(info, subject, subject.repo_id if subject else None) is None:
+            raise ValueError(f"Subject with id {subject_id} not found")
 
         # Determine reactable type by trying to look up the subject
         # Default to "issue" as the most common case
@@ -1182,7 +1247,15 @@ class Mutation:
 
         full_name = f"{current_user.login}/{input.name}"
 
-        # Check if the owner is not the current user (could be an org)
+        # Check if the owner is not the current user (could be an org).
+        # Only a site admin may create a repository for another account; the
+        # refusal comes before the name-conflict check, so the conflict error
+        # cannot be used to probe another owner's private repository names.
+        if owner_id != current_user.id and not current_user.site_admin:
+            raise _typed_error(
+                "FORBIDDEN",
+                f"{current_user.login} cannot create a repository for that owner",
+            )
         if owner_id != current_user.id:
             from app.models.user import User
             owner_result = await db.execute(
@@ -1258,6 +1331,7 @@ class Mutation:
             select(PRModel).where(PRModel.id == pr_id)
         )
         pr = result.scalar_one_or_none()
+        pr = await _visible_or_none(info, pr, pr.repo_id if pr else None)
         if not pr:
             raise ValueError(f"Pull request with id {pr_id} not found")
 
@@ -1309,6 +1383,7 @@ class Mutation:
             select(PRModel).where(PRModel.id == pr_id)
         )
         pr = result.scalar_one_or_none()
+        pr = await _visible_or_none(info, pr, pr.repo_id if pr else None)
         if not pr:
             raise ValueError(f"Pull request with id {pr_id} not found")
 
@@ -1363,6 +1438,7 @@ class Mutation:
             select(PRModel).where(PRModel.id == pr_id)
         )
         pr = result.scalar_one_or_none()
+        pr = await _visible_or_none(info, pr, pr.repo_id if pr else None)
         if not pr:
             raise ValueError(f"Pull request with id {pr_id} not found")
 
@@ -1437,7 +1513,6 @@ class Mutation:
         from app.git.bare_repo import MissingPathError, StaleBranchError, commit_files
         from app.models.repository import Repository as RepoModel
         from app.services.branch_service import record_branch
-        from app.services.repository_access import can_write_contents
 
         current_user = _require_auth(info)
         db = info.context["db"]
@@ -1453,9 +1528,11 @@ class Mutation:
         repo = (
             await db.execute(select(RepoModel).where(RepoModel.full_name == name))
         ).scalar_one_or_none()
-        if repo is None:
+        from app.graphql.authz import may_write, visible
+
+        if repo is None or not await visible(info, repo):
             raise _typed_error("NOT_FOUND", f"Could not resolve to a Repository with the name '{name}'.")
-        if not await can_write_contents(db, repo, current_user):
+        if not await may_write(info, db, repo, ("contents",)):
             raise _typed_error(
                 "FORBIDDEN",
                 f"{current_user.login} does not have the correct permissions to execute `CreateCommitOnBranch`",

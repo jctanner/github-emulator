@@ -320,8 +320,8 @@ def thread_root_id(comment, by_id: dict) -> int:
 async def build_threads(info: Info, pr_id: int) -> list[PullRequestReviewThread]:
     """Every review thread on a pull request, oldest first.
 
-    Empty when the caller may not see the repository: the GraphQL
-    ``repository`` and ``node`` lookups do not check visibility themselves.
+    Empty when the caller may not see the repository, or (for an
+    installation token) may not read its pull requests.
     """
     from app.models.comment import PRReviewComment
 

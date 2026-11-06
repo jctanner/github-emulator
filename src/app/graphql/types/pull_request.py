@@ -246,7 +246,11 @@ class PullRequest:
             select(RepoModel).where(RepoModel.id == self._head_repo_id)
         )
         repo = result.scalar_one_or_none()
-        if repo:
+        # The head may be a fork the caller cannot see, even on a visible
+        # pull request.
+        from app.graphql.authz import visible
+
+        if repo and await visible(info, repo):
             return repository_from_model(repo)
         return None
 
@@ -261,7 +265,9 @@ class PullRequest:
             select(RepoModel).where(RepoModel.id == self._head_repo_id)
         )
         repo = result.scalar_one_or_none()
-        if repo:
+        from app.graphql.authz import visible
+
+        if repo and await visible(info, repo):
             user_result = await db.execute(
                 select(User).where(User.id == repo.owner_id)
             )
@@ -322,7 +328,7 @@ class PullRequest:
             return None
 
         ms_result = await db.execute(
-            select(Milestone).where(Milestone.id == issue.milestone_id)
+            select(Milestone).where(Milestone.id == issue.milestone_id, Milestone.repo_id == issue.repo_id)
         )
         ms = ms_result.scalar_one_or_none()
         if ms:
@@ -345,7 +351,7 @@ class PullRequest:
         result = await db.execute(
             select(LabelModel)
             .join(IssueLabel, LabelModel.id == IssueLabel.label_id)
-            .where(IssueLabel.issue_id == self._issue_id)
+            .where(IssueLabel.issue_id == self._issue_id, LabelModel.repo_id == self._repo_id)
             .order_by(LabelModel.name.asc())
         )
         all_labels = result.scalars().all()
@@ -468,6 +474,11 @@ class PullRequest:
         if pull_request is None or repository is None:
             return empty_connection()
         issues = await resolve_closing_issues(db, pull_request, repository)
+        # A closing reference may name an issue in another repository; one in
+        # a repository the caller cannot see is left out.
+        from app.graphql.authz import repository_of_issue, visible
+
+        issues = [issue for issue in issues if await visible(info, await repository_of_issue(db, issue))]
         return build_connection(
             issues,
             issue_from_model,

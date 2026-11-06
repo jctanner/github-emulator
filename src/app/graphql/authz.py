@@ -133,3 +133,34 @@ def is_integration(info) -> bool:
     only through their own grant, not as the user they map to."""
     state = _state(info)
     return getattr(state, "installation_token", None) is not None or getattr(state, "workflow_job", None) is not None
+
+
+async def visible(info, repo) -> bool:
+    """Whether the caller may see ``repo``, cached for the request.
+
+    The GraphQL counterpart of REST's private-repository gate
+    (``api.deps._refuse_hidden_repository``): a repository the caller cannot
+    read resolves to nothing, exactly as a repository that does not exist.
+    """
+    if repo is None:
+        return False
+    if not repo.private and getattr(_state(info), "installation_token", None) is None:
+        return True
+    cache = info.context.setdefault("_visible_repositories", {})
+    if repo.id not in cache:
+        cache[repo.id] = await may_read(info, info.context["db"], repo)
+    return cache[repo.id]
+
+
+async def visible_only(info, repos) -> list:
+    """``repos`` without the ones the caller may not see, in order."""
+    return [repo for repo in repos if await visible(info, repo)]
+
+
+async def repository_of_issue(db, issue):
+    """The repository an issue (or a pull request's issue) belongs to."""
+    from app.models.repository import Repository
+
+    if issue is None:
+        return None
+    return (await db.execute(select(Repository).where(Repository.id == issue.repo_id))).scalar_one_or_none()

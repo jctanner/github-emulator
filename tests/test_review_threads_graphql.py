@@ -327,8 +327,7 @@ async def test_private_repository_threads_are_hidden(client, test_user, test_tok
     query = {"query": THREADS, "variables": {"owner": "testuser", "name": REPO, "number": number}}
     for credential in (outsider, None):
         response = await client.post("/api/graphql", json=query, headers=auth_headers(credential) if credential else {})
-        pull = ((response.json().get("data") or {}).get("repository") or {}).get("pullRequest")
-        assert pull is None or pull["reviewThreads"]["totalCount"] == 0, response.text
+        assert response.json()["data"]["repository"] is None, response.text
 
 
 async def test_installation_token_needs_pull_requests_write(client, test_user, test_token, admin_token):
@@ -354,7 +353,8 @@ async def test_installation_token_needs_pull_requests_write(client, test_user, t
     assert (await _gql(client, issues_only, UNMINIMIZE, {"id": on_two["node_id"]}))["errors"][0]["type"] == "FORBIDDEN"
     # A token minted for another repository does not see this one.
     assert (await _gql(client, elsewhere, UNRESOLVE, {"t": thread_id}))["errors"][0]["type"] == "NOT_FOUND"
-    assert (await _threads(client, elsewhere, number))["totalCount"] == 0
+    hidden = await _gql(client, elsewhere, THREADS, {"owner": "testuser", "name": REPO, "number": number})
+    assert hidden["data"]["repository"] is None
 
 
 async def test_job_token_cannot_minimize_beyond_its_job(client, db_session, test_user, test_token):

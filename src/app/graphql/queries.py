@@ -115,8 +115,10 @@ class OrganizationType:
         else:
             query = query.order_by(RepoModel.updated_at.desc())
 
+        from app.graphql.authz import visible_only
+
         result = await db.execute(query)
-        all_repos = result.scalars().all()
+        all_repos = await visible_only(info, result.scalars().all())
 
         return build_connection(
             all_repos, repository_from_model, len(all_repos),
@@ -146,6 +148,35 @@ RepositoryOwner = Annotated[
     Union[GitHubUser, OrganizationType],
     strawberry.union("RepositoryOwner"),
 ]
+
+
+_SEARCH_BATCH = 100
+
+
+async def _first_visible(info: Info, query, first: int, repository_of) -> list:
+    """The first ``first`` rows of ``query`` whose repository the caller sees.
+
+    Hidden rows are skipped before the page is cut, so a page is not short of
+    results the caller may see, and rows are read in batches so a broad
+    search stops as soon as the page is full.
+    """
+    from app.graphql.authz import visible
+
+    db = info.context["db"]
+    found: list = []
+    offset = 0
+    first = max(0, min(first, 100))
+    while len(found) < first:
+        batch = (await db.execute(query.offset(offset).limit(_SEARCH_BATCH))).scalars().all()
+        for row in batch:
+            if await visible(info, repository_of(row)):
+                found.append(row)
+                if len(found) == first:
+                    break
+        if len(batch) < _SEARCH_BATCH:
+            break
+        offset += _SEARCH_BATCH
+    return found
 
 
 def _decode_node_id(global_id: str) -> tuple[str, int]:
@@ -194,7 +225,11 @@ class Query:
             select(RepoModel).where(RepoModel.full_name == full_name)
         )
         repo = result.scalar_one_or_none()
-        if repo:
+        # A repository the caller cannot see resolves like one that does not
+        # exist, so its existence is not revealed either.
+        from app.graphql.authz import visible
+
+        if repo and await visible(info, repo):
             return repository_from_model(repo)
         return None
 
@@ -270,6 +305,7 @@ class Query:
             return None
 
         db = info.context["db"]
+        from app.graphql.authz import repository_of_issue, visible
 
         if type_name == "Repository":
             from app.models.repository import Repository as RepoModel
@@ -277,7 +313,7 @@ class Query:
                 select(RepoModel).where(RepoModel.id == db_id)
             )
             repo = result.scalar_one_or_none()
-            if repo:
+            if repo and await visible(info, repo):
                 return repository_from_model(repo)
 
         elif type_name == "Issue":
@@ -286,7 +322,7 @@ class Query:
                 select(IssueModel).where(IssueModel.id == db_id)
             )
             issue = result.scalar_one_or_none()
-            if issue:
+            if issue and await visible(info, await repository_of_issue(db, issue)):
                 return issue_from_model(issue)
 
         elif type_name == "PullRequest":
@@ -295,7 +331,7 @@ class Query:
                 select(PRModel).where(PRModel.id == db_id)
             )
             pr = result.scalar_one_or_none()
-            if pr:
+            if pr and await visible(info, await repository_of_issue(db, pr.issue)):
                 return pull_request_from_model(pr)
 
         elif type_name == "User":
@@ -328,7 +364,8 @@ class Query:
 
         if type == SearchType.REPOSITORY:
             from app.models.repository import Repository as RepoModel
-            result = await db.execute(
+            repos = await _first_visible(
+                info,
                 select(RepoModel)
                 .where(
                     or_(
@@ -337,9 +374,10 @@ class Query:
                         RepoModel.description.ilike(search_term),
                     )
                 )
-                .limit(first)
+                .order_by(RepoModel.id),
+                first,
+                lambda repo: repo,
             )
-            repos = result.scalars().all()
             nodes = [repository_from_model(r) for r in repos]
             total_count = len(nodes)
 
@@ -348,7 +386,8 @@ class Query:
             from app.models.pull_request import PullRequest as PRModel
 
             # Search issues
-            issue_result = await db.execute(
+            issues = await _first_visible(
+                info,
                 select(IssueModel)
                 .where(
                     or_(
@@ -356,9 +395,10 @@ class Query:
                         IssueModel.body.ilike(search_term),
                     )
                 )
-                .limit(first)
+                .order_by(IssueModel.id),
+                first,
+                lambda issue: issue.repository,
             )
-            issues = issue_result.scalars().all()
 
             # Check which issues have associated PRs
             issue_ids = [i.id for i in issues]
