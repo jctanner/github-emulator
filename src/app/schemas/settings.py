@@ -19,7 +19,9 @@ class InstallationAccountResponse(BaseModel):
 
 class InstallationResponse(BaseModel):
     id: int
-    app_id: str
+    # An integer, except for an App stored with a non-numeric id before
+    # ids were validated (see ``apps._github_app_id``).
+    app_id: int | str
     app_slug: str
     target_type: str
     account: InstallationAccountResponse

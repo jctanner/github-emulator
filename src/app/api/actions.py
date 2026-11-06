@@ -6,10 +6,12 @@ import shutil
 import zipfile
 
 from fastapi import APIRouter, HTTPException, Query, Request
-from fastapi.responses import FileResponse, PlainTextResponse, Response, StreamingResponse
+from fastapi.responses import FileResponse, JSONResponse, PlainTextResponse, Response, StreamingResponse
 from sqlalchemy import select, func, or_
 
 from app.api.deps import AuthUser, CurrentUser, DbSession, get_repo_or_404
+from app.api.pagination import pagination_links
+from app.services import repository_access
 from app.config import settings
 from app.models.actions import Workflow, WorkflowRun, WorkflowJob, Secret, Variable
 from app.models.artifact import WorkflowArtifact
@@ -153,6 +155,36 @@ async def _get_artifact_or_404(owner: str, repo: str, artifact_id: int, db) -> W
     if artifact is None:
         raise HTTPException(status_code=404, detail="Artifact not found")
     return artifact
+
+
+@router.get("/repos/{owner}/{repo}/actions/artifacts")
+async def list_repository_artifacts(
+    owner: str, repo: str, request: Request, db: DbSession, current_user: CurrentUser,
+    per_page: int = Query(30, ge=1, le=100),
+    page: int = Query(1, ge=1),
+    name: str | None = Query(None, description="Only artifacts with exactly this name"),
+):
+    """Every artifact in the repository, across all runs, newest first.
+
+    Like GitHub, anyone with read access may list them; a public
+    repository's artifacts need no credentials.
+    """
+    repository = await get_repo_or_404(owner, repo, db)
+    await _check_read_access(db, repository, current_user)
+    query = select(WorkflowArtifact).where(WorkflowArtifact.repo_id == repository.id)
+    if name:
+        query = query.where(WorkflowArtifact.name == name)
+    total = (await db.execute(select(func.count()).select_from(query.subquery()))).scalar() or 0
+    query = (
+        query.order_by(WorkflowArtifact.created_at.desc(), WorkflowArtifact.id.desc())
+        .offset((page - 1) * per_page)
+        .limit(per_page)
+    )
+    artifacts = (await db.execute(query)).scalars().all()
+    return _paged_json(
+        request, page, per_page, total,
+        {"total_count": total, "artifacts": [_artifact_json(item, owner, repo) for item in artifacts]},
+    )
 
 
 @router.get("/repos/{owner}/{repo}/actions/runs/{run_id}/artifacts")
@@ -307,12 +339,82 @@ async def delete_artifact(owner: str, repo: str, artifact_id: int, user: AuthUse
     await db.commit()
 
 
-def _check_read_access(repository, current_user) -> None:
-    if repository.private and (
-        current_user is None
-        or (current_user.id != repository.owner_id and not current_user.site_admin)
-    ):
+async def _check_read_access(db, repository, current_user) -> None:
+    """404 unless the caller may read the repository.
+
+    This is the same rule as the central visibility gate
+    (``repository_access.can_read``): the owner, site admins, collaborators,
+    and organization members may read a private repository. It used to
+    allow only the owner and site admins, so a collaborator who could see
+    the repository got 404 from its Actions reads.
+    """
+    if not await repository_access.can_read(db, repository, current_user):
         raise HTTPException(status_code=404, detail="Not Found")
+
+
+def _paged_json(request: Request, page: int, per_page: int, total: int, body: dict) -> JSONResponse:
+    """A list body with GitHub's ``Link`` pagination header."""
+    link = pagination_links(request, page, per_page, total)
+    return JSONResponse(content=body, headers={"Link": link} if link else {})
+
+
+async def _resolve_workflow(db, repository, workflow_id: str) -> Workflow | None:
+    """Find a workflow by numeric id, stored path, or file name.
+
+    GitHub's ``workflow_id`` parameter is "the ID of the workflow" or "the
+    workflow file name", for example ``main.yaml``. The file name resolves
+    beneath ``.github/workflows``. The workflow table is synchronized from
+    the default branch first, so a workflow file added since is found.
+    """
+    from app.services.workflow_service import sync_workflows_to_db
+
+    await sync_workflows_to_db(db, repository, "HEAD")
+    await db.commit()
+    query = select(Workflow).where(Workflow.repo_id == repository.id)
+    if workflow_id.isdigit():
+        query = query.where(Workflow.id == int(workflow_id))
+    else:
+        short_path = workflow_id
+        if "/" not in short_path:
+            short_path = f".github/workflows/{short_path}"
+        query = query.where(or_(Workflow.path == workflow_id, Workflow.path == short_path))
+    return (await db.execute(query)).scalars().first()
+
+
+# GitHub's ``status`` filter takes either a run status or a conclusion.
+_RUN_STATUSES = {"queued", "in_progress", "completed", "waiting", "requested", "pending"}
+
+
+async def _list_runs(
+    request: Request, db, repository, owner: str, repo: str, page: int, per_page: int,
+    workflow: Workflow | None = None,
+    status: str | None = None, event: str | None = None,
+    branch: str | None = None, head_sha: str | None = None,
+) -> JSONResponse:
+    """Workflow runs for a repository or one workflow, newest first."""
+    query = select(WorkflowRun).where(WorkflowRun.repo_id == repository.id)
+    if workflow is not None:
+        query = query.where(WorkflowRun.workflow_id == workflow.id)
+    if status:
+        column = WorkflowRun.status if status in _RUN_STATUSES else WorkflowRun.conclusion
+        query = query.where(column == status)
+    if event:
+        query = query.where(WorkflowRun.event == event)
+    if branch:
+        query = query.where(WorkflowRun.head_branch == branch)
+    if head_sha:
+        query = query.where(WorkflowRun.head_sha == head_sha)
+    total = (await db.execute(select(func.count()).select_from(query.subquery()))).scalar() or 0
+    query = (
+        query.order_by(WorkflowRun.created_at.desc(), WorkflowRun.id.desc())
+        .offset((page - 1) * per_page)
+        .limit(per_page)
+    )
+    runs = (await db.execute(query)).scalars().all()
+    body = WorkflowRunListResponse(
+        total_count=total, workflow_runs=[_run_json(r, owner, repo) for r in runs]
+    ).model_dump(mode="json")
+    return _paged_json(request, page, per_page, total, body)
 
 
 # --- Workflows ---
@@ -327,7 +429,7 @@ async def list_workflows(
 ):
     """List workflows."""
     repository = await get_repo_or_404(owner, repo, db)
-    _check_read_access(repository, current_user)
+    await _check_read_access(db, repository, current_user)
     from app.services.workflow_service import materialize_reusable_workflows, sync_workflows_to_db
 
     await sync_workflows_to_db(db, repository, "HEAD")
@@ -345,22 +447,41 @@ async def list_workflows(
 
 @router.get("/repos/{owner}/{repo}/actions/workflows/{workflow_id}")
 async def get_workflow(
-    owner: str, repo: str, workflow_id: int, db: DbSession, current_user: CurrentUser,
+    owner: str, repo: str, workflow_id: str, db: DbSession, current_user: CurrentUser,
 ):
-    """Get a workflow."""
+    """Get a workflow by id or file name."""
     repository = await get_repo_or_404(owner, repo, db)
-    _check_read_access(repository, current_user)
-    from app.services.workflow_service import sync_workflows_to_db
-
-    await sync_workflows_to_db(db, repository, "HEAD")
-    await db.commit()
-    result = await db.execute(
-        select(Workflow).where(Workflow.id == workflow_id, Workflow.repo_id == repository.id)
-    )
-    w = result.scalar_one_or_none()
+    await _check_read_access(db, repository, current_user)
+    w = await _resolve_workflow(db, repository, workflow_id)
     if w is None:
         raise HTTPException(status_code=404, detail="Not Found")
     return _workflow_json(w, owner, repo)
+
+
+@router.get(
+    "/repos/{owner}/{repo}/actions/workflows/{workflow_id}/runs",
+    response_model=WorkflowRunListResponse,
+)
+async def list_runs_for_workflow(
+    owner: str, repo: str, workflow_id: str, request: Request,
+    db: DbSession, current_user: CurrentUser,
+    page: int = Query(1, ge=1),
+    per_page: int = Query(30, ge=1, le=100),
+    status: str | None = Query(None),
+    event: str | None = Query(None),
+    branch: str | None = Query(None),
+    head_sha: str | None = Query(None),
+):
+    """List one workflow's runs; ``workflow_id`` is an id or a file name."""
+    repository = await get_repo_or_404(owner, repo, db)
+    await _check_read_access(db, repository, current_user)
+    workflow = await _resolve_workflow(db, repository, workflow_id)
+    if workflow is None:
+        raise HTTPException(status_code=404, detail="Not Found")
+    return await _list_runs(
+        request, db, repository, owner, repo, page, per_page, workflow=workflow,
+        status=status, event=event, branch=branch, head_sha=head_sha,
+    )
 
 
 @router.post("/repos/{owner}/{repo}/actions/workflows/{workflow_id}/dispatches", status_code=204)
@@ -371,24 +492,9 @@ async def dispatch_workflow(
     repository = await get_repo_or_404(owner, repo, db)
     if repository.actions_enabled is False:
         raise HTTPException(status_code=403, detail="Actions is disabled on this repository")
-    from app.services.workflow_service import sync_workflows_to_db
-
-    await sync_workflows_to_db(db, repository, "HEAD")
-    await db.commit()
-    workflow_query = select(Workflow).where(Workflow.repo_id == repository.id)
-    if workflow_id.isdigit():
-        workflow_query = workflow_query.where(Workflow.id == int(workflow_id))
-    else:
-        # ``gh workflow run`` accepts either the stored workflow path or the
-        # short filename (for example ``triage.yml``).  GitHub resolves the
-        # latter beneath .github/workflows; preserve that behavior here.
-        short_path = workflow_id
-        if "/" not in short_path:
-            short_path = f".github/workflows/{short_path}"
-        workflow_query = workflow_query.where(
-            or_(Workflow.path == workflow_id, Workflow.path == short_path)
-        )
-    workflow = (await db.execute(workflow_query)).scalar_one_or_none()
+    # ``gh workflow run`` passes either the id, the stored path, or the
+    # short file name (for example ``triage.yml``).
+    workflow = await _resolve_workflow(db, repository, workflow_id)
 
     if workflow is None:
         raise HTTPException(status_code=404, detail="Workflow not found")
@@ -444,23 +550,21 @@ async def dispatch_workflow(
     "/repos/{owner}/{repo}/actions/runs", response_model=WorkflowRunListResponse
 )
 async def list_workflow_runs(
-    owner: str, repo: str, db: DbSession, current_user: CurrentUser,
+    owner: str, repo: str, request: Request, db: DbSession, current_user: CurrentUser,
     page: int = Query(1, ge=1),
     per_page: int = Query(30, ge=1, le=100),
+    status: str | None = Query(None),
+    event: str | None = Query(None),
+    branch: str | None = Query(None),
+    head_sha: str | None = Query(None),
 ):
     """List workflow runs."""
     repository = await get_repo_or_404(owner, repo, db)
-    _check_read_access(repository, current_user)
-    query = (
-        select(WorkflowRun)
-        .where(WorkflowRun.repo_id == repository.id)
-        .order_by(WorkflowRun.created_at.desc())
-        .offset((page - 1) * per_page)
-        .limit(per_page)
+    await _check_read_access(db, repository, current_user)
+    return await _list_runs(
+        request, db, repository, owner, repo, page, per_page,
+        status=status, event=event, branch=branch, head_sha=head_sha,
     )
-    runs = (await db.execute(query)).scalars().all()
-    items = [_run_json(r, owner, repo) for r in runs]
-    return {"total_count": len(items), "workflow_runs": items}
 
 
 @router.get(
@@ -471,7 +575,7 @@ async def get_workflow_run(
 ):
     """Get a workflow run."""
     repository = await get_repo_or_404(owner, repo, db)
-    _check_read_access(repository, current_user)
+    await _check_read_access(db, repository, current_user)
     result = await db.execute(
         select(WorkflowRun).where(WorkflowRun.id == run_id, WorkflowRun.repo_id == repository.id)
     )
@@ -578,7 +682,7 @@ async def list_jobs(
 ):
     """List jobs for a workflow run."""
     repository = await get_repo_or_404(owner, repo, db)
-    _check_read_access(repository, current_user)
+    await _check_read_access(db, repository, current_user)
     run_result = await db.execute(
         select(WorkflowRun).where(
             WorkflowRun.id == run_id,
@@ -602,7 +706,7 @@ async def get_job(
 ):
     """Get a workflow job."""
     repository = await get_repo_or_404(owner, repo, db)
-    _check_read_access(repository, current_user)
+    await _check_read_access(db, repository, current_user)
     result = await db.execute(
         select(WorkflowJob)
         .join(WorkflowRun, WorkflowJob.run_id == WorkflowRun.id)
@@ -623,7 +727,7 @@ async def get_job_logs(
 ):
     """Get captured logs for a workflow job."""
     repository = await get_repo_or_404(owner, repo, db)
-    _check_read_access(repository, current_user)
+    await _check_read_access(db, repository, current_user)
     result = await db.execute(
         select(WorkflowJob)
         .join(WorkflowRun, WorkflowJob.run_id == WorkflowRun.id)

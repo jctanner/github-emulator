@@ -6,14 +6,17 @@ import secrets
 
 from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import rsa
-from fastapi import APIRouter, HTTPException, Request
+from fastapi import APIRouter, HTTPException, Query, Request
 from fastapi.responses import JSONResponse
 from jose import JWTError, jwt
 from sqlalchemy import select
 
-from app.api.deps import AuthUser, DbSession, CurrentUser
+from app.api.deps import AuthUser, DbSession, CurrentUser, get_current_user, get_repo_or_404
+from app.api.orgs import _is_org_admin
+from app.api.pagination import pagination_links
 from app.config import settings
 from app.models.apps import AppInstallation, AppInstallationToken, GitHubApp
+from app.models.organization import Organization
 from app.models.repository import Repository
 from app.models.user import User
 from app.schemas.user import _fmt_dt
@@ -37,11 +40,54 @@ def _private_key() -> str:
     ).decode()
 
 
+def _github_app_id(app: GitHubApp) -> int | str:
+    """The App id as GitHub serializes it: an integer.
+
+    The column is a string because the admin API addresses Apps by it in
+    URLs. Clients decode ``id`` and ``app_id`` into integer types, so the
+    GitHub-shaped responses must not echo the stored string. Ids are
+    validated as numeric on create; an App stored before that with a
+    non-numeric id keeps its string rather than failing every response
+    that includes it.
+    """
+    return int(app.app_id) if app.app_id.isdigit() else app.app_id
+
+
+def _numeric_app_id(raw) -> str:
+    """Validate a requested App id; GitHub App ids are positive integers."""
+    value = str(raw).strip()
+    if not value.isdigit() or int(value) <= 0:
+        raise HTTPException(status_code=422, detail="app_id must be a positive integer")
+    return str(int(value))
+
+
+def _covers(installation: AppInstallation, owner: str, full_name: str) -> bool:
+    """Whether an installation can access ``owner/repo``.
+
+    An empty repository list is ``repository_selection: "all"``: every
+    repository of the installation's account. This is the same rule as
+    ``repository_access.installation_role``.
+    """
+    if installation.account_login != owner:
+        return False
+    return not installation.repositories or full_name in installation.repositories
+
+
+def _is_app_jwt(request: Request) -> bool:
+    """Whether the request carries a bearer JWT rather than a token.
+
+    Tokens (``ghp_``, ``ghs_``, ...) have no dots; a JWT has three
+    dot-separated segments.
+    """
+    scheme, _, raw = request.headers.get("Authorization", "").partition(" ")
+    return scheme.lower() == "bearer" and raw.count(".") == 2
+
+
 def _app_json(app: GitHubApp) -> dict:
     base = settings.BASE_URL.rstrip("/")
     created_at = _fmt_dt(app.created_at)
     return {
-        "id": app.app_id,
+        "id": _github_app_id(app),
         "database_id": app.id,
         "client_id": app.client_id,
         "node_id": f"A_{app.app_id}",
@@ -65,7 +111,7 @@ def _installation_json(app: GitHubApp, installation: AppInstallation) -> dict:
     repository_selection = "selected" if installation.repositories else "all"
     return {
         "id": installation.id,
-        "app_id": app.app_id,
+        "app_id": _github_app_id(app),
         "app_slug": app.slug,
         "target_type": installation.account_type,
         "account": {"login": installation.account_login, "type": installation.account_type},
@@ -120,7 +166,8 @@ async def create_app(body: dict, user: AuthUser, db: DbSession):
         raise HTTPException(status_code=403, detail="site admin required")
     name = str(body.get("name", "")).strip()
     slug = str(body.get("slug", name.lower().replace(" ", "-"))).strip()
-    app_id = str(body.get("app_id", "")).strip() or str(secrets.randbelow(900000) + 100000)
+    requested_id = str(body.get("app_id", "")).strip()
+    app_id = _numeric_app_id(requested_id) if requested_id else str(secrets.randbelow(900000) + 100000)
     if not name or not slug:
         raise HTTPException(status_code=422, detail="name is required")
     if (await db.execute(select(GitHubApp).where(GitHubApp.slug == slug))).scalar_one_or_none():
@@ -340,13 +387,105 @@ async def list_token_installation_repositories(
     }
 
 
-@router.get("/repos/{owner}/{repo}/installation")
-async def repo_installation(owner: str, repo: str, db: DbSession, current_user: CurrentUser):
-    full_name = f"{owner}/{repo}"
-    item = (await db.execute(select(AppInstallation).where(AppInstallation.repositories.contains([full_name])))).scalars().first()
+@router.get("/apps/{app_slug}")
+async def get_app_by_slug(app_slug: str, db: DbSession, current_user: CurrentUser):
+    """Get an App by its slug, in the same shape as ``GET /app``."""
+    app = (await db.execute(select(GitHubApp).where(GitHubApp.slug == app_slug))).scalar_one_or_none()
+    if app is None:
+        raise HTTPException(status_code=404, detail="Not Found")
+    return _app_json(app)
+
+
+@router.get("/orgs/{org}/installation")
+async def org_installation(org: str, request: Request, db: DbSession):
+    """The authenticated App's installation on an organization (App JWT).
+
+    Only an organization answers: an installation on a user account, or a
+    record naming an account that is not an organization, is 404 here, as
+    ``GET /users/{username}/installation`` is GitHub's route for users.
+    """
+    app = await _app_from_jwt(request, db)
+    organisation = (await db.execute(select(Organization).where(Organization.login == org))).scalar_one_or_none()
+    if organisation is None:
+        raise HTTPException(status_code=404, detail="Not Found")
+    item = (
+        await db.execute(
+            select(AppInstallation).where(
+                AppInstallation.app_id == app.id,
+                AppInstallation.account_login == org,
+            )
+        )
+    ).scalars().first()
     if item is None:
-        raise HTTPException(status_code=404, detail="No installation found")
-    return {"id": item.id, "account": {"login": item.account_login, "type": item.account_type}, "repository_selection": "selected"}
+        raise HTTPException(status_code=404, detail="Not Found")
+    return _installation_json(app, item)
+
+
+@router.get("/orgs/{org}/installations")
+async def org_installations(
+    org: str,
+    request: Request,
+    db: DbSession,
+    user: AuthUser,
+    per_page: int = Query(30, ge=1, le=100),
+    page: int = Query(1, ge=1),
+):
+    """Every App installation on an organization; organization admins only."""
+    organisation = (await db.execute(select(Organization).where(Organization.login == org))).scalar_one_or_none()
+    if organisation is None:
+        raise HTTPException(status_code=404, detail="Not Found")
+    if not await _is_org_admin(organisation, user, db):
+        raise HTTPException(status_code=403, detail="You must be an admin of this organization")
+    items = (
+        await db.execute(
+            select(AppInstallation)
+            .where(AppInstallation.account_login == org)
+            .order_by(AppInstallation.id)
+        )
+    ).scalars().all()
+    page_items = items[(page - 1) * per_page : page * per_page]
+    headers = {}
+    link = pagination_links(request, page, per_page, len(items))
+    if link:
+        headers["Link"] = link
+    return JSONResponse(
+        content={
+            "total_count": len(items),
+            "installations": [_installation_json(item.app, item) for item in page_items],
+        },
+        headers=headers,
+    )
+
+
+@router.get("/repos/{owner}/{repo}/installation")
+async def repo_installation(owner: str, repo: str, request: Request, db: DbSession):
+    """The installation that can access a repository.
+
+    With an App JWT, as on GitHub, this is the calling App's installation, and
+    an installation with ``repository_selection: "all"`` on the repository's
+    account covers it. Other callers keep the emulator's earlier behavior and
+    receive the first installation that covers the repository.
+
+    The route resolves its caller itself rather than through ``CurrentUser``.
+    That dependency hides private repositories from callers who are not
+    users, and an App JWT is not a user: an App installed on a private
+    repository must still find its installation. The App path is gated by
+    the installation's coverage instead.
+    """
+    full_name = f"{owner}/{repo}"
+    query = select(AppInstallation).where(AppInstallation.account_login == owner).order_by(AppInstallation.id)
+    if _is_app_jwt(request):
+        app = await _app_from_jwt(request, db)
+        query = query.where(AppInstallation.app_id == app.id)
+    else:
+        await get_current_user(request, db)  # 404s a private repository the caller cannot see
+    # An "all repositories" installation covers only repositories that exist.
+    await get_repo_or_404(owner, repo, db)
+    items = (await db.execute(query)).scalars().all()
+    item = next((item for item in items if _covers(item, owner, full_name)), None)
+    if item is None:
+        raise HTTPException(status_code=404, detail="Not Found")
+    return _installation_json(item.app, item)
 
 
 @router.get(
@@ -356,8 +495,12 @@ async def repo_installation(owner: str, repo: str, db: DbSession, current_user: 
 async def repo_installations(
     owner: str, repo: str, db: DbSession, current_user: CurrentUser
 ):
-    """List every GitHub App installation granted access to a repository."""
+    """List every GitHub App installation that can access a repository."""
     full_name = f"{owner}/{repo}"
-    items = (await db.execute(select(AppInstallation))).scalars().all()
-    matches = [item for item in items if full_name in (item.repositories or [])]
-    return [_installation_json(item.app, item) for item in matches]
+    await get_repo_or_404(owner, repo, db)
+    items = (
+        await db.execute(
+            select(AppInstallation).where(AppInstallation.account_login == owner).order_by(AppInstallation.id)
+        )
+    ).scalars().all()
+    return [_installation_json(item.app, item) for item in items if _covers(item, owner, full_name)]

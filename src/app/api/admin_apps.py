@@ -6,7 +6,7 @@ import secrets
 from fastapi import APIRouter, HTTPException
 from sqlalchemy import delete as sa_delete, select
 
-from app.api.apps import _client_id, _private_key
+from app.api.apps import _client_id, _numeric_app_id, _private_key
 from app.api.deps import AuthUser, DbSession
 from app.config import settings
 from app.models.apps import AppInstallation, AppInstallationToken, GitHubApp
@@ -69,7 +69,8 @@ async def create_app(body: dict, user: AuthUser, db: DbSession):
     _admin_required(user)
     name = str(body.get("name", "")).strip()
     slug = str(body.get("slug", name.lower().replace(" ", "-")).strip())
-    app_id = str(body.get("app_id", "")).strip() or str(secrets.randbelow(900000) + 100000)
+    requested_id = str(body.get("app_id", "")).strip()
+    app_id = _numeric_app_id(requested_id) if requested_id else str(secrets.randbelow(900000) + 100000)
     if not name or not slug:
         raise HTTPException(status_code=422, detail="name is required")
     duplicate = await db.execute(

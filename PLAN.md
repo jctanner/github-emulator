@@ -25,6 +25,7 @@ Actions visibility and runner evaluation.
 
 ## Completed Tasks
 
+- `docs/tasks/done/fullsend-app-lookups-and-actions-lists.md`
 - `docs/tasks/done/live-issue-and-pull-updates.md`
 - `docs/tasks/done/web-ui-reload-in-place.md`
 - `docs/tasks/done/web-ui-markdown-rendering.md`

@@ -1740,6 +1740,26 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v3/apps/{app_slug}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get App By Slug
+         * @description Get an App by its slug, in the same shape as ``GET /app``.
+         */
+        get: operations["get_app_by_slug_api_v3_apps__app_slug__get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v3/emojis": {
         parameters: {
             query?: never;
@@ -2218,6 +2238,46 @@ export interface paths {
         patch: operations["update_org_api_v3_orgs__org__patch"];
         trace?: never;
     };
+    "/api/v3/orgs/{org}/installation": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Org Installation
+         * @description The authenticated App's installation on an organization (App JWT).
+         */
+        get: operations["org_installation_api_v3_orgs__org__installation_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v3/orgs/{org}/installations": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Org Installations
+         * @description Every App installation on an organization; organization admins only.
+         */
+        get: operations["org_installations_api_v3_orgs__org__installations_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v3/orgs/{org}/members": {
         parameters: {
             query?: never;
@@ -2404,6 +2464,29 @@ export interface paths {
          * @description Update repository settings.
          */
         patch: operations["update_repo_api_v3_repos__owner___repo__patch"];
+        trace?: never;
+    };
+    "/api/v3/repos/{owner}/{repo}/actions/artifacts": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List Repository Artifacts
+         * @description Every artifact in the repository, across all runs, newest first.
+         *
+         *     Like GitHub, anyone with read access may list them; a public
+         *     repository's artifacts need no credentials.
+         */
+        get: operations["list_repository_artifacts_api_v3_repos__owner___repo__actions_artifacts_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
         trace?: never;
     };
     "/api/v3/repos/{owner}/{repo}/actions/artifacts/{artifact_id}": {
@@ -3044,7 +3127,7 @@ export interface paths {
         };
         /**
          * Get Workflow
-         * @description Get a workflow.
+         * @description Get a workflow by id or file name.
          */
         get: operations["get_workflow_api_v3_repos__owner___repo__actions_workflows__workflow_id__get"];
         put?: never;
@@ -3069,6 +3152,26 @@ export interface paths {
          * @description Dispatch a workflow configured with ``workflow_dispatch``.
          */
         post: operations["dispatch_workflow_api_v3_repos__owner___repo__actions_workflows__workflow_id__dispatches_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v3/repos/{owner}/{repo}/actions/workflows/{workflow_id}/runs": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List Runs For Workflow
+         * @description List one workflow's runs; ``workflow_id`` is an id or a file name.
+         */
+        get: operations["list_runs_for_workflow_api_v3_repos__owner___repo__actions_workflows__workflow_id__runs_get"];
+        put?: never;
+        post?: never;
         delete?: never;
         options?: never;
         head?: never;
@@ -3938,7 +4041,21 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** Repo Installation */
+        /**
+         * Repo Installation
+         * @description The installation that can access a repository.
+         *
+         *     With an App JWT, as on GitHub, this is the calling App's installation, and
+         *     an installation with ``repository_selection: "all"`` on the repository's
+         *     account covers it. Other callers keep the emulator's earlier behavior and
+         *     receive the first installation that covers the repository.
+         *
+         *     The route resolves its caller itself rather than through ``CurrentUser``.
+         *     That dependency hides private repositories from callers who are not
+         *     users, and an App JWT is not a user: an App installed on a private
+         *     repository must still find its installation. The App path is gated by
+         *     the installation's coverage instead.
+         */
         get: operations["repo_installation_api_v3_repos__owner___repo__installation_get"];
         put?: never;
         post?: never;
@@ -3957,7 +4074,7 @@ export interface paths {
         };
         /**
          * Repo Installations
-         * @description List every GitHub App installation granted access to a repository.
+         * @description List every GitHub App installation that can access a repository.
          */
         get: operations["repo_installations_api_v3_repos__owner___repo__installations_get"];
         put?: never;
@@ -7028,7 +7145,7 @@ export interface components {
             access_tokens_url: string;
             account: components["schemas"]["InstallationAccountResponse"];
             /** App Id */
-            app_id: string;
+            app_id: number | string;
             /** App Slug */
             app_slug: string;
             /** Created At */
@@ -11402,6 +11519,37 @@ export interface operations {
             };
         };
     };
+    get_app_by_slug_api_v3_apps__app_slug__get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                app_slug: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     list_emojis_api_v3_emojis_get: {
         parameters: {
             query?: never;
@@ -12277,6 +12425,71 @@ export interface operations {
             };
         };
     };
+    org_installation_api_v3_orgs__org__installation_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                org: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    org_installations_api_v3_orgs__org__installations_get: {
+        parameters: {
+            query?: {
+                per_page?: number;
+                page?: number;
+            };
+            header?: never;
+            path: {
+                org: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     list_org_members_api_v3_orgs__org__members_get: {
         parameters: {
             query?: {
@@ -12758,6 +12971,43 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["RepoResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    list_repository_artifacts_api_v3_repos__owner___repo__actions_artifacts_get: {
+        parameters: {
+            query?: {
+                per_page?: number;
+                page?: number;
+                /** @description Only artifacts with exactly this name */
+                name?: string | null;
+            };
+            header?: never;
+            path: {
+                owner: string;
+                repo: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
                 };
             };
             /** @description Validation Error */
@@ -13448,6 +13698,10 @@ export interface operations {
             query?: {
                 page?: number;
                 per_page?: number;
+                status?: string | null;
+                event?: string | null;
+                branch?: string | null;
+                head_sha?: string | null;
             };
             header?: never;
             path: {
@@ -14061,7 +14315,7 @@ export interface operations {
             path: {
                 owner: string;
                 repo: string;
-                workflow_id: number;
+                workflow_id: string;
             };
             cookie?: never;
         };
@@ -14112,6 +14366,46 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content?: never;
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    list_runs_for_workflow_api_v3_repos__owner___repo__actions_workflows__workflow_id__runs_get: {
+        parameters: {
+            query?: {
+                page?: number;
+                per_page?: number;
+                status?: string | null;
+                event?: string | null;
+                branch?: string | null;
+                head_sha?: string | null;
+            };
+            header?: never;
+            path: {
+                owner: string;
+                repo: string;
+                workflow_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["WorkflowRunListResponse"];
+                };
             };
             /** @description Validation Error */
             422: {
