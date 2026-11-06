@@ -3,6 +3,7 @@
 import asyncio
 import base64
 from datetime import datetime, timezone
+from enum import Enum
 from typing import Annotated, Optional, Union
 
 import strawberry
@@ -13,6 +14,8 @@ from app.graphql.types.user import GitHubUser, user_from_model
 from app.graphql.types.repository import Repository, repository_from_model
 from app.graphql.types.issue import Issue, issue_from_model, IssueComment, comment_from_model
 from app.graphql.types.pull_request import Commit, PullRequest, pull_request_from_model
+from app.graphql.types.minimizable import Minimizable
+from app.graphql.types.review_thread import MINIMIZED_REASONS, PullRequestReviewThread
 from graphql import GraphQLError
 
 
@@ -326,6 +329,177 @@ class AddLabelsToLabelablePayload:
 class CreateCommitOnBranchPayload:
     commit: Optional[Commit] = None
     client_mutation_id: Optional[str] = None
+
+
+# --- Review threads and minimized comments (github-emulator#20) ---
+
+@strawberry.enum
+class ReportedContentClassifiers(Enum):
+    SPAM = "SPAM"
+    ABUSE = "ABUSE"
+    OFF_TOPIC = "OFF_TOPIC"
+    OUTDATED = "OUTDATED"
+    DUPLICATE = "DUPLICATE"
+    RESOLVED = "RESOLVED"
+
+
+@strawberry.input
+class ResolveReviewThreadInput:
+    thread_id: strawberry.ID
+    client_mutation_id: Optional[str] = None
+
+
+@strawberry.input
+class UnresolveReviewThreadInput:
+    thread_id: strawberry.ID
+    client_mutation_id: Optional[str] = None
+
+
+@strawberry.type
+class ResolveReviewThreadPayload:
+    thread: Optional[PullRequestReviewThread] = None
+    client_mutation_id: Optional[str] = None
+
+
+@strawberry.type
+class UnresolveReviewThreadPayload:
+    thread: Optional[PullRequestReviewThread] = None
+    client_mutation_id: Optional[str] = None
+
+
+@strawberry.input
+class MinimizeCommentInput:
+    subject_id: strawberry.ID
+    classifier: ReportedContentClassifiers
+    client_mutation_id: Optional[str] = None
+
+
+@strawberry.input
+class UnminimizeCommentInput:
+    subject_id: strawberry.ID
+    client_mutation_id: Optional[str] = None
+
+
+@strawberry.type
+class MinimizeCommentPayload:
+    minimized_comment: Optional[Minimizable] = None
+    client_mutation_id: Optional[str] = None
+
+
+@strawberry.type
+class UnminimizeCommentPayload:
+    unminimized_comment: Optional[Minimizable] = None
+    client_mutation_id: Optional[str] = None
+
+
+def _decode_typed_node_id(node_id: str) -> tuple[str, int] | None:
+    """Split a ``base64("Type:id")`` node id; ``None`` when it is not one."""
+    try:
+        kind, _, raw = base64.b64decode(str(node_id), validate=True).decode("utf-8").partition(":")
+        return kind, int(raw)
+    except Exception:
+        return None
+
+
+async def _review_thread_root(info: Info, thread_id: str, mutation: str):
+    """The root comment of a thread the caller may resolve."""
+    from app.graphql.authz import is_integration, may_read, may_write
+    from app.graphql.types.review_thread import PULL_REQUEST_SCOPES
+    from app.models.comment import PRReviewComment
+    from app.models.issue import Issue
+    from app.models.pull_request import PullRequest as PRModel
+    from app.models.repository import Repository as RepoModel
+
+    viewer = _require_auth(info)
+    db = info.context["db"]
+    decoded = _decode_typed_node_id(thread_id)
+    root = None
+    if decoded and decoded[0] == "PullRequestReviewThread":
+        root = (
+            await db.execute(select(PRReviewComment).where(PRReviewComment.id == decoded[1]))
+        ).scalar_one_or_none()
+    pr = (await db.execute(select(PRModel).where(PRModel.id == root.pull_request_id))).scalar_one_or_none() if root else None
+    issue = (await db.execute(select(Issue).where(Issue.id == pr.issue_id))).scalar_one_or_none() if pr else None
+    repo = (await db.execute(select(RepoModel).where(RepoModel.id == issue.repo_id))).scalar_one_or_none() if issue else None
+    # A thread's id is its root comment's; a reply's id names no thread.
+    # NOT_FOUND when the caller cannot see the repository at all; a grant that
+    # does not cover review conversations is FORBIDDEN below, as on GitHub.
+    if root is None or root.in_reply_to_id or repo is None or not await may_read(info, db, repo):
+        raise _typed_error("NOT_FOUND", f"Could not resolve to a node with the global id of '{thread_id}'")
+    # GitHub lets the pull request's author, and anyone who may write its
+    # pull requests, resolve or unresolve a conversation. An installation or
+    # job token acts only through its own grant.
+    author = issue.user_id == viewer.id and not is_integration(info)
+    if not author and not await may_write(info, db, repo, PULL_REQUEST_SCOPES):
+        raise _typed_error(
+            "FORBIDDEN",
+            f"{viewer.login} does not have the correct permissions to execute `{mutation}`",
+        )
+    return root
+
+
+async def _thread_payload(info: Info, root):
+    """The thread of ``root``, as the thread query reports it."""
+    from app.graphql.types.review_thread import DiffSide, PullRequestReviewThread, thread_context
+    from app.models.comment import PRReviewComment
+
+    ctx = await thread_context(info, root.pull_request_id)
+    if ctx is None:
+        return None
+    replies = (
+        await info.context["db"].execute(
+            select(PRReviewComment).where(PRReviewComment.pull_request_id == root.pull_request_id)
+        )
+    ).scalars().all()
+    from app.graphql.types.review_thread import thread_root_id
+
+    by_id = {row.id: row for row in replies}
+    members = sorted(
+        (row for row in replies if thread_root_id(row, by_id) == root.id),
+        key=lambda row: (row.created_at, row.id),
+    )
+    return PullRequestReviewThread(
+        path=root.path,
+        is_resolved=root.thread_resolved_at is not None,
+        diff_side=DiffSide.LEFT if (root.side or "RIGHT") == "LEFT" else DiffSide.RIGHT,
+        original_line=root.line,
+        _root=root,
+        _resolved_by_id=root.thread_resolved_by_id,
+        _comments=members,
+        _ctx=ctx,
+    )
+
+
+async def _minimize_subject(info: Info, subject_id: str, mutation: str):
+    """The item behind a minimizable node id, after the permission check."""
+    from app.graphql.authz import may_read
+    from app.graphql.types.minimizable import can_minimize, load_subject
+
+    _require_auth(info)
+    viewer = info.context["user"]
+    db = info.context["db"]
+    decoded = _decode_typed_node_id(subject_id)
+    subject = await load_subject(db, decoded[0], decoded[1]) if decoded else None
+    if subject is None or not await may_read(info, db, subject.repo):
+        raise _typed_error("NOT_FOUND", f"Could not resolve to a node with the global id of '{subject_id}'")
+    if not await can_minimize(info, subject):
+        raise _typed_error(
+            "FORBIDDEN",
+            f"{viewer.login} does not have the correct permissions to execute `{mutation}`",
+        )
+    return subject
+
+
+async def _minimizable_from_row(info: Info, kind: str, row):
+    """The minimized item, with the same fields its connections report."""
+    from app.graphql.types.pull_request import review_from_model
+    from app.graphql.types.review_thread import review_comment_from_model, thread_context
+
+    if kind == "IssueComment":
+        return comment_from_model(row)
+    if kind == "PullRequestReview":
+        return review_from_model(row)
+    return review_comment_from_model(row, await thread_context(info, row.pull_request_id))
 
 
 def _typed_error(error_type: str, message: str) -> GraphQLError:
@@ -1330,5 +1504,65 @@ class Mutation:
 
         return CreateCommitOnBranchPayload(
             commit=Commit(oid=oid, message=message),
+            client_mutation_id=input.client_mutation_id,
+        )
+
+    @strawberry.mutation
+    async def resolve_review_thread(
+        self, info: Info, input: ResolveReviewThreadInput
+    ) -> ResolveReviewThreadPayload:
+        """Mark a review thread resolved (pull request author or write access)."""
+        root = await _review_thread_root(info, input.thread_id, "ResolveReviewThread")
+        if root.thread_resolved_at is None:
+            root.thread_resolved_at = datetime.now(timezone.utc).replace(tzinfo=None)
+            root.thread_resolved_by_id = info.context["user"].id
+            await info.context["db"].commit()
+        return ResolveReviewThreadPayload(
+            thread=await _thread_payload(info, root),
+            client_mutation_id=input.client_mutation_id,
+        )
+
+    @strawberry.mutation
+    async def unresolve_review_thread(
+        self, info: Info, input: UnresolveReviewThreadInput
+    ) -> UnresolveReviewThreadPayload:
+        """Mark a resolved review thread unresolved."""
+        root = await _review_thread_root(info, input.thread_id, "UnresolveReviewThread")
+        if root.thread_resolved_at is not None:
+            root.thread_resolved_at = None
+            root.thread_resolved_by_id = None
+            await info.context["db"].commit()
+        return UnresolveReviewThreadPayload(
+            thread=await _thread_payload(info, root),
+            client_mutation_id=input.client_mutation_id,
+        )
+
+    @strawberry.mutation
+    async def minimize_comment(
+        self, info: Info, input: MinimizeCommentInput
+    ) -> MinimizeCommentPayload:
+        """Hide an issue comment, review comment, or review (write access)."""
+        subject = await _minimize_subject(info, input.subject_id, "MinimizeComment")
+        subject.row.minimized_reason = MINIMIZED_REASONS[input.classifier.value]
+        db = info.context["db"]
+        await db.commit()
+        await db.refresh(subject.row)
+        return MinimizeCommentPayload(
+            minimized_comment=await _minimizable_from_row(info, subject.kind, subject.row),
+            client_mutation_id=input.client_mutation_id,
+        )
+
+    @strawberry.mutation
+    async def unminimize_comment(
+        self, info: Info, input: UnminimizeCommentInput
+    ) -> UnminimizeCommentPayload:
+        """Show a hidden comment or review again."""
+        subject = await _minimize_subject(info, input.subject_id, "UnminimizeComment")
+        subject.row.minimized_reason = None
+        db = info.context["db"]
+        await db.commit()
+        await db.refresh(subject.row)
+        return UnminimizeCommentPayload(
+            unminimized_comment=await _minimizable_from_row(info, subject.kind, subject.row),
             client_mutation_id=input.client_mutation_id,
         )

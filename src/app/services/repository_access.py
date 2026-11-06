@@ -89,7 +89,38 @@ async def can_read(
         if membership is not None:
             return True
 
+    # An App's bot sees the private repositories its installation covers:
+    # GitHub grants every installation metadata read on them. Without this, a
+    # correctly scoped installation token was refused a private repository
+    # its App was installed on.
+    if await _installation_covers(db, repository, user):
+        return True
+
     return False
+
+
+async def _installation_covers(db: AsyncSession, repository: Repository, user: User) -> bool:
+    """Whether ``user`` is an App's bot whose installation covers ``repository``."""
+    from app.models.apps import AppInstallation, GitHubApp
+
+    app = (
+        await db.execute(select(GitHubApp).where(GitHubApp.bot_user_id == user.id))
+    ).scalar_one_or_none()
+    if app is None:
+        return False
+    owner_login = repository.full_name.split("/", 1)[0]
+    installations = (
+        await db.execute(
+            select(AppInstallation).where(
+                AppInstallation.app_id == app.id,
+                AppInstallation.account_login == owner_login,
+            )
+        )
+    ).scalars().all()
+    return any(
+        not item.repositories or repository.full_name in item.repositories
+        for item in installations
+    )
 
 
 # Requests that address a repository now look it up twice: once for this

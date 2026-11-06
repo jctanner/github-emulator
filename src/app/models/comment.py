@@ -13,6 +13,9 @@ class IssueComment(Base):
     issue_id: Mapped[int] = mapped_column(Integer, ForeignKey("issues.id"), nullable=False, index=True)
     user_id: Mapped[int] = mapped_column(Integer, ForeignKey("users.id"), nullable=False)
     body: Mapped[str] = mapped_column(Text, nullable=False)
+    # Why the comment was hidden with GraphQL ``minimizeComment``, in GitHub's
+    # ``minimizedReason`` form ("outdated", "off-topic", ...); NULL when shown.
+    minimized_reason: Mapped[str | None] = mapped_column(String, nullable=True)
 
     created_at: Mapped[datetime] = mapped_column(
         DateTime, server_default=func.now()
@@ -50,6 +53,16 @@ class PRReviewComment(Base):
     # sends subject_type="file" with line omitted, so without this a file-level
     # comment cannot be told apart from a malformed one.
     subject_type: Mapped[str | None] = mapped_column(String, nullable=True)
+    # See IssueComment.minimized_reason.
+    minimized_reason: Mapped[str | None] = mapped_column(String, nullable=True)
+    # A review thread is a top-level review comment and its replies; GitHub
+    # exposes it only through GraphQL (``PullRequestReviewThread``). Its
+    # resolved state lives on the thread's root comment and is NULL on
+    # replies and on unresolved threads.
+    thread_resolved_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    thread_resolved_by_id: Mapped[int | None] = mapped_column(
+        Integer, ForeignKey("users.id"), nullable=True
+    )
 
     created_at: Mapped[datetime] = mapped_column(
         DateTime, server_default=func.now()
@@ -59,7 +72,8 @@ class PRReviewComment(Base):
     )
 
     # Relationships
-    user = relationship("User", lazy="selectin")
+    user = relationship("User", lazy="selectin", foreign_keys=[user_id])
+    thread_resolved_by = relationship("User", lazy="selectin", foreign_keys=[thread_resolved_by_id])
 
 
 class CommitComment(Base):

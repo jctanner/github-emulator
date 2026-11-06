@@ -9,6 +9,7 @@ from strawberry.types import Info
 from sqlalchemy import select, func as sa_func
 
 from app.graphql.connections import Connection, build_connection
+from app.graphql.types.minimizable import Minimizable
 from app.graphql.types.user import GitHubUser, user_from_model, _node_id
 from app.graphql.types.enums import IssueState
 from app.graphql.types.repository import Label, MilestoneType, label_from_model, milestone_from_model
@@ -38,14 +39,17 @@ class MergeableState(Enum):
 
 
 @strawberry.type
-class ReviewType:
+class ReviewType(Minimizable):
     """A pull request review."""
+
+    _MINIMIZE_KIND = "PullRequestReview"
     database_id: int
     body: Optional[str] = None
     state: str = ""
     submitted_at: Optional[datetime] = None
     created_at: datetime = strawberry.UNSET
     _user_id: strawberry.Private[int] = 0
+    _minimized_reason: strawberry.Private[Optional[str]] = None
 
     @strawberry.field
     def id(self) -> strawberry.ID:
@@ -71,6 +75,7 @@ def review_from_model(review) -> ReviewType:
         submitted_at=review.submitted_at,
         created_at=review.created_at,
         _user_id=review.user_id,
+        _minimized_reason=review.minimized_reason,
     )
 
 
@@ -418,6 +423,23 @@ class PullRequest:
         all_reviews = result.scalars().all()
         return build_connection(
             all_reviews, review_from_model, len(all_reviews),
+            first=first, after=after, last=last, before=before,
+        )
+
+    @strawberry.field
+    async def review_threads(
+        self,
+        info: Info,
+        first: Optional[int] = None,
+        after: Optional[str] = None,
+        last: Optional[int] = None,
+        before: Optional[str] = None,
+    ) -> Connection[Annotated["PullRequestReviewThread", strawberry.lazy("app.graphql.types.review_thread")]]:
+        from app.graphql.types.review_thread import build_threads
+
+        threads = await build_threads(info, self._pr_id)
+        return build_connection(
+            threads, lambda thread: thread, len(threads),
             first=first, after=after, last=last, before=before,
         )
 

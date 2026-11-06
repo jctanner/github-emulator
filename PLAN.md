@@ -25,6 +25,7 @@ Actions visibility and runner evaluation.
 
 ## Completed Tasks
 
+- `docs/tasks/done/graphql-review-threads-and-minimize.md`
 - `docs/tasks/done/fullsend-app-lookups-and-actions-lists.md`
 - `docs/tasks/done/live-issue-and-pull-updates.md`
 - `docs/tasks/done/web-ui-reload-in-place.md`
@@ -86,6 +87,9 @@ Actions visibility and runner evaluation.
 
 - `docs/bugs/open/git-commits-endpoint-returns-only-the-subject.md`
 - `docs/bugs/open/stale-actions-runner-registrations-accumulate.md`
+- `docs/bugs/open/contents-commit-leaves-pull-request-head-stale.md`
+- `docs/bugs/open/graphql-repository-visibility.md`
+- `docs/bugs/open/job-tokens-cannot-use-graphql.md`
 
 ## Fixed Bugs
 

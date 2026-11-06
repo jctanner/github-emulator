@@ -8,6 +8,7 @@ from strawberry.types import Info
 from sqlalchemy import select, func as sa_func
 
 from app.graphql.connections import Connection, build_connection
+from app.graphql.types.minimizable import Minimizable
 from app.graphql.types.user import GitHubUser, user_from_model, _node_id
 from app.graphql.types.enums import IssueState
 from app.graphql.types.repository import (
@@ -26,13 +27,16 @@ from app.graphql.types.stubs import (
 
 
 @strawberry.type
-class IssueComment:
+class IssueComment(Minimizable):
     """A comment on an issue."""
+
+    _MINIMIZE_KIND = "IssueComment"
     database_id: int
     body: str
     created_at: datetime = strawberry.UNSET
     updated_at: datetime = strawberry.UNSET
     _user_id: strawberry.Private[int] = 0
+    _minimized_reason: strawberry.Private[Optional[str]] = None
 
     @strawberry.field
     def id(self) -> strawberry.ID:
@@ -61,14 +65,6 @@ class IssueComment:
         return False
 
     @strawberry.field
-    def is_minimized(self) -> bool:
-        return False
-
-    @strawberry.field
-    def minimized_reason(self) -> Optional[str]:
-        return None
-
-    @strawberry.field
     def reaction_groups(self) -> list[ReactionGroup]:
         return list(STANDARD_REACTION_GROUPS)
 
@@ -81,6 +77,7 @@ def comment_from_model(comment) -> IssueComment:
         created_at=comment.created_at,
         updated_at=comment.updated_at,
         _user_id=comment.user_id,
+        _minimized_reason=getattr(comment, "minimized_reason", None),
     )
 
 

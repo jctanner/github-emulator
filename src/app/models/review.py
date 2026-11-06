@@ -20,6 +20,8 @@ class Review(Base):
     )  # "PENDING", "APPROVED", "CHANGES_REQUESTED", "COMMENTED", "DISMISSED"
     commit_id: Mapped[str] = mapped_column(String, nullable=False)
     submitted_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    # See IssueComment.minimized_reason; Fullsend hides its stale reviews.
+    minimized_reason: Mapped[str | None] = mapped_column(String, nullable=True)
 
     created_at: Mapped[datetime] = mapped_column(
         DateTime, server_default=func.now()

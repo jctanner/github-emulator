@@ -158,3 +158,44 @@ def test_orphaned_repository_rows_are_purged_and_ids_stop_being_reused(tmp_path,
         assert rows("SELECT seq FROM sqlite_sequence WHERE name = 'repositories'") >= 8
         assert rows("SELECT version_num FROM alembic_version") == _alembic_head()
     engine.dispose()
+
+
+def test_review_thread_columns_upgrade_keeps_existing_rows(tmp_path, monkeypatch):
+    """0014 adds nullable thread and minimized columns; existing rows read as
+    unresolved and not minimized."""
+    from pathlib import Path
+
+    from alembic import command
+    from alembic.config import Config
+
+    path = tmp_path / "threads.db"
+    monkeypatch.delenv("GITHUB_EMULATOR_DATABASE_URL", raising=False)
+    root = Path(__file__).resolve().parents[1]
+    config = Config(str(root / "alembic.ini"))
+    config.set_main_option("script_location", str(root / "alembic"))
+    config.set_main_option("sqlalchemy.url", _url(path))
+    command.upgrade(config, "0013_comment_count_indexes")
+
+    connection = sqlite3.connect(path)
+    connection.executescript("""
+        INSERT INTO users (id, login, hashed_password, site_admin, type) VALUES (1, 'octo', 'x', 0, 'User');
+        INSERT INTO pr_review_comments (id, pull_request_id, user_id, body, path, commit_id)
+            VALUES (7, 1, 1, 'existing', 'app.py', 'abc');
+        INSERT INTO issue_comments (id, issue_id, user_id, body) VALUES (8, 1, 1, 'existing');
+    """)
+    connection.commit()
+    connection.close()
+
+    upgrade_database_sync(_url(path))
+
+    engine = create_engine(f"sqlite:///{path}")
+    with engine.connect() as db:
+        row = db.execute(text(
+            "SELECT body, minimized_reason, thread_resolved_at, thread_resolved_by_id"
+            " FROM pr_review_comments WHERE id = 7"
+        )).one()
+        assert tuple(row) == ("existing", None, None, None)
+        assert db.execute(text("SELECT minimized_reason FROM issue_comments WHERE id = 8")).scalar_one() is None
+    columns = {column["name"] for column in inspect(engine).get_columns("reviews")}
+    assert "minimized_reason" in columns
+    engine.dispose()

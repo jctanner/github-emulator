@@ -247,6 +247,31 @@ async def delete_review_comment(
     if comment is None:
         raise HTTPException(status_code=404, detail="Not Found")
 
+    # Keep the comment's replies in their review thread. Replies to a reply
+    # move up to its parent. When a thread's root goes, its oldest reply
+    # becomes the root and keeps the thread's resolved state, so the thread
+    # stays one conversation whose id still resolves.
+    children = (
+        await db.execute(
+            select(PRReviewComment)
+            .where(PRReviewComment.in_reply_to_id == comment.id)
+            .order_by(PRReviewComment.created_at.asc(), PRReviewComment.id.asc())
+        )
+    ).scalars().all()
+    if comment.in_reply_to_id is not None:
+        for child in children:
+            child.in_reply_to_id = comment.in_reply_to_id
+    elif children:
+        new_root, rest = children[0], children[1:]
+        new_root.in_reply_to_id = None
+        # The thread stays where it was: a reply may omit its location, or
+        # have been made on a later commit than the conversation it answers.
+        for name in ("path", "position", "line", "side", "commit_id", "original_commit_id",
+                     "diff_hunk", "subject_type", "thread_resolved_at", "thread_resolved_by_id"):
+            setattr(new_root, name, getattr(comment, name))
+        for child in rest:
+            child.in_reply_to_id = new_root.id
+
     await db.delete(comment)
     await db.commit()
 
