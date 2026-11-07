@@ -23,9 +23,6 @@ from app.models.user import User
 
 logger = logging.getLogger("github_emulator.workflows")
 
-_EXPRESSION_RE = re.compile(r"\$\{\{\s*([^}]+?)\s*\}\}")
-
-
 @dataclass(frozen=True)
 class EventEnvelope:
     """Normalized event data used by the Actions dispatcher.
@@ -309,6 +306,21 @@ async def _resolve_reusable_workflow(
 
     if reference.startswith("./"):
         workflow_path = reference[2:]
+        # A local call names no repository, but GitHub still reports one: the
+        # calling repository, in job_workflow_ref (owner/repo/path@ref) and as
+        # the workflow's source. Left empty, the OIDC claim read
+        # "/.github/workflows/x.yml@..." and a mint keyed on the workflow host
+        # refused every vendored install. The calling repository is the one
+        # whose disk path this call resolves against, also when the local call
+        # sits inside a workflow imported from another repository.
+        if db is not None:
+            called_full_name = (
+                await db.execute(
+                    select(Repository.full_name).where(
+                        Repository.disk_path == repo_disk_path
+                    )
+                )
+            ).scalar_one_or_none() or ""
     elif db is not None:
         # OWNER/REPO/.github/workflows/file.yml@REF. Split only the first two
         # components because Fullsend's repository is named ``.fullsend``.

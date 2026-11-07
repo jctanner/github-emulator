@@ -5,7 +5,152 @@ import logging
 import re
 
 logger = logging.getLogger("github_emulator.workflows.expressions")
-_EXPRESSION_RE = re.compile(r"\$\{\{\s*([^}]+?)\s*\}\}")
+# One ``${{ ... }}``, found by a scanner rather than a regular expression.
+#
+# The body may hold a ``}`` inside a string literal, as in
+# ``format('fullsend-{0}', inputs.agent)``. The old pattern,
+# ``\$\{\{\s*([^}]+?)\s*\}\}``, refused any ``}``, so such an expression was
+# never matched and reached the step as its own text.
+#
+# The scanner keeps the old rule everywhere outside a string: no ``}`` until
+# the closing ``}}``. Strings are read the way the expression tokenizer reads
+# them as GitHub does: a string closes at the next matching quote, and a
+# backslash is an ordinary character. A ``}`` inside one is just text.
+# (The tokenizer also accepts backslash escapes, but backtracks to this
+# reading when an escape cannot close the string, so treating a backslash
+# as an escape here would carry an expression past the ``}}`` that ends it.) A string that is never closed makes the
+# expression fall back to the old rule, so anything the old pattern matched
+# still matches.
+#
+# The work is linear in the text, also on malformed input, which a single
+# regular expression could not manage (a run of quotes or spaces in an
+# unclosed expression backtracked; one failed ``${{`` after another rescanned
+# the rest of the text):
+# - outside a string, the outcome from a position does not depend on which
+#   ``${{`` the scan began at, so each position's outcome is worked out once;
+# - once a string opened by a quote runs unclosed to the end of the text, so
+#   does every later string opened by the same quote, because the scan from
+#   there lines up with the first one;
+# - the fallback's next ``}`` is found once per brace, as body starts only
+#   move forward.
+#
+# A ``${{`` ends the string-aware reading, outside a string or in one, and
+# the old rule decides instead. So a string holding ``}}`` cannot carry one
+# expression over the next, and GitHub's ``${{ '${{' }}`` escape matches as
+# it always did. The unclosed-quote shortcut is recorded only for a string
+# that really runs to the end of the text.
+#
+# ``group(1)`` is the stripped body and ``group(0)`` the whole text, as with
+# the regular expression this replaces.
+
+
+class _ExpressionMatch:
+    __slots__ = ("_whole", "_body")
+
+    def __init__(self, whole: str, body: str):
+        self._whole = whole
+        self._body = body
+
+    def group(self, index: int = 0) -> str:
+        if index == 0:
+            return self._whole
+        if index == 1:
+            return self._body
+        raise IndexError(index)
+
+
+def _string_aware_close(text: str, position: int, outcomes: dict, unclosed: dict):
+    """Where the ``}}`` closing a body from ``position`` starts, or None."""
+    length = len(text)
+    visited = []
+    index = position
+    while True:
+        if index in outcomes:
+            result = outcomes[index]
+            break
+        visited.append(index)
+        if index >= length:
+            result = None
+            break
+        char = text[index]
+        if char == "}":
+            result = index if text.startswith("}}", index) else None
+            break
+        if char == "$" and text.startswith("${{", index):
+            # Never part of an expression outside a string. Running past it
+            # would swallow the next expression into this one.
+            result = None
+            break
+        if char in "'\"":
+            if unclosed.get(char, length) < index:
+                result = None
+                break
+            closing = text.find(char, index + 1)
+            if closing < 0:
+                closing = length
+            nested = text.find("${{", index + 1, closing) >= 0
+            cursor = closing
+            if nested:
+                # A ``${{`` inside a string: leave it to the old rule, which
+                # matches GitHub's ``${{ '${{' }}`` escape and never lets a
+                # string carry this expression over the next one.
+                result = None
+                break
+            if cursor >= length:
+                unclosed[char] = min(unclosed.get(char, length), index)
+                result = None
+                break
+            index = cursor + 1
+            continue
+        index += 1
+    for seen in visited:
+        outcomes[seen] = result
+    return result
+
+
+class _ExpressionScanner:
+    def _matches(self, text: str):
+        outcomes: dict = {}
+        unclosed: dict = {}
+        brace = -1
+        position = 0
+        while True:
+            start = text.find("${{", position)
+            if start < 0:
+                return
+            body_start = start + 3
+            end = _string_aware_close(text, body_start, outcomes, unclosed)
+            if end is None:
+                # Body starts only move forward, so the next brace is found
+                # once per brace, not once per failed ``${{``.
+                if brace < body_start and brace != len(text):
+                    brace = text.find("}", body_start)
+                    if brace < 0:
+                        brace = len(text)
+                if brace < len(text) and text.startswith("}}", brace):
+                    end = brace
+            if end is None or end == body_start:
+                position = start + 1
+                continue
+            yield start, end + 2, _ExpressionMatch(text[start:end + 2], text[body_start:end].strip())
+            position = end + 2
+
+    def finditer(self, text: str):
+        for _start, _end, match in self._matches(text):
+            yield match
+
+    def sub(self, replace, text: str) -> str:
+        parts = []
+        position = 0
+        for start, end, match in self._matches(text):
+            parts.append(text[position:start])
+            parts.append(replace(match))
+            position = end
+        parts.append(text[position:])
+        return "".join(parts)
+
+
+_EXPRESSION_RE = _ExpressionScanner()
 
 # An interpolated expression needs the full parser once it contains an
 # operator, a string literal, or a call. Bare context paths, including the
