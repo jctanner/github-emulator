@@ -164,3 +164,25 @@ async def repository_of_issue(db, issue):
     if issue is None:
         return None
     return (await db.execute(select(Repository).where(Repository.id == issue.repo_id))).scalar_one_or_none()
+
+
+async def integration_may_write(info, db, repo, scopes: tuple[str, ...]) -> bool:
+    """Whether an integration credential's own grant lets it write ``repo``
+    under one of ``scopes``; True for any other credential.
+
+    The GraphQL counterpart of the REST chokepoint's integration scoping: an
+    installation token is held to the repositories and permissions it was
+    minted with, a job token to its job's permissions in its own repository.
+    A user credential is not checked here, as REST does not check a user's
+    role for these writes either.
+    """
+    state = _state(info)
+    installation_token = getattr(state, "installation_token", None)
+    if installation_token is not None:
+        return _installation_covers(installation_token, repo) and _grants(
+            installation_token.permissions, scopes, "write"
+        )
+    job = getattr(state, "workflow_job", None)
+    if job is not None:
+        return await _job_grants(db, job, repo, scopes)
+    return True

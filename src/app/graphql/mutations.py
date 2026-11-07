@@ -519,6 +519,39 @@ async def _visible_or_none(info: Info, row, repo_id):
     return row if await visible(info, repo) else None
 
 
+_ISSUES = ("issues",)
+_PULL_REQUESTS = ("pull_requests",)
+
+
+def _issue_scopes(issue) -> tuple[str, ...]:
+    """The App permissions that let an integration write ``issue``: a pull
+    request's backing issue (labels, comments, state) takes either."""
+    if issue is not None and issue.pull_request is not None:
+        return ("issues", "pull_requests")
+    return _ISSUES
+
+
+async def _writable_or_none(info: Info, row, repo_id, scopes: tuple[str, ...]):
+    """``row`` for a mutation that writes it under ``scopes``.
+
+    None when it does not exist or its repository is hidden from the caller
+    (see ``_visible_or_none``). An installation or job token whose own grant
+    does not cover ``scopes`` is refused with FORBIDDEN, as REST refuses it
+    with 403 "Resource not accessible by integration".
+    """
+    from app.graphql.authz import integration_may_write
+    from app.models.repository import Repository as RepoModel
+
+    row = await _visible_or_none(info, row, repo_id)
+    if row is None:
+        return None
+    db = info.context["db"]
+    repo = (await db.execute(select(RepoModel).where(RepoModel.id == repo_id))).scalar_one()
+    if not await integration_may_write(info, db, repo, scopes):
+        raise _typed_error("FORBIDDEN", "Resource not accessible by integration")
+    return row
+
+
 async def _same_repository_ids(db, model, ids, repo_id: int, what: str) -> list[int]:
     """Decode ``ids`` and require each to name a ``model`` row in ``repo_id``.
 
@@ -597,7 +630,7 @@ class Mutation:
             )
             issue = result.scalar_one_or_none()
 
-        issue = await _visible_or_none(info, issue, issue.repo_id if issue else None)
+        issue = await _writable_or_none(info, issue, issue.repo_id if issue else None, _issue_scopes(issue))
         if not issue:
             raise ValueError(f"Labelable with id {labelable_id} not found")
 
@@ -645,7 +678,7 @@ class Mutation:
             select(RepoModel).where(RepoModel.id == repo_id)
         )
         repo = result.scalar_one_or_none()
-        repo = await _visible_or_none(info, repo, repo.id if repo else None)
+        repo = await _writable_or_none(info, repo, repo.id if repo else None, _ISSUES)
         if not repo:
             raise ValueError(f"Repository with id {repo_id} not found")
 
@@ -702,7 +735,7 @@ class Mutation:
             select(IssueModel).where(IssueModel.id == issue_id)
         )
         issue = result.scalar_one_or_none()
-        issue = await _visible_or_none(info, issue, issue.repo_id if issue else None)
+        issue = await _writable_or_none(info, issue, issue.repo_id if issue else None, _issue_scopes(issue))
         if not issue:
             raise ValueError(f"Issue with id {issue_id} not found")
 
@@ -771,7 +804,7 @@ class Mutation:
             select(IssueModel).where(IssueModel.id == issue_id)
         )
         issue = result.scalar_one_or_none()
-        issue = await _visible_or_none(info, issue, issue.repo_id if issue else None)
+        issue = await _writable_or_none(info, issue, issue.repo_id if issue else None, _issue_scopes(issue))
         if not issue:
             raise ValueError(f"Issue with id {issue_id} not found")
 
@@ -812,7 +845,7 @@ class Mutation:
             select(IssueModel).where(IssueModel.id == issue_id)
         )
         issue = result.scalar_one_or_none()
-        issue = await _visible_or_none(info, issue, issue.repo_id if issue else None)
+        issue = await _writable_or_none(info, issue, issue.repo_id if issue else None, _issue_scopes(issue))
         if not issue:
             raise ValueError(f"Issue with id {issue_id} not found")
 
@@ -854,7 +887,7 @@ class Mutation:
             select(IssueModel).where(IssueModel.id == subject_id)
         )
         issue = result.scalar_one_or_none()
-        issue = await _visible_or_none(info, issue, issue.repo_id if issue else None)
+        issue = await _writable_or_none(info, issue, issue.repo_id if issue else None, _issue_scopes(issue))
         if not issue:
             raise ValueError(f"Subject with id {subject_id} not found")
 
@@ -891,7 +924,7 @@ class Mutation:
             select(RepoModel).where(RepoModel.id == repo_id)
         )
         repo = result.scalar_one_or_none()
-        repo = await _visible_or_none(info, repo, repo.id if repo else None)
+        repo = await _writable_or_none(info, repo, repo.id if repo else None, _PULL_REQUESTS)
         if not repo:
             raise ValueError(f"Repository with id {repo_id} not found")
 
@@ -1003,7 +1036,7 @@ class Mutation:
             select(PRModel).where(PRModel.id == pr_id)
         )
         pr = result.scalar_one_or_none()
-        pr = await _visible_or_none(info, pr, pr.repo_id if pr else None)
+        pr = await _writable_or_none(info, pr, pr.repo_id if pr else None, _PULL_REQUESTS)
         if not pr:
             raise ValueError(f"Pull request with id {pr_id} not found")
 
@@ -1097,7 +1130,7 @@ class Mutation:
         pr_id = _decode_node_id(input.pull_request_id)
         result = await db.execute(select(PRModel).where(PRModel.id == pr_id))
         pr = result.scalar_one_or_none()
-        pr = await _visible_or_none(info, pr, pr.repo_id if pr else None)
+        pr = await _writable_or_none(info, pr, pr.repo_id if pr else None, _PULL_REQUESTS)
         if pr is None:
             raise ValueError(f"Pull request with id {pr_id} not found")
         if pr.merged:
@@ -1151,7 +1184,7 @@ class Mutation:
         pr_id = _decode_node_id(input.pull_request_id)
         result = await db.execute(select(PRModel).where(PRModel.id == pr_id))
         pr = result.scalar_one_or_none()
-        pr = await _visible_or_none(info, pr, pr.repo_id if pr else None)
+        pr = await _writable_or_none(info, pr, pr.repo_id if pr else None, _PULL_REQUESTS)
         if pr is None:
             raise ValueError(f"Pull request with id {pr_id} not found")
         request_result = await db.execute(
@@ -1183,7 +1216,7 @@ class Mutation:
         # Reactions here are on issues. A missing subject and one in a hidden
         # repository fail alike, so neither reveals which hidden issues exist.
         subject = (await db.execute(select(IssueModel).where(IssueModel.id == subject_id))).scalar_one_or_none()
-        if await _visible_or_none(info, subject, subject.repo_id if subject else None) is None:
+        if await _writable_or_none(info, subject, subject.repo_id if subject else None, _issue_scopes(subject)) is None:
             raise ValueError(f"Subject with id {subject_id} not found")
 
         # Determine reactable type by trying to look up the subject
@@ -1331,7 +1364,7 @@ class Mutation:
             select(PRModel).where(PRModel.id == pr_id)
         )
         pr = result.scalar_one_or_none()
-        pr = await _visible_or_none(info, pr, pr.repo_id if pr else None)
+        pr = await _writable_or_none(info, pr, pr.repo_id if pr else None, _PULL_REQUESTS)
         if not pr:
             raise ValueError(f"Pull request with id {pr_id} not found")
 
@@ -1354,9 +1387,10 @@ class Mutation:
                 repo.open_issues_count -= 1
 
             await db.commit()
+            # The issue first: refreshing it reloads its pull_request
+            # relationship, which would expire pr's eager loads again.
+            await db.refresh(issue)
             await db.refresh(pr)
-            if issue:
-                await db.refresh(issue)
         else:
             await db.commit()
             await db.refresh(pr)
@@ -1383,7 +1417,7 @@ class Mutation:
             select(PRModel).where(PRModel.id == pr_id)
         )
         pr = result.scalar_one_or_none()
-        pr = await _visible_or_none(info, pr, pr.repo_id if pr else None)
+        pr = await _writable_or_none(info, pr, pr.repo_id if pr else None, _PULL_REQUESTS)
         if not pr:
             raise ValueError(f"Pull request with id {pr_id} not found")
 
@@ -1410,9 +1444,10 @@ class Mutation:
                 repo.open_issues_count += 1
 
             await db.commit()
+            # The issue first: refreshing it reloads its pull_request
+            # relationship, which would expire pr's eager loads again.
+            await db.refresh(issue)
             await db.refresh(pr)
-            if issue:
-                await db.refresh(issue)
         else:
             await db.commit()
             await db.refresh(pr)
@@ -1438,7 +1473,7 @@ class Mutation:
             select(PRModel).where(PRModel.id == pr_id)
         )
         pr = result.scalar_one_or_none()
-        pr = await _visible_or_none(info, pr, pr.repo_id if pr else None)
+        pr = await _writable_or_none(info, pr, pr.repo_id if pr else None, _PULL_REQUESTS)
         if not pr:
             raise ValueError(f"Pull request with id {pr_id} not found")
 
@@ -1490,7 +1525,10 @@ class Mutation:
         # payload lazily loads issue.repository inside the async resolver and
         # raises MissingGreenlet — which is why this mutation failed for every
         # field, not just the new one, until it had a test.
-        await db.refresh(pr, attribute_names=["issue"])
+        # A title or body change also expires the server-set updated_at, so
+        # both rows are refreshed whole, then the issue's relationships.
+        await db.refresh(issue)
+        await db.refresh(pr)
         await db.refresh(issue, attribute_names=["repository", "assignees"])
 
         return UpdatePullRequestPayload(

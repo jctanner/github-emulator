@@ -90,6 +90,7 @@ Actions visibility and runner evaluation.
 - `docs/bugs/open/contents-commit-leaves-pull-request-head-stale.md`
 - `docs/bugs/open/graphql-repository-issues-include-pull-requests.md`
 - `docs/bugs/open/graphql-write-authorization.md`
+- `docs/bugs/open/rest-pull-request-issue-routes-require-issues-scope.md`
 - `docs/bugs/open/graphql-installation-content-scopes.md`
 - `docs/bugs/open/graphql-contributions-count-hidden-activity.md`
 - `docs/bugs/open/job-tokens-cannot-use-graphql.md`
@@ -97,6 +98,7 @@ Actions visibility and runner evaluation.
 ## Fixed Bugs
 
 - `docs/bugs/fixed/graphql-repository-visibility.md`
+- `docs/bugs/fixed/graphql-pull-request-payload-missing-greenlet.md`
 - `docs/bugs/fixed/graphql-create-commit-on-branch-is-missing.md`
 - `docs/bugs/fixed/job-log-page-polls-forever-and-pull-list-runs-git-per-row.md`
 - `docs/bugs/fixed/checkout-ignores-sparse-checkout-cone-mode.md`
