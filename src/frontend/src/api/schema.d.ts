@@ -2238,6 +2238,106 @@ export interface paths {
         patch: operations["update_org_api_v3_orgs__org__patch"];
         trace?: never;
     };
+    "/api/v3/orgs/{org}/actions/variables": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List Org Variables
+         * @description List an organization's variables.
+         */
+        get: operations["list_org_variables_api_v3_orgs__org__actions_variables_get"];
+        put?: never;
+        /**
+         * Create Org Variable
+         * @description Create an organization variable.
+         */
+        post: operations["create_org_variable_api_v3_orgs__org__actions_variables_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v3/orgs/{org}/actions/variables/{name}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get Org Variable
+         * @description Get an organization variable.
+         */
+        get: operations["get_org_variable_api_v3_orgs__org__actions_variables__name__get"];
+        put?: never;
+        post?: never;
+        /**
+         * Delete Org Variable
+         * @description Delete an organization variable.
+         */
+        delete: operations["delete_org_variable_api_v3_orgs__org__actions_variables__name__delete"];
+        options?: never;
+        head?: never;
+        /**
+         * Update Org Variable
+         * @description Update an organization variable's name, value, visibility, or selection.
+         */
+        patch: operations["update_org_variable_api_v3_orgs__org__actions_variables__name__patch"];
+        trace?: never;
+    };
+    "/api/v3/orgs/{org}/actions/variables/{name}/repositories": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List Selected Repositories
+         * @description List the repositories selected for an organization variable.
+         */
+        get: operations["list_selected_repositories_api_v3_orgs__org__actions_variables__name__repositories_get"];
+        /**
+         * Set Selected Repositories
+         * @description Replace the repositories selected for an organization variable.
+         */
+        put: operations["set_selected_repositories_api_v3_orgs__org__actions_variables__name__repositories_put"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v3/orgs/{org}/actions/variables/{name}/repositories/{repository_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        /**
+         * Add Selected Repository
+         * @description Add a repository to an organization variable's selection.
+         */
+        put: operations["add_selected_repository_api_v3_orgs__org__actions_variables__name__repositories__repository_id__put"];
+        post?: never;
+        /**
+         * Remove Selected Repository
+         * @description Remove a repository from an organization variable's selection.
+         */
+        delete: operations["remove_selected_repository_api_v3_orgs__org__actions_variables__name__repositories__repository_id__delete"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v3/orgs/{org}/installation": {
         parameters: {
             query?: never;
@@ -2248,6 +2348,10 @@ export interface paths {
         /**
          * Org Installation
          * @description The authenticated App's installation on an organization (App JWT).
+         *
+         *     Only an organization answers: an installation on a user account, or a
+         *     record naming an account that is not an organization, is 404 here, as
+         *     ``GET /users/{username}/installation`` is GitHub's route for users.
          */
         get: operations["org_installation_api_v3_orgs__org__installation_get"];
         put?: never;
@@ -2587,6 +2691,30 @@ export interface paths {
          * @description Get captured logs for a workflow job.
          */
         get: operations["get_job_logs_api_v3_repos__owner___repo__actions_jobs__job_id__logs_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v3/repos/{owner}/{repo}/actions/organization-variables": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List Repository Organization Variables
+         * @description List the organization variables this repository can use.
+         *
+         *     GitHub requires collaborator access to the repository. An installation
+         *     token is held to ``actions_variables`` by the authentication chokepoint;
+         *     a workflow job token has no Variables permission and is refused.
+         */
+        get: operations["list_repository_organization_variables_api_v3_repos__owner___repo__actions_organization_variables_get"];
         put?: never;
         post?: never;
         delete?: never;
@@ -12425,6 +12553,308 @@ export interface operations {
             };
         };
     };
+    list_org_variables_api_v3_orgs__org__actions_variables_get: {
+        parameters: {
+            query?: {
+                per_page?: number;
+                page?: number;
+            };
+            header?: never;
+            path: {
+                org: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    create_org_variable_api_v3_orgs__org__actions_variables_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                org: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": {
+                    [key: string]: unknown;
+                };
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_org_variable_api_v3_orgs__org__actions_variables__name__get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                org: string;
+                name: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    delete_org_variable_api_v3_orgs__org__actions_variables__name__delete: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                org: string;
+                name: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    update_org_variable_api_v3_orgs__org__actions_variables__name__patch: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                org: string;
+                name: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": {
+                    [key: string]: unknown;
+                };
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    list_selected_repositories_api_v3_orgs__org__actions_variables__name__repositories_get: {
+        parameters: {
+            query?: {
+                per_page?: number;
+                page?: number;
+            };
+            header?: never;
+            path: {
+                org: string;
+                name: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    set_selected_repositories_api_v3_orgs__org__actions_variables__name__repositories_put: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                org: string;
+                name: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": {
+                    [key: string]: unknown;
+                };
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    add_selected_repository_api_v3_orgs__org__actions_variables__name__repositories__repository_id__put: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                org: string;
+                name: string;
+                repository_id: number;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    remove_selected_repository_api_v3_orgs__org__actions_variables__name__repositories__repository_id__delete: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                org: string;
+                name: string;
+                repository_id: number;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     org_installation_api_v3_orgs__org__installation_get: {
         parameters: {
             query?: never;
@@ -13194,6 +13624,41 @@ export interface operations {
                 owner: string;
                 repo: string;
                 job_id: number;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    list_repository_organization_variables_api_v3_repos__owner___repo__actions_organization_variables_get: {
+        parameters: {
+            query?: {
+                per_page?: number;
+                page?: number;
+            };
+            header?: never;
+            path: {
+                owner: string;
+                repo: string;
             };
             cookie?: never;
         };

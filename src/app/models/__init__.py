@@ -20,7 +20,7 @@ from app.models.check import CheckRun, CheckSuite
 from app.models.event import Event
 from app.models.issue_event import IssueEvent
 from app.models.notification import Notification
-from app.models.actions import EnterpriseRunnerRegistrationToken, Runner, RunnerSession, RegistrationToken, Workflow, WorkflowRun, WorkflowJob, Secret, Variable
+from app.models.actions import EnterpriseRunnerRegistrationToken, Runner, RunnerSession, RegistrationToken, Workflow, WorkflowRun, WorkflowJob, Secret, Variable, OrgVariable, OrgVariableRepository
 from app.models.gist import Gist, GistFile
 from app.models.ssh_key import SSHKey, GPGKey
 from app.models.search_index import FileContent, CommitMetadata
@@ -52,7 +52,7 @@ __all__ = [
     "IssueEvent",
     "Notification",
     "Runner", "RunnerSession", "RegistrationToken", "EnterpriseRunnerRegistrationToken",
-    "Workflow", "WorkflowRun", "WorkflowJob", "Secret", "Variable",
+    "Workflow", "WorkflowRun", "WorkflowJob", "Secret", "Variable", "OrgVariable", "OrgVariableRepository",
     "Gist", "GistFile",
     "SSHKey", "GPGKey",
     "FileContent", "CommitMetadata",

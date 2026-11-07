@@ -199,3 +199,40 @@ def test_review_thread_columns_upgrade_keeps_existing_rows(tmp_path, monkeypatch
     columns = {column["name"] for column in inspect(engine).get_columns("reviews")}
     assert "minimized_reason" in columns
     engine.dispose()
+
+
+def test_org_variable_tables_upgrade_keeps_existing_rows(tmp_path, monkeypatch):
+    """0015 adds the organization variable tables beside existing data."""
+    from pathlib import Path
+
+    from alembic import command
+    from alembic.config import Config
+
+    path = tmp_path / "orgvars.db"
+    monkeypatch.delenv("GITHUB_EMULATOR_DATABASE_URL", raising=False)
+    root = Path(__file__).resolve().parents[1]
+    config = Config(str(root / "alembic.ini"))
+    config.set_main_option("script_location", str(root / "alembic"))
+    config.set_main_option("sqlalchemy.url", _url(path))
+    command.upgrade(config, "0014_review_threads_and_minimized_comments")
+
+    connection = sqlite3.connect(path)
+    connection.execute("INSERT INTO organizations (id, login) VALUES (3, 'acme')")
+    connection.commit()
+    connection.close()
+
+    upgrade_database_sync(_url(path))
+
+    engine = create_engine(f"sqlite:///{path}")
+    tables = set(inspect(engine).get_table_names())
+    assert {"org_variables", "org_variable_repositories"} <= tables
+    with engine.begin() as db:
+        assert db.execute(text("SELECT login FROM organizations WHERE id = 3")).scalar_one() == "acme"
+        db.execute(text("INSERT INTO org_variables (org_id, name, value) VALUES (3, 'A', 'b')"))
+        assert db.execute(text("SELECT visibility FROM org_variables")).scalar_one() == "all"
+    engine.dispose()
+
+    command.downgrade(config, "0014_review_threads_and_minimized_comments")
+    engine = create_engine(f"sqlite:///{path}")
+    assert "org_variables" not in set(inspect(engine).get_table_names())
+    engine.dispose()

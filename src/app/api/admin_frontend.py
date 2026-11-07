@@ -233,6 +233,12 @@ async def remove_org(org_id: int, user: AuthUser, db: DbSession):
     from app.models.team import Team
     await db.execute(sql_delete(OrgMembership).where(OrgMembership.org_id == org_id))
     await db.execute(sql_delete(Team).where(Team.org_id == org_id))
+    # Organization variables too: organization ids are reused, and a new
+    # organization must not inherit the old one's values.
+    from app.models.actions import OrgVariable, OrgVariableRepository
+    owned = select(OrgVariable.id).where(OrgVariable.org_id == org_id)
+    await db.execute(sql_delete(OrgVariableRepository).where(OrgVariableRepository.org_variable_id.in_(owned)))
+    await db.execute(sql_delete(OrgVariable).where(OrgVariable.org_id == org_id))
     await db.delete(value); await db.commit(); return Response(status_code=204)
 
 

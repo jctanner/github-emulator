@@ -220,3 +220,43 @@ class Variable(Base):
     updated_at: Mapped[datetime] = mapped_column(
         DateTime, server_default=func.now(), onupdate=func.now()
     )
+
+
+class OrgVariable(Base):
+    """An organization Actions variable, readable by the organization's
+    repositories its ``visibility`` admits: ``all``, ``private`` (private
+    and internal repositories), or ``selected`` (``OrgVariableRepository``).
+    """
+
+    __tablename__ = "org_variables"
+    __table_args__ = (
+        UniqueConstraint("org_id", "name", name="uq_org_variable_org_name"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    org_id: Mapped[int] = mapped_column(Integer, ForeignKey("organizations.id"), nullable=False)
+    name: Mapped[str] = mapped_column(String, nullable=False)
+    value: Mapped[str] = mapped_column(Text, nullable=False)
+    visibility: Mapped[str] = mapped_column(String, nullable=False, default="all", server_default="all")
+
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime, server_default=func.now()
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime, server_default=func.now(), onupdate=func.now()
+    )
+
+
+class OrgVariableRepository(Base):
+    """A repository selected for an organization variable whose visibility
+    is ``selected``. Owned by the repository (``repo_id``), so deleting the
+    repository removes its selections (``repository_purge``)."""
+
+    __tablename__ = "org_variable_repositories"
+    __table_args__ = (
+        UniqueConstraint("org_variable_id", "repo_id", name="uq_org_variable_repository"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    org_variable_id: Mapped[int] = mapped_column(Integer, ForeignKey("org_variables.id"), nullable=False)
+    repo_id: Mapped[int] = mapped_column(Integer, ForeignKey("repositories.id"), nullable=False)

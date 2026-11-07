@@ -27,6 +27,7 @@ Actions visibility and runner evaluation.
 
 - `docs/tasks/done/graphql-review-threads-and-minimize.md`
 - `docs/tasks/done/graphql-update-refs.md`
+- `docs/tasks/done/org-actions-variables.md`
 - `docs/tasks/done/fullsend-app-lookups-and-actions-lists.md`
 - `docs/tasks/done/live-issue-and-pull-updates.md`
 - `docs/tasks/done/web-ui-reload-in-place.md`

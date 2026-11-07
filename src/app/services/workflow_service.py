@@ -15,7 +15,7 @@ from sqlalchemy import select, func
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
-from app.models.actions import Workflow, WorkflowRun, WorkflowJob, Secret, Variable
+from app.models.actions import Workflow, WorkflowRun, WorkflowJob, Secret
 from app.models.issue import Issue
 from app.models.pull_request import PullRequest
 from app.models.repository import Repository
@@ -714,12 +714,10 @@ async def build_run_expression_context(db, run) -> dict:
     variables and secrets rather than being persisted with the run.
     """
     payload = run.trigger_payload or {}
-    variables = {
-        item.name: item.value
-        for item in (await db.execute(
-            select(Variable).where(Variable.repo_id == run.repo_id)
-        )).scalars().all()
-    }
+    # Organization variables the repository can use, its own over them.
+    from app.services.org_variables import vars_context
+
+    variables = await vars_context(db, run.repo_id)
     secrets = {
         item.name: item.value or ""
         for item in (await db.execute(
@@ -862,12 +860,10 @@ async def create_workflow_run(
     db.add(run)
     await db.flush()
 
-    variables = {
-        item.name: item.value
-        for item in (await db.execute(
-            select(Variable).where(Variable.repo_id == workflow.repo_id)
-        )).scalars().all()
-    }
+    # Organization variables the repository can use, its own over them.
+    from app.services.org_variables import vars_context
+
+    variables = await vars_context(db, workflow.repo_id)
     secrets = {
         item.name: item.value or ""
         for item in (await db.execute(
