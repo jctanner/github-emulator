@@ -2,6 +2,7 @@
 
 import asyncio
 import base64
+import logging
 from datetime import datetime, timezone
 from enum import Enum
 from typing import Annotated, Optional, Union
@@ -17,6 +18,8 @@ from app.graphql.types.pull_request import Commit, PullRequest, pull_request_fro
 from app.graphql.types.minimizable import Minimizable
 from app.graphql.types.review_thread import MINIMIZED_REASONS, PullRequestReviewThread
 from graphql import GraphQLError
+
+logger = logging.getLogger("github_emulator.graphql.mutations")
 
 
 def _decode_node_id(node_id: str) -> int:
@@ -207,6 +210,21 @@ class CreateCommitOnBranchInput:
     client_mutation_id: Optional[str] = None
 
 
+@strawberry.input(description="A ref update for updateRefs.")
+class RefUpdate:
+    name: str  # GitRefname, fully qualified (refs/heads/main)
+    after_oid: str  # GitObjectID; all zeros deletes the ref
+    before_oid: Optional[str] = None  # GitObjectID; all zeros: must not exist
+    force: bool = False
+
+
+@strawberry.input
+class UpdateRefsInput:
+    repository_id: strawberry.ID
+    ref_updates: list[RefUpdate]
+    client_mutation_id: Optional[str] = None
+
+
 # ---------------------------------------------------------------------------
 # Payload types
 # ---------------------------------------------------------------------------
@@ -328,6 +346,11 @@ class AddLabelsToLabelablePayload:
 @strawberry.type
 class CreateCommitOnBranchPayload:
     commit: Optional[Commit] = None
+    client_mutation_id: Optional[str] = None
+
+
+@strawberry.type
+class UpdateRefsPayload:
     client_mutation_id: Optional[str] = None
 
 
@@ -1621,6 +1644,116 @@ class Mutation:
             commit=Commit(oid=oid, message=message),
             client_mutation_id=input.client_mutation_id,
         )
+
+    @strawberry.mutation
+    async def update_refs(self, info: Info, input: UpdateRefsInput) -> UpdateRefsPayload:
+        """Create, move, or delete several refs in one repository, all or none.
+
+        Each update applies only while its ref still has ``beforeOid`` (all
+        zeros: it must not exist), the compare-and-swap of
+        ``git push --force-with-lease``; without ``force`` only as a
+        fast-forward. Branch protection is applied as REST's ref update
+        applies it. Changed branches raise push (and pull request
+        ``synchronize``) activity, as a git push does.
+        """
+        from app.graphql.authz import may_write, visible
+        from app.models.branch import Branch
+        from app.models.repository import Repository as RepoModel
+        from app.services import ref_update_service
+        from app.services.ref_update_service import RefUpdateError
+
+        current_user = _require_auth(info)
+        db = info.context["db"]
+
+        decoded = _decode_typed_node_id(input.repository_id)
+        repo = None
+        if decoded and decoded[0] == "Repository":
+            repo = (await db.execute(select(RepoModel).where(RepoModel.id == decoded[1]))).scalar_one_or_none()
+        if repo is None or not await visible(info, repo):
+            raise _typed_error("NOT_FOUND", f"Could not resolve to a node with the global id of '{input.repository_id}'")
+        if not await may_write(info, db, repo, ("contents",)):
+            raise _typed_error(
+                "FORBIDDEN",
+                f"{current_user.login} does not have the correct permissions to execute `UpdateRefs`",
+            )
+
+        try:
+            planned = await ref_update_service.plan(repo.disk_path, input.ref_updates)
+            branches = {
+                branch.name: branch
+                for branch in (await db.execute(
+                    select(Branch).where(
+                        Branch.repo_id == repo.id,
+                        Branch.name.in_([u.branch for u in planned if u.branch]),
+                    )
+                )).scalars().all()
+            }
+            for update in planned:
+                if update.after is None and update.branch == (repo.default_branch or "main"):
+                    raise RefUpdateError("UNPROCESSABLE", f"Cannot delete the default branch {update.name}")
+                branch = branches.get(update.branch) if update.branch else None
+                protection = branch.protection if branch is not None and branch.protected else None
+                if protection is None:
+                    continue
+                if protection.lock_branch:
+                    raise RefUpdateError("UNPROCESSABLE", f"{update.name} is locked")
+                if update.forced and not protection.allow_force_pushes:
+                    raise RefUpdateError("UNPROCESSABLE", f"Cannot force-update the protected branch {update.name}")
+                if update.after is None and not protection.allow_deletions:
+                    raise RefUpdateError("UNPROCESSABLE", f"Cannot delete the protected branch {update.name}")
+            await ref_update_service.apply(repo.disk_path, planned)
+        except RefUpdateError as exc:
+            raise _typed_error(exc.kind, str(exc)) from None
+
+        changed = [u for u in planned if u.branch and u.before != u.after]
+        for update in changed:
+            branch = branches.get(update.branch)
+            if update.after is None:
+                if branch is not None:
+                    await db.delete(branch)
+            elif branch is None:
+                db.add(Branch(repo_id=repo.id, name=update.branch, sha=update.after))
+            else:
+                branch.sha = update.after
+        if changed:
+            repo.pushed_at = datetime.now(timezone.utc)
+        await db.commit()
+
+        # As after a git push: push activity per changed branch, which also
+        # moves open pull requests' heads and raises their synchronize
+        # activity; then auto-merge readiness.
+        from app.models.issue import Issue as IssueModel
+        from app.models.pull_request import PullRequest as PRModel
+        from app.services.merge_readiness_service import reevaluate_auto_merges
+        from app.services.workflow_service import process_push_event
+
+        for update in changed:
+            # The refs have moved; a dispatch failure must not leave the
+            # pull request heads below unrecorded (as after a git push).
+            try:
+                await process_push_event(
+                    db, repo, current_user,
+                    before_sha=update.before, ref_name=update.branch, after_sha=update.after,
+                    created=update.before is None, deleted=update.after is None, forced=update.forced,
+                )
+            except Exception:
+                logger.exception("updateRefs: push activity for %s failed", update.name)
+                await db.rollback()
+                await db.refresh(repo)
+            if update.after is not None:
+                heads = (await db.execute(
+                    select(PRModel).join(IssueModel, PRModel.issue_id == IssueModel.id).where(
+                        PRModel.repo_id == repo.id, PRModel.head_ref == update.branch, IssueModel.state == "open",
+                    )
+                )).scalars().all()
+                for pull_request in heads:
+                    pull_request.head_sha = update.after
+                    pull_request.last_push_by_id = current_user.id
+        await db.commit()
+        if changed:
+            await reevaluate_auto_merges(db, repo.id)
+
+        return UpdateRefsPayload(client_mutation_id=input.client_mutation_id)
 
     @strawberry.mutation
     async def resolve_review_thread(

@@ -26,6 +26,7 @@ Actions visibility and runner evaluation.
 ## Completed Tasks
 
 - `docs/tasks/done/graphql-review-threads-and-minimize.md`
+- `docs/tasks/done/graphql-update-refs.md`
 - `docs/tasks/done/fullsend-app-lookups-and-actions-lists.md`
 - `docs/tasks/done/live-issue-and-pull-updates.md`
 - `docs/tasks/done/web-ui-reload-in-place.md`
@@ -91,6 +92,7 @@ Actions visibility and runner evaluation.
 - `docs/bugs/open/graphql-repository-issues-include-pull-requests.md`
 - `docs/bugs/open/graphql-write-authorization.md`
 - `docs/bugs/open/rest-pull-request-issue-routes-require-issues-scope.md`
+- `docs/bugs/open/tag-ref-changes-raise-no-events.md`
 - `docs/bugs/open/graphql-installation-content-scopes.md`
 - `docs/bugs/open/graphql-contributions-count-hidden-activity.md`
 - `docs/bugs/open/job-tokens-cannot-use-graphql.md`
@@ -99,6 +101,7 @@ Actions visibility and runner evaluation.
 
 - `docs/bugs/fixed/graphql-repository-visibility.md`
 - `docs/bugs/fixed/graphql-pull-request-payload-missing-greenlet.md`
+- `docs/bugs/fixed/git-push-does-not-synchronize-pull-requests.md`
 - `docs/bugs/fixed/graphql-create-commit-on-branch-is-missing.md`
 - `docs/bugs/fixed/job-log-page-polls-forever-and-pull-list-runs-git-per-row.md`
 - `docs/bugs/fixed/checkout-ignores-sparse-checkout-cone-mode.md`

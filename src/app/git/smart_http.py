@@ -333,6 +333,32 @@ async def _post_receive_pack_tasks(repo_id: int, user_id: int | None) -> None:
             pass
 
         try:
+            from app.services.index_service import index_repository
+
+            await index_repository(db, repository)
+        except Exception:
+            pass
+
+        # Push activity first: process_push_event moves each open pull
+        # request's head and raises its synchronize activity only while the
+        # recorded head is still the old commit. Recording the new head
+        # beforehand made every push look already synchronized.
+        try:
+            from app.services.workflow_service import process_push_event
+
+            await process_push_event(
+                db,
+                repository,
+                user,
+                before_sha=changed_before,
+                ref_name=changed_branch,
+                after_sha=changed_after,
+                created=changed_created,
+                deleted=changed_deleted,
+            )
+        except Exception:
+            pass
+        try:
             from app.models.issue import Issue
             from app.models.pull_request import PullRequest
             from app.services.merge_readiness_service import reevaluate_auto_merges
@@ -355,29 +381,6 @@ async def _post_receive_pack_tasks(repo_id: int, user_id: int | None) -> None:
                 if pull_requests:
                     await db.commit()
             await reevaluate_auto_merges(db, repository.id)
-        except Exception:
-            pass
-
-        try:
-            from app.services.index_service import index_repository
-
-            await index_repository(db, repository)
-        except Exception:
-            pass
-
-        try:
-            from app.services.workflow_service import process_push_event
-
-            await process_push_event(
-                db,
-                repository,
-                user,
-                before_sha=changed_before,
-                ref_name=changed_branch,
-                after_sha=changed_after,
-                created=changed_created,
-                deleted=changed_deleted,
-            )
         except Exception:
             pass
 
