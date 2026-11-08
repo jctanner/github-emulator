@@ -236,3 +236,115 @@ def test_org_variable_tables_upgrade_keeps_existing_rows(tmp_path, monkeypatch):
     engine = create_engine(f"sqlite:///{path}")
     assert "org_variables" not in set(inspect(engine).get_table_names())
     engine.dispose()
+
+
+def _without_autoincrement(connection) -> list[str]:
+    """Tables with a single INTEGER primary key that would reuse ids."""
+    names = []
+    for name, ddl in connection.execute(
+        text("SELECT name, sql FROM sqlite_master WHERE type = 'table'")
+    ).all():
+        if name in ("sqlite_sequence", "alembic_version") or "AUTOINCREMENT" in ddl.upper():
+            continue
+        if name == "gists":  # keyed by a string, so it has no rowid to reuse
+            continue
+        names.append(name)
+    return names
+
+
+def _add_runs(engine, *ids_or_none):
+    """Add a workflow run (and a job of it) per entry, with that id or, for
+    None, the id the table hands out; returns the run ids."""
+    from sqlalchemy.orm import Session
+
+    from app.models.actions import WorkflowJob, WorkflowRun
+
+    added = []
+    with Session(engine) as session:
+        for run_id in ids_or_none:
+            run = WorkflowRun(id=run_id, workflow_id=1, repo_id=1, head_sha="a", head_branch="main",
+                              event="push", status="completed", run_number=1, run_attempt=1, actor_id=1)
+            session.add(run)
+            session.flush()
+            session.add(WorkflowJob(id=run.id, run_id=run.id, name="job", status="completed"))
+            added.append(run.id)
+        session.commit()
+    return added
+
+
+def _delete_run(engine, run_id) -> None:
+    with engine.begin() as connection:
+        connection.execute(text("DELETE FROM workflow_jobs WHERE run_id = :id"), {"id": run_id})
+        connection.execute(text("DELETE FROM workflow_runs WHERE id = :id"), {"id": run_id})
+
+
+def test_fresh_database_never_reuses_an_id(tmp_path, monkeypatch):
+    """Every table of a fresh database is AUTOINCREMENT, so deleting the
+    newest row does not free its id (BT-E3)."""
+    path = tmp_path / "fresh-ids.db"
+    monkeypatch.delenv("GITHUB_EMULATOR_DATABASE_URL", raising=False)
+    upgrade_database_sync(_url(path))
+
+    engine = create_engine(f"sqlite:///{path}")
+    with engine.connect() as connection:
+        assert _without_autoincrement(connection) == []
+    (deleted,) = _add_runs(engine, None)
+    _delete_run(engine, deleted)
+    (fresh,) = _add_runs(engine, None)
+    assert fresh > deleted
+    engine.dispose()
+
+
+def test_existing_tables_are_rebuilt_to_stop_reusing_ids(tmp_path, monkeypatch):
+    """A database from before 0016: workflow runs and jobs hand out the ids
+    of deleted rows, which is how a recreated repository's first run took
+    the deleted repository's run id. After the upgrade the rows, their ids
+    and their indexes are kept, and a deleted id is not handed out again."""
+    from pathlib import Path
+
+    from alembic import command
+    from alembic.config import Config
+
+    path = tmp_path / "reused-ids.db"
+    monkeypatch.delenv("GITHUB_EMULATOR_DATABASE_URL", raising=False)
+    root = Path(__file__).resolve().parents[1]
+    config = Config(str(root / "alembic.ini"))
+    config.set_main_option("script_location", str(root / "alembic"))
+    config.set_main_option("sqlalchemy.url", _url(path))
+    command.upgrade(config, "0015_org_actions_variables")
+
+    engine = create_engine(f"sqlite:///{path}")
+    with engine.begin() as connection:
+        # Recreate the tables the way earlier revisions made them.
+        for table in ("workflow_runs", "workflow_jobs"):
+            ddl = connection.execute(
+                text("SELECT sql FROM sqlite_master WHERE name = :t"), {"t": table}
+            ).scalar_one()
+            connection.execute(text(f"DROP TABLE {table}"))
+            connection.execute(text(ddl.replace("AUTOINCREMENT", "")))
+        connection.execute(text("CREATE INDEX ix_test_jobs_run ON workflow_jobs (run_id)"))
+    _add_runs(engine, 1, 2, 3)
+    # The newest run goes, as a deleted repository's would; before the
+    # upgrade its id is what the table hands out next.
+    _delete_run(engine, 3)
+    with engine.connect() as connection:
+        assert set(_without_autoincrement(connection)) >= {"workflow_runs", "workflow_jobs"}
+    engine.dispose()
+
+    upgrade_database_sync(_url(path))
+
+    engine = create_engine(f"sqlite:///{path}")
+    with engine.connect() as connection:
+        assert _without_autoincrement(connection) == []
+        assert connection.execute(text("SELECT group_concat(id) FROM workflow_runs")).scalar_one() == "1,2"
+        assert connection.execute(text("SELECT group_concat(run_id) FROM workflow_jobs")).scalar_one() == "1,2"
+        assert "ix_test_jobs_run" in {i["name"] for i in inspect(connection).get_indexes("workflow_jobs")}
+        assert connection.execute(text("SELECT version_num FROM alembic_version")).scalar_one() == _alembic_head()
+    # 3 was handed out and deleted before the upgrade and cannot be
+    # recovered, so it is used once more; from then on nothing is reused.
+    (reissued,) = _add_runs(engine, None)
+    assert reissued == 3
+    _delete_run(engine, reissued)
+    (fresh,) = _add_runs(engine, None)
+    assert fresh == 4
+    engine.dispose()

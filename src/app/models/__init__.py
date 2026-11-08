@@ -28,6 +28,20 @@ from app.models.import_job import ImportJob
 from app.models.apps import GitHubApp, AppInstallation, AppInstallationToken
 from app.models.artifact import WorkflowArtifact
 
+from app.database import Base
+
+# GitHub never hands out an id twice. SQLite does unless a table is declared
+# AUTOINCREMENT: an INTEGER PRIMARY KEY otherwise takes max(rowid) + 1, so
+# deleting the newest rows (a repository and its runs, an issue, an artifact)
+# frees their ids for the next insert. Every table is declared that way here,
+# once, after all of them are registered, so a new model cannot miss it.
+# SQLite applies it only to a single INTEGER primary key; the one table keyed
+# by a string (gists) is unaffected. Migration 0016 rebuilds the tables of an
+# existing database the same way.
+for _table in Base.metadata.tables.values():
+    _table.dialect_options["sqlite"]["autoincrement"] = True
+del _table
+
 __all__ = [
     "User",
     "PersonalAccessToken",
