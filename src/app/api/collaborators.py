@@ -19,16 +19,9 @@ VALID_PERMISSIONS = {"pull", "triage", "push", "maintain", "admin"}
 async def _require_repository_admin(
     repository: Repository, user: User, db
 ) -> None:
-    if user.site_admin or repository.owner_id == user.id:
-        return
-    result = await db.execute(
-        select(Collaborator).where(
-            Collaborator.repo_id == repository.id,
-            Collaborator.user_id == user.id,
-            Collaborator.permission == "admin",
-        )
-    )
-    if result.scalar_one_or_none() is None:
+    from app.services.repository_access import is_repository_admin
+
+    if not await is_repository_admin(db, repository, user):
         raise HTTPException(
             status_code=403,
             detail="Must have admin rights to Repository.",
@@ -154,44 +147,49 @@ async def remove_collaborator(
     await db.commit()
 
 
+# GitHub answers this endpoint in two vocabularies: ``permission`` is the
+# legacy one (admin, write, read or none; maintain reads as write and triage
+# as read) and ``role_name`` names the role itself. Clients such as Fullsend's
+# dispatch read ``role_name`` and treat anything outside GitHub's names as no
+# access, so the emulator's internal "push"/"pull" must not leak through.
+_ROLE_NAME = {"admin": "admin", "maintain": "maintain", "push": "write", "triage": "triage", "pull": "read"}
+_LEGACY_PERMISSION = {"admin": "admin", "maintain": "write", "push": "write", "triage": "read", "pull": "read"}
+
+
+def _permission_json(user_obj: User, permission: str) -> dict:
+    user_json = _collab_json(user_obj, permission, BASE)
+    user_json["role_name"] = _ROLE_NAME[permission]
+    return {
+        "permission": _LEGACY_PERMISSION[permission],
+        "role_name": _ROLE_NAME[permission],
+        "user": user_json,
+    }
+
+
 @router.get("/repos/{owner}/{repo}/collaborators/{username}/permission")
 async def get_collaborator_permission(
     owner: str, repo: str, username: str, db: DbSession, user: AuthUser,
 ):
-    """Get a collaborator's permission level."""
+    """A user's permission on the repository.
+
+    For a person it is ``repository_access.repository_permission``: the
+    owner of a user-owned repository, a collaborator, or a member of the
+    owning organization through an organization role (or as an owner). A
+    GitHub App's bot is not a collaborator; its access is what the App's
+    installation grants, and GitHub answers this endpoint with it. Anyone
+    else is 404.
+    """
+    from app.services.repository_access import installation_role, repository_permission
+
     repository = await get_repo_or_404(owner, repo, db)
+    target = (await db.execute(select(User).where(User.login == username))).scalar_one_or_none()
+    if target is None:
+        raise HTTPException(status_code=404, detail="Not Found")
 
-    # Check owner
-    if repository.owner and repository.owner.login == username:
-        return {
-            "permission": "admin",
-            "role_name": "admin",
-            "user": SimpleUser.from_db(repository.owner, BASE).model_dump(),
-        }
-
-    result = await db.execute(
-        select(Collaborator)
-        .join(User, Collaborator.user_id == User.id)
-        .where(Collaborator.repo_id == repository.id, User.login == username)
-    )
-    collab = result.scalar_one_or_none()
-    if collab is None:
-        # A GitHub App's bot is not a collaborator; its access is what the
-        # App's installation grants, and GitHub answers this endpoint with it.
-        from app.services.repository_access import installation_role
-
-        bot = (await db.execute(select(User).where(User.login == username))).scalar_one_or_none()
-        role = await installation_role(db, repository, bot)
-        if role is None:
-            raise HTTPException(status_code=404, detail="Not Found")
-        return {
-            "permission": role,
-            "role_name": role,
-            "user": SimpleUser.from_db(bot, BASE).model_dump(),
-        }
-
-    return {
-        "permission": collab.permission,
-        "role_name": collab.permission,
-        "user": SimpleUser.from_db(collab.user, BASE).model_dump(),
-    }
+    permission = await repository_permission(db, repository, target)
+    if permission is None:
+        installed = await installation_role(db, repository, target)
+        permission = {"write": "push", "read": "pull"}.get(installed or "")
+    if permission is None:
+        raise HTTPException(status_code=404, detail="Not Found")
+    return _permission_json(target, permission)

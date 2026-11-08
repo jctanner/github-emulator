@@ -1,6 +1,6 @@
 from datetime import datetime
 
-from sqlalchemy import DateTime, ForeignKey, Integer, String, func
+from sqlalchemy import DateTime, ForeignKey, Integer, String, UniqueConstraint, func
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.database import Base
@@ -49,3 +49,24 @@ class OrgMembership(Base):
     # Relationships
     organization = relationship("Organization", back_populates="members", lazy="selectin")
     user = relationship("User", lazy="selectin")
+
+
+class OrgRoleAssignment(Base):
+    """An organization role held by a member (GitHub's organization roles).
+
+    ``role_id`` names one of the predefined all-repository roles in
+    ``app.services.org_roles``; it grants that permission on every
+    repository the organization owns, including ones created later.
+    """
+
+    __tablename__ = "org_role_assignments"
+    __table_args__ = (UniqueConstraint("org_id", "user_id", "role_id", name="uq_org_role_assignment"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    org_id: Mapped[int] = mapped_column(Integer, ForeignKey("organizations.id"), nullable=False, index=True)
+    user_id: Mapped[int] = mapped_column(Integer, ForeignKey("users.id"), nullable=False, index=True)
+    role_id: Mapped[int] = mapped_column(Integer, nullable=False)
+
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime, server_default=func.now()
+    )

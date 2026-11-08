@@ -118,16 +118,9 @@ async def _get_branch(repository: Repository, branch: str, db) -> Branch:
 
 
 async def _require_repository_admin(repository: Repository, user, db) -> None:
-    if user.site_admin or repository.owner_id == user.id:
-        return
-    result = await db.execute(
-        select(Collaborator).where(
-            Collaborator.repo_id == repository.id,
-            Collaborator.user_id == user.id,
-            Collaborator.permission == "admin",
-        )
-    )
-    if result.scalar_one_or_none() is None:
+    from app.services.repository_access import is_repository_admin
+
+    if not await is_repository_admin(db, repository, user):
         raise HTTPException(status_code=403, detail="Must have admin rights to Repository.")
 
 

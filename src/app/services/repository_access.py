@@ -75,12 +75,13 @@ async def can_read(
     # repository they have not been added to individually, which is not how
     # either GitHub or this emulator's seeding behaves.
     if repository.owner_type == "Organization":
+        # The organization is ``organization_id``; ``owner_id`` is the user
+        # who created the repository, whose id says nothing about the
+        # organization.
         membership = (
             await db.execute(
-                select(OrgMembership.id)
-                .join(Organization, OrgMembership.org_id == Organization.id)
-                .where(
-                    Organization.id == repository.owner_id,
+                select(OrgMembership.id).where(
+                    OrgMembership.org_id == repository.organization_id,
                     OrgMembership.user_id == user.id,
                     OrgMembership.state == "active",
                 )
@@ -218,28 +219,74 @@ async def installation_role(
     return role
 
 
+# Collaborator rows may carry GitHub's newer names for two levels.
+_COLLABORATOR_ALIASES = {"write": "push", "read": "pull"}
+
+
+async def repository_permission(
+    db: AsyncSession, repository: Repository, user: User | None
+) -> str | None:
+    """A person's own permission on ``repository``, in the collaborator
+    API's vocabulary ("pull", "triage", "push", "maintain", "admin"), or None.
+
+    The repository's ``owner_id`` user - the owner of a user-owned repository,
+    or whoever created an organization's - has admin. Otherwise it is the
+    highest of the user's collaborator permission and, for an organization's
+    repository (``organization_id``), what they hold as an active member: an
+    organization owner has admin, and anyone else the permission of their
+    organization roles (``app.services.org_roles``), which covers
+    repositories created after a role was assigned. An App's bot is not a
+    person; its access is ``installation_role``. A site admin's override is
+    not a repository permission and is not reported here;
+    ``can_write_contents`` and ``is_repository_admin`` honour it.
+    """
+    from app.services.org_roles import highest, org_role_permission
+
+    if user is None:
+        return None
+    if user.id == repository.owner_id:
+        return "admin"
+    collaborator = (
+        await db.execute(
+            select(Collaborator.permission).where(
+                Collaborator.repo_id == repository.id, Collaborator.user_id == user.id
+            )
+        )
+    ).scalar_one_or_none()
+    if collaborator is not None:
+        collaborator = _COLLABORATOR_ALIASES.get(collaborator, collaborator)
+    from_org = None
+    if repository.owner_type == "Organization" and repository.organization_id is not None:
+        from_org = await org_role_permission(db, repository.organization_id, user.id)
+    return highest(collaborator, from_org)
+
+
+async def is_repository_admin(
+    db: AsyncSession, repository: Repository, user: User | None
+) -> bool:
+    """Whether ``user`` administers ``repository``: a site admin, or anyone
+    whose ``repository_permission`` is admin."""
+    if user is not None and user.site_admin:
+        return True
+    return await repository_permission(db, repository, user) == "admin"
+
+
 async def can_write_contents(
     db: AsyncSession, repository: Repository, user: User | None
 ) -> bool:
     """Whether ``user`` may write this repository's contents, refs, and objects.
 
-    The owner and site admins may; a collaborator with push, maintain, or
-    admin may; and an installed App's bot may when its installation grants
-    ``contents: write``. Everything else, including a bot whose installation
-    grants only ``contents: read``, may not - which is what makes a role's
-    permission level mean something.
+    A site admin may, and so may anyone whose ``repository_permission`` is
+    push, maintain, or admin - the owner, such a collaborator, or a member holding such an
+    organization role - and an installed App's bot may when its installation
+    grants ``contents: write``. Everything else, including a bot whose
+    installation grants only ``contents: read``, may not - which is what
+    makes a role's permission level mean something.
     """
     if user is None:
         return False
-    if user.site_admin or user.id == repository.owner_id:
+    if user.site_admin:
         return True
-    collaborator = (
-        await db.execute(
-            select(Collaborator).where(
-                Collaborator.repo_id == repository.id, Collaborator.user_id == user.id
-            )
-        )
-    ).scalar_one_or_none()
-    if collaborator is not None and collaborator.permission in {"push", "maintain", "admin"}:
+    if await repository_permission(db, repository, user) in {"push", "maintain", "admin"}:
         return True
     return await installation_role(db, repository, user) == "write"

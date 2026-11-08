@@ -247,7 +247,9 @@ async def update_repo(
     if repository is None:
         raise HTTPException(status_code=404, detail="Not Found")
 
-    if user.id != repository.owner_id and not user.site_admin:
+    # Repository admins: the creator, a site admin, an admin collaborator or
+    # a member whose organization role (or ownership) gives admin.
+    if not await repository_access.is_repository_admin(db, repository, user):
         raise HTTPException(status_code=403, detail="Forbidden")
 
     updatable = [
@@ -287,6 +289,10 @@ async def delete_repo(owner: str, repo: str, user: AuthUser, db: DbSession):
     if repository is None:
         raise HTTPException(status_code=404, detail="Not Found")
 
+    # Deliberately narrower than is_repository_admin: GitHub also requires
+    # the delete_repo token scope, which the emulator does not enforce, so
+    # widening this to every repository admin would let a plain "repo" token
+    # delete another member's repository.
     if user.id != repository.owner_id and not user.site_admin:
         raise HTTPException(status_code=403, detail="Must have admin rights to delete")
 

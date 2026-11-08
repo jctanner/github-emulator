@@ -229,9 +229,10 @@ async def remove_org(org_id: int, user: AuthUser, db: DbSession):
     # deleting the organization alone nulled them and failed with 500 on
     # any organization anyone had ever joined. They go first.
     from sqlalchemy import delete as sql_delete
-    from app.models.organization import OrgMembership
+    from app.models.organization import OrgMembership, OrgRoleAssignment
     from app.models.team import Team
     await db.execute(sql_delete(OrgMembership).where(OrgMembership.org_id == org_id))
+    await db.execute(sql_delete(OrgRoleAssignment).where(OrgRoleAssignment.org_id == org_id))
     await db.execute(sql_delete(Team).where(Team.org_id == org_id))
     # Organization variables too: organization ids are reused, and a new
     # organization must not inherit the old one's values.

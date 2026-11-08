@@ -92,16 +92,9 @@ async def _is_repository_admin(
 ) -> bool:
     if actor is None:
         return False
-    if actor.site_admin or actor.id == repository.owner_id:
-        return True
-    result = await db.execute(
-        select(Collaborator).where(
-            Collaborator.repo_id == repository.id,
-            Collaborator.user_id == actor.id,
-            Collaborator.permission == "admin",
-        )
-    )
-    return result.scalar_one_or_none() is not None
+    from app.services.repository_access import is_repository_admin
+
+    return await is_repository_admin(db, repository, actor)
 
 
 def _required_contexts(protection: BranchProtection) -> set[str]:

@@ -348,3 +348,34 @@ def test_existing_tables_are_rebuilt_to_stop_reusing_ids(tmp_path, monkeypatch):
     (fresh,) = _add_runs(engine, None)
     assert fresh == 4
     engine.dispose()
+
+
+def test_org_role_assignments_table_is_added_to_an_existing_database(tmp_path, monkeypatch):
+    """0017 adds org_role_assignments to a database at 0016, AUTOINCREMENT
+    like the rest, and keeps existing rows."""
+    from pathlib import Path
+
+    from alembic import command
+    from alembic.config import Config
+
+    path = tmp_path / "roles.db"
+    monkeypatch.delenv("GITHUB_EMULATOR_DATABASE_URL", raising=False)
+    root = Path(__file__).resolve().parents[1]
+    config = Config(str(root / "alembic.ini"))
+    config.set_main_option("script_location", str(root / "alembic"))
+    config.set_main_option("sqlalchemy.url", _url(path))
+    command.upgrade(config, "0016_never_reuse_ids")
+    engine = create_engine(f"sqlite:///{path}")
+    with engine.begin() as connection:
+        connection.execute(text("DROP TABLE IF EXISTS org_role_assignments"))
+        connection.execute(text("INSERT INTO organizations (id, login) VALUES (3, 'acme')"))
+    engine.dispose()
+
+    upgrade_database_sync(_url(path))
+
+    engine = create_engine(f"sqlite:///{path}")
+    with engine.begin() as connection:
+        assert "org_role_assignments" in inspect(connection).get_table_names()
+        assert _without_autoincrement(connection) == []
+        assert connection.execute(text("SELECT login FROM organizations WHERE id = 3")).scalar_one() == "acme"
+    engine.dispose()

@@ -99,8 +99,10 @@ async def test_get_collaborator_permission(client, test_user, test_token, admin_
     )
     assert resp.status_code == 200
     data = resp.json()
-    assert data["permission"] == "push"
-    assert "user" in data
+    # GitHub's vocabulary: push is "write" in both fields.
+    assert data["permission"] == "write"
+    assert data["role_name"] == "write"
+    assert data["user"]["permissions"]["push"] is True
 
 
 @pytest.mark.asyncio

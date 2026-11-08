@@ -78,22 +78,13 @@ async def _check_write_access(
             detail="Authentication required",
             headers={"WWW-Authenticate": 'Basic realm="GitHub Emulator"'},
         )
-    if user.id == repository.owner_id or user.site_admin:
-        return
+    # One answer to "may this user write here": the owner, a site admin, a
+    # push/maintain/admin collaborator, a member holding such an
+    # organization role, or an App's bot whose installation grants
+    # contents: write.
+    from app.services.repository_access import can_write_contents
 
-    result = await db.execute(
-        select(Collaborator).where(
-            Collaborator.repo_id == repository.id,
-            Collaborator.user_id == user.id,
-        )
-    )
-    collaborator = result.scalar_one_or_none()
-    if collaborator is not None and collaborator.permission in {"push", "maintain", "admin"}:
-        return
-    # An App's bot pushes with what its installation grants.
-    from app.services.repository_access import installation_role
-
-    if await installation_role(db, repository, user) == "write":
+    if await can_write_contents(db, repository, user):
         return
     raise HTTPException(status_code=403, detail="Permission denied")
 

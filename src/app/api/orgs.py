@@ -1,11 +1,11 @@
 """Organization endpoints."""
 
 from fastapi import APIRouter, HTTPException, Query, Response
-from sqlalchemy import func as sa_func, select
+from sqlalchemy import delete as sa_delete, func as sa_func, select
 
 from app.api.deps import AuthUser, CurrentUser, DbSession
 from app.config import settings
-from app.models.organization import Organization, OrgMembership
+from app.models.organization import Organization, OrgMembership, OrgRoleAssignment
 from app.models.user import User
 from app.schemas.organization import OrganizationResponse
 from app.schemas.user import SimpleUser, _fmt_dt, _make_node_id
@@ -365,6 +365,13 @@ async def _remove_membership(org: str, username: str, user, db) -> Response:
         raise HTTPException(status_code=404, detail="Not Found")
     await _guard_last_admin(organisation, membership, db)
     await db.delete(membership)
+    # Leaving the organization removes the roles held in it, as on GitHub.
+    await db.execute(
+        sa_delete(OrgRoleAssignment).where(
+            OrgRoleAssignment.org_id == organisation.id,
+            OrgRoleAssignment.user_id == target.id,
+        )
+    )
     await db.commit()
     return Response(status_code=204)
 
@@ -379,6 +386,160 @@ async def delete_org_membership(org: str, username: str, user: AuthUser, db: DbS
 async def delete_org_member(org: str, username: str, user: AuthUser, db: DbSession):
     """Remove a member from the organization (org admins, site admins)."""
     return await _remove_membership(org, username, user, db)
+
+
+# --- Organization roles -------------------------------------------------------
+# GitHub's organization roles, limited to the predefined all-repository roles
+# (app.services.org_roles). A role is assigned to an organization member and
+# grants its permission on every repository the organization owns. Reading
+# and changing roles and their holders is for organization admins (and site
+# admins), as on GitHub: who holds admin on every repository is not something
+# an ordinary member may enumerate.
+
+
+def _org_role_json(role: dict, organisation: Organization) -> dict:
+    return {
+        "id": role["id"],
+        "name": role["name"],
+        "description": role["description"],
+        "base_role": role["base_role"],
+        "source": "Predefined",
+        "permissions": [],
+        "organization": {
+            "login": organisation.login,
+            "id": organisation.id,
+            "node_id": _make_node_id("Organization", organisation.id),
+            "avatar_url": organisation.avatar_url or f"{BASE}/avatars/{organisation.login}",
+            "url": f"{BASE}/api/v3/orgs/{organisation.login}",
+            "html_url": f"{BASE}/{organisation.login}",
+            "type": "Organization",
+            "site_admin": False,
+        },
+        "created_at": _fmt_dt(organisation.created_at),
+        "updated_at": _fmt_dt(organisation.updated_at),
+    }
+
+
+def _org_role_or_404(role_id: int) -> dict:
+    from app.services.org_roles import ROLES_BY_ID
+
+    role = ROLES_BY_ID.get(role_id)
+    if role is None:
+        raise HTTPException(status_code=404, detail="Not Found")
+    return role
+
+
+@router.get("/orgs/{org}/organization-roles")
+async def list_org_roles(org: str, user: AuthUser, db: DbSession):
+    """The organization's roles: GitHub's predefined all-repository roles."""
+    from app.services.org_roles import PREDEFINED_ROLES
+
+    organisation = await _get_org_or_404(org, db)
+    await _require_org_admin(organisation, user, db)
+    roles = [_org_role_json(role, organisation) for role in PREDEFINED_ROLES]
+    return {"total_count": len(roles), "roles": roles}
+
+
+@router.get("/orgs/{org}/organization-roles/{role_id}")
+async def get_org_role(org: str, role_id: int, user: AuthUser, db: DbSession):
+    organisation = await _get_org_or_404(org, db)
+    await _require_org_admin(organisation, user, db)
+    return _org_role_json(_org_role_or_404(role_id), organisation)
+
+
+@router.get("/orgs/{org}/organization-roles/{role_id}/users")
+async def list_org_role_users(
+    org: str, role_id: int, user: AuthUser, db: DbSession,
+    per_page: int = Query(30, ge=1, le=100), page: int = Query(1, ge=1),
+):
+    """Members who hold the role. Assignments are direct; teams are not emulated."""
+    organisation = await _get_org_or_404(org, db)
+    await _require_org_admin(organisation, user, db)
+    _org_role_or_404(role_id)
+    holders = (
+        await db.execute(
+            select(User)
+            .join(OrgRoleAssignment, OrgRoleAssignment.user_id == User.id)
+            .where(OrgRoleAssignment.org_id == organisation.id, OrgRoleAssignment.role_id == role_id)
+            .order_by(User.id)
+            .offset((page - 1) * per_page)
+            .limit(per_page)
+        )
+    ).scalars().all()
+    result = []
+    for holder in holders:
+        entry = SimpleUser.from_db(holder, BASE).model_dump()
+        entry["assignment"] = "direct"
+        result.append(entry)
+    return result
+
+
+@router.get("/orgs/{org}/organization-roles/{role_id}/teams")
+async def list_org_role_teams(org: str, role_id: int, user: AuthUser, db: DbSession):
+    """Teams holding the role: none, since team assignment is not emulated."""
+    organisation = await _get_org_or_404(org, db)
+    await _require_org_admin(organisation, user, db)
+    _org_role_or_404(role_id)
+    return []
+
+
+@router.put("/orgs/{org}/organization-roles/users/{username}/{role_id}", status_code=204)
+async def assign_org_role(org: str, username: str, role_id: int, user: AuthUser, db: DbSession):
+    """Assign a role to a member (org admins, site admins). Idempotent."""
+    organisation = await _get_org_or_404(org, db)
+    await _require_org_admin(organisation, user, db)
+    _org_role_or_404(role_id)
+    target = await _get_user_or_404(username, db)
+    membership = await _get_membership(organisation, target, db)
+    if membership is None or membership.state != "active":
+        raise HTTPException(status_code=422, detail="User must be a member of the organization")
+    existing = (
+        await db.execute(
+            select(OrgRoleAssignment.id).where(
+                OrgRoleAssignment.org_id == organisation.id,
+                OrgRoleAssignment.user_id == target.id,
+                OrgRoleAssignment.role_id == role_id,
+            )
+        )
+    ).scalar_one_or_none()
+    if existing is None:
+        db.add(OrgRoleAssignment(org_id=organisation.id, user_id=target.id, role_id=role_id))
+        await db.commit()
+    return Response(status_code=204)
+
+
+@router.delete("/orgs/{org}/organization-roles/users/{username}/{role_id}", status_code=204)
+async def remove_org_role(org: str, username: str, role_id: int, user: AuthUser, db: DbSession):
+    """Remove one role from a user (org admins, site admins)."""
+    organisation = await _get_org_or_404(org, db)
+    await _require_org_admin(organisation, user, db)
+    _org_role_or_404(role_id)
+    target = await _get_user_or_404(username, db)
+    await db.execute(
+        sa_delete(OrgRoleAssignment).where(
+            OrgRoleAssignment.org_id == organisation.id,
+            OrgRoleAssignment.user_id == target.id,
+            OrgRoleAssignment.role_id == role_id,
+        )
+    )
+    await db.commit()
+    return Response(status_code=204)
+
+
+@router.delete("/orgs/{org}/organization-roles/users/{username}", status_code=204)
+async def remove_all_org_roles(org: str, username: str, user: AuthUser, db: DbSession):
+    """Remove every role a user holds in the organization (org admins, site admins)."""
+    organisation = await _get_org_or_404(org, db)
+    await _require_org_admin(organisation, user, db)
+    target = await _get_user_or_404(username, db)
+    await db.execute(
+        sa_delete(OrgRoleAssignment).where(
+            OrgRoleAssignment.org_id == organisation.id,
+            OrgRoleAssignment.user_id == target.id,
+        )
+    )
+    await db.commit()
+    return Response(status_code=204)
 
 
 @router.get("/user/memberships/orgs")
