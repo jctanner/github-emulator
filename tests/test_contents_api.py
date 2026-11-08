@@ -177,18 +177,28 @@ async def test_get_contents_repo_not_found(client):
 
 @pytest.mark.asyncio
 async def test_delete_file(client, test_user, test_token, test_repo_with_init):
-    """DELETE /repos/{owner}/{repo}/contents/{path} deletes a file."""
+    """DELETE /repos/{owner}/{repo}/contents/{path} commits the deletion. It
+    needs the file's current blob sha; a stale one is refused (409)."""
     owner, repo_name, _ = test_repo_with_init
+    headers = auth_headers(test_token)
+    current = (await client.get(f"{API}/repos/{owner}/{repo_name}/contents/README.md", headers=headers)).json()
+    stale = await client.request(
+        "DELETE", f"{API}/repos/{owner}/{repo_name}/contents/README.md",
+        json={"message": "Delete README", "sha": "abc123"}, headers=headers,
+    )
+    assert stale.status_code == 409
     resp = await client.request(
         "DELETE",
         f"{API}/repos/{owner}/{repo_name}/contents/README.md",
-        json={"message": "Delete README", "sha": "abc123"},
-        headers=auth_headers(test_token),
+        json={"message": "Delete README", "sha": current["sha"]},
+        headers=headers,
     )
     assert resp.status_code == 200
     data = resp.json()
     assert data["content"] is None
-    assert "commit" in data
+    assert len(data["commit"]["sha"]) == 40
+    gone = await client.get(f"{API}/repos/{owner}/{repo_name}/contents/README.md", headers=headers)
+    assert gone.status_code == 404
 
 
 @pytest.mark.asyncio

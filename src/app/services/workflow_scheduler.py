@@ -7,6 +7,33 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.actions import WorkflowJob, WorkflowRun
 
+def _runs_after_unsuccessful_needs(job: WorkflowJob) -> bool:
+    """Whether a job is still evaluated when a job it needs failed, was
+    skipped or was cancelled: on GitHub, when its condition names a status
+    function. Without one the condition is implicitly ``success() && ...``
+    and the job is skipped."""
+    from app.services.workflow_expressions import uses_status_function
+
+    pending = job.pending_render or {}
+    return uses_status_function(pending.get("if"))
+
+
+def _ancestors(job: WorkflowJob, all_jobs) -> list[str]:
+    """Every job ``job`` depends on, directly or through others: the jobs
+    ``success()`` and ``failure()`` answer for, as on GitHub, so a cleanup
+    job behind a skipped one still sees the failure that skipped it."""
+    needs_by_key = {(j.job_key or j.name): list(j.needs or []) for j in all_jobs}
+    seen: list[str] = []
+    pending = list(job.needs or [])
+    while pending:
+        key = pending.pop()
+        if key in seen:
+            continue
+        seen.append(key)
+        pending.extend(needs_by_key.get(key, []))
+    return seen
+
+
 async def dispatch_ready_jobs(db: AsyncSession, run_id: int) -> list[WorkflowJob]:
     """Find jobs whose dependencies are met and set them to queued.
 
@@ -19,7 +46,12 @@ async def dispatch_ready_jobs(db: AsyncSession, run_id: int) -> list[WorkflowJob
         build_run_expression_context,
         build_steps_data,
     )
-    from app.services.workflow_expressions import evaluate_job_if, render_expressions
+    from app.services.workflow_expressions import (
+        JOB_NEEDS_KEY,
+        RUN_CANCELLED_KEY,
+        evaluate_job_if,
+        render_expressions,
+    )
 
     result = await db.execute(
         select(WorkflowJob).where(WorkflowJob.run_id == run_id)
@@ -38,20 +70,31 @@ async def dispatch_ready_jobs(db: AsyncSession, run_id: int) -> list[WorkflowJob
 
     promoted = []
     ready = []
-    for job in all_jobs:
-        if job.status != "waiting":
-            continue
-        needs = job.needs or []
-        if any(n in unsuccessful_keys for n in needs):
-            job.status = "completed"
-            job.conclusion = "skipped"
-            job.completed_at = datetime.now(timezone.utc)
-            job.steps = [
-                {**step, "status": "completed", "conclusion": "skipped"}
-                for step in (job.steps or [])
-            ]
-        elif all(n in completed_keys for n in needs):
-            ready.append(job)
+    # Repeat until nothing more is skipped: a job skipped here is itself an
+    # unsuccessful need, so the skip cascades down a chain in one pass, and a
+    # job further down that names a status function becomes ready now rather
+    # than waiting for a dispatch that would never come.
+    changed = True
+    while changed:
+        changed = False
+        for job in all_jobs:
+            if job.status != "waiting" or job in ready:
+                continue
+            needs = job.needs or []
+            if any(n in unsuccessful_keys for n in needs) and not _runs_after_unsuccessful_needs(job):
+                job.status = "completed"
+                job.conclusion = "skipped"
+                job.completed_at = datetime.now(timezone.utc)
+                job.steps = [
+                    {**step, "status": "completed", "conclusion": "skipped"}
+                    for step in (job.steps or [])
+                ]
+                unsuccessful_keys.add(job.job_key or job.name)
+                changed = True
+            elif all(n in completed_keys or n in unsuccessful_keys for n in needs):
+                # Every need has finished. Either all succeeded, or the job's
+                # condition names a status function and decides for itself.
+                ready.append(job)
 
     if ready:
         base_context = None
@@ -71,6 +114,8 @@ async def dispatch_ready_jobs(db: AsyncSession, run_id: int) -> list[WorkflowJob
                 context = {
                     **base_context,
                     "needs": needs_context,
+                    JOB_NEEDS_KEY: _ancestors(job, all_jobs),
+                    RUN_CANCELLED_KEY: bool(base_context.get(RUN_CANCELLED_KEY)),
                     "matrix": pending.get("matrix") or {},
                     "job": {
                         "workflow_repository": pending.get("_workflow_repository")
@@ -142,17 +187,23 @@ async def check_run_completion(db: AsyncSession, run_id: int) -> WorkflowRun | N
     if any(j.status in ("queued", "in_progress", "waiting") for j in jobs):
         failed_keys = {j.name for j in jobs if j.status == "completed" and j.conclusion == "failure"}
         if failed_keys:
+            def stranded(j) -> bool:
+                return (
+                    j.status == "waiting" and bool(j.needs)
+                    and any(n in failed_keys for n in j.needs)
+                    and not _runs_after_unsuccessful_needs(j)
+                )
+
             for j in jobs:
-                if j.status == "waiting" and j.needs:
-                    if any(n in failed_keys for n in j.needs):
-                        j.status = "completed"
-                        j.conclusion = "skipped"
-                        j.completed_at = datetime.now(timezone.utc)
+                if stranded(j):
+                    j.status = "completed"
+                    j.conclusion = "skipped"
+                    j.completed_at = datetime.now(timezone.utc)
 
             still_active = any(
                 j.status in ("queued", "in_progress", "waiting")
                 for j in jobs
-                if not (j.status == "waiting" and j.needs and any(n in failed_keys for n in j.needs))
+                if not stranded(j)
             )
             if still_active:
                 run.status = "in_progress"

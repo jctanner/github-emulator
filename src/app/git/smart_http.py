@@ -22,6 +22,7 @@ from fastapi.responses import Response, StreamingResponse
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.services.cross_repo_pulls import same_repository_head
 from app.database import get_db
 from app.models.branch import Branch
 from app.models.repository import Collaborator, Repository
@@ -362,6 +363,7 @@ async def _post_receive_pack_tasks(repo_id: int, user_id: int | None) -> None:
                         .where(
                             PullRequest.repo_id == repository.id,
                             PullRequest.head_ref == changed_branch,
+                            same_repository_head(repository.id),
                             Issue.state == "open",
                         )
                     )

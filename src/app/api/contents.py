@@ -11,6 +11,7 @@ from fastapi.responses import JSONResponse
 from sqlalchemy import select
 
 from app.api.deps import require_contents_write, AuthUser, CurrentUser, DbSession, get_repo_record_or_404
+from app.services.api_push import after_api_commit
 from app.services.branch_service import record_branch
 from app.config import settings
 from app.schemas.browse import ContentResponse
@@ -266,6 +267,7 @@ async def create_or_update_file(
     await record_branch(db, repository, branch, commit_sha)
     repository.pushed_at = datetime.now(timezone.utc)
     await db.commit()
+    await after_api_commit(db, repository, user, branch, parent_sha, commit_sha)
 
     api = f"{BASE}/api/v3"
     result = {
@@ -285,16 +287,63 @@ async def create_or_update_file(
 async def delete_file(
     owner: str, repo: str, path: str, body: dict, user: AuthUser, db: DbSession,
 ):
-    """Delete a file (stub -- returns 200 with commit info)."""
+    """Delete a file with a commit on the branch, as GitHub does.
+
+    ``sha`` is required and must be the file's current blob, so a stale
+    caller cannot delete a newer version. The commit is a push like any
+    other (``after_api_commit``).
+    """
     repository = await get_repo_record_or_404(owner, repo, db)
     await require_contents_write(db, repository, user)
-    message = body.get("message", f"Delete {path}")
-    sha = body.get("sha", "")
+    if not repository.disk_path or not os.path.isdir(repository.disk_path):
+        raise HTTPException(status_code=404, detail="Repository not found on disk")
+    message = body.get("message")
+    sha = body.get("sha")
+    if not message or not sha:
+        raise HTTPException(status_code=422, detail="Invalid request. message and sha are required")
+    branch = body.get("branch", repository.default_branch)
+    repo_path = repository.disk_path
+    try:
+        parent_sha = (await _git(repo_path, "rev-parse", "--verify", f"refs/heads/{branch}")).strip()
+        current = (await _git(repo_path, "rev-parse", f"{parent_sha}:{path}")).strip()
+    except RuntimeError:
+        raise HTTPException(status_code=404, detail="Not Found")
+    if current != sha:
+        raise HTTPException(status_code=409, detail=f"{path} does not match {sha}")
 
+    index_fd, index_path = tempfile.mkstemp(prefix="github-emulator-index-")
+    os.close(index_fd)
+    try:
+        os.unlink(index_path)
+        index_env = {"GIT_INDEX_FILE": index_path}
+        await _git(repo_path, "read-tree", parent_sha, env_overrides=index_env)
+        # A mode-0 entry removes the path (NUL-terminated, so any filename
+        # is one record); --force-remove needs a work tree.
+        await _git(
+            repo_path, "update-index", "-z", "--index-info",
+            input_data=f"0 {'0' * 40}\t{path}\0".encode(), env_overrides=index_env,
+        )
+        new_tree_sha = (await _git(repo_path, "write-tree", env_overrides=index_env)).strip()
+    finally:
+        try:
+            os.unlink(index_path)
+        except FileNotFoundError:
+            pass
+    commit_sha = (await _git(repo_path, "commit-tree", new_tree_sha, "-m", message, "-p", parent_sha)).strip()
+    await _git(repo_path, "update-ref", f"refs/heads/{branch}", commit_sha, parent_sha)
+    await record_branch(db, repository, branch, commit_sha)
+    repository.pushed_at = datetime.now(timezone.utc)
+    await db.commit()
+    await after_api_commit(db, repository, user, branch, parent_sha, commit_sha)
+
+    api = f"{BASE}/api/v3"
     return {
         "content": None,
         "commit": {
-            "sha": "0" * 40,
+            "sha": commit_sha,
+            "node_id": _make_node_id("Commit", hash(commit_sha) % 10**8),
+            "url": f"{api}/repos/{owner}/{repo}/git/commits/{commit_sha}",
+            "html_url": f"{BASE}/{owner}/{repo}/commit/{commit_sha}",
             "message": message,
         },
     }

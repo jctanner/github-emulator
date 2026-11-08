@@ -6,6 +6,7 @@ import os
 from fastapi import APIRouter, HTTPException
 from sqlalchemy import select
 
+from app.services.cross_repo_pulls import same_repository_head
 from app.api.deps import require_contents_write, AuthUser, CurrentUser, DbSession, get_repo_or_404
 from app.config import settings
 from app.models.branch import Branch
@@ -122,6 +123,7 @@ async def _record_branch_change(db, repository, ref: str, sha: str | None, user)
             .where(
                 PullRequest.repo_id == repository.id,
                 PullRequest.head_ref == name,
+                same_repository_head(repository.id),
                 Issue.state == "open",
             )
         )

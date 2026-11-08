@@ -188,6 +188,15 @@ async def installation_role(
     installation's ``contents`` permission. Returns "write", "read", or None
     for a user that is not an installed App's bot.
     """
+    return await installation_grant(db, repository, user, "contents")
+
+
+async def installation_grant(
+    db: AsyncSession, repository: Repository, user: User | None, permission: str
+) -> str | None:
+    """The level ("write" or "read") of one App permission that an
+    installation covering ``repository`` grants ``user``, or None when
+    ``user`` is not such an App's bot or no installation grants it."""
     if user is None:
         return None
     from app.models.apps import AppInstallation, GitHubApp
@@ -211,10 +220,10 @@ async def installation_role(
         covered = not installation.repositories or repository.full_name in installation.repositories
         if not covered:
             continue
-        contents = str((installation.permissions or {}).get("contents", "")).lower()
-        if contents == "write":
+        level = str((installation.permissions or {}).get(permission, "")).lower()
+        if level in ("write", "admin"):
             return "write"
-        if contents == "read":
+        if level == "read":
             role = "read"
     return role
 
@@ -244,7 +253,12 @@ async def repository_permission(
 
     if user is None:
         return None
-    if user.id == repository.owner_id:
+    # An App's bot that created a repository (with administration: write)
+    # is recorded as its owner_id, but on GitHub creating a repository gives
+    # an App no repository role: its access is its installation's. Reporting
+    # admin here made the bot an authorized actor in Fullsend's dispatch,
+    # which then routed the bot's own issues to triage.
+    if user.id == repository.owner_id and getattr(user, "type", "User") != "Bot":
         return "admin"
     collaborator = (
         await db.execute(
@@ -264,11 +278,15 @@ async def repository_permission(
 async def is_repository_admin(
     db: AsyncSession, repository: Repository, user: User | None
 ) -> bool:
-    """Whether ``user`` administers ``repository``: a site admin, or anyone
-    whose ``repository_permission`` is admin."""
+    """Whether ``user`` administers ``repository``: a site admin, anyone
+    whose ``repository_permission`` is admin, or an App's bot whose
+    installation grants ``administration: write``, which is what GitHub
+    asks of an App for repository settings."""
     if user is not None and user.site_admin:
         return True
-    return await repository_permission(db, repository, user) == "admin"
+    if await repository_permission(db, repository, user) == "admin":
+        return True
+    return await installation_grant(db, repository, user, "administration") == "write"
 
 
 async def can_write_contents(

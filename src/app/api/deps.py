@@ -124,10 +124,17 @@ async def _resolve_user(
             login, _, token_value = decoded.partition(":")
             if not token_value:
                 return None
-            user = await validate_basic_auth(db, login, token_value)
-            return user
         except Exception:
             return None
+        if not token_value.startswith("ghs_"):
+            try:
+                return await validate_basic_auth(db, login, token_value)
+            except Exception:
+                return None
+        # An installation token as a Basic password (git's
+        # x-access-token:<token>) is the same credential as a bearer one, and
+        # gets the same scoping below: its repositories and permissions, not
+        # its installation's.
     else:
         return None
 
@@ -214,21 +221,43 @@ _INSTALLATION_SCOPES = (
 )
 
 
-def _installation_scope(path: str) -> str | None:
+# Repository settings GitHub files under an App's Administration permission
+# but the job-token map does not name, or names under a coarser scope.
+_ADMINISTRATION_PATHS = re.compile(
+    r"^(?:actions/permissions|environments|rulesets|topics|vulnerability-alerts"
+    r"|automated-security-fixes|branches/[^/]+/protection)(?:/|$)"
+)
+
+
+def _installation_scope(path: str, method: str = "GET") -> str | None:
     """The App permission that governs a repository route the job-token map
     files under a coarser scope, or None when the map's answer stands."""
     m = _REPO_PATH.match(path)
     if not m:
         return None
     rest = path[m.end():].split("?", 1)[0]
+    if not rest.strip("/"):
+        # The repository itself: reading it is metadata, but changing its
+        # settings (PATCH) or deleting it needs Administration.
+        return None if method.upper() in ("GET", "HEAD", "OPTIONS") else "administration"
     for prefix, scope in _INSTALLATION_SCOPES:
         if rest == prefix or rest.startswith(prefix + "/"):
             return scope
+    if _ADMINISTRATION_PATHS.match(rest):
+        return "administration"
     return None
+
+
+_USER_PATH = re.compile(r"^/(?:api/v3/)?user(?:/|$)")
 
 
 def _check_installation_token_route(token, method: str, path: str, query: str = "") -> None:
     """Refuse a route an installation token's scope does not cover."""
+    if _USER_PATH.match(path):
+        # The authenticated-user routes are for a person's token. An App's
+        # installation token is not a person: GitHub answers 403, and
+        # clients that need the bot's login ask GraphQL's viewer instead.
+        raise HTTPException(status_code=403, detail="Resource not accessible by integration")
     target = _repository_in_path(path)
     if target is None:
         return
@@ -245,7 +274,7 @@ def _check_installation_token_route(token, method: str, path: str, query: str = 
     # checker, whose route map this reuses, spells them pull-requests.
     permissions = {str(k).lower().replace("_", "-"): str(v).lower() for k, v in (token.permissions or {}).items()}
     is_read = method.upper() in ("GET", "HEAD", "OPTIONS")
-    fine_grained = _installation_scope(path)
+    fine_grained = _installation_scope(path, method)
     if _GIT_PATH.match(path):
         needed = "write" if path.endswith("git-receive-pack") or "service=git-receive-pack" in query else "read"
         granted = permissions.get("contents", "none")
@@ -255,7 +284,8 @@ def _check_installation_token_route(token, method: str, path: str, query: str = 
     elif fine_grained is not None:
         # An App permission the job-token map has no name for: GitHub
         # grants repository variables and secrets to Apps as their own
-        # permissions (actions_variables, secrets), not under actions.
+        # permissions (actions_variables, secrets), not under actions, and
+        # repository settings under administration.
         granted = permissions.get(fine_grained, "none")
         if granted == "write" or (granted == "read" and is_read):
             return
@@ -267,6 +297,62 @@ def _check_installation_token_route(token, method: str, path: str, query: str = 
             status_code=403,
             detail=f"Resource not accessible by integration: {refusal}",
         )
+
+
+def installation_token_grant(request, account_login: str, permission: str) -> str | None:
+    """For a request made with an installation token: the level ("write",
+    "read" or "none") of ``permission`` the token grants on
+    ``account_login``'s organization-level routes. None for any other
+    credential, so the caller's usual checks apply.
+
+    GitHub authorizes an App on an organization's routes (creating its
+    repositories, reading its memberships or installations) by the
+    installation's permissions on that organization, not by membership:
+    the App's bot is never a member.
+    """
+    token = getattr(request.state, "installation_token", None)
+    if token is None:
+        return None
+    if str(token.installation.account_login).lower() != str(account_login).lower():
+        return "none"
+    level = str((token.permissions or {}).get(permission, "none")).lower()
+    return "write" if level == "admin" else level
+
+
+def installation_token_covers(request, full_name: str, permission: str = "contents") -> bool:
+    """False when the request used an installation token that does not reach
+    ``full_name`` (outside its repository selection or account) or lacks
+    ``permission``; True otherwise, including for any other credential.
+
+    Routes that read a second repository (a fork's head, say) need this:
+    the authentication chokepoint checks only the repository in the path.
+    """
+    token = getattr(request.state, "installation_token", None) if request is not None else None
+    if token is None:
+        return True
+    selected = [str(item).lower() for item in (token.repositories or [])]
+    if selected:
+        if full_name.lower() not in selected:
+            return False
+    elif full_name.split("/", 1)[0].lower() != str(token.installation.account_login).lower():
+        return False
+    level = str((token.permissions or {}).get(permission, "none")).lower()
+    return level in ("read", "write", "admin")
+
+
+def require_installation_grant(request, account_login: str, permission: str, write: bool) -> bool:
+    """True when an installation token grants ``permission`` on the account
+    at the needed level; raises GitHub's integration refusal when it does
+    not; False when the request did not use an installation token."""
+    level = installation_token_grant(request, account_login, permission)
+    if level is None:
+        return False
+    if level == "write" or (level == "read" and not write):
+        return True
+    raise HTTPException(
+        status_code=403,
+        detail=f"Resource not accessible by integration: the token's {permission} permission is {level}",
+    )
 
 
 async def require_auth(

@@ -85,6 +85,10 @@ class PRBranchRef(BaseModel):
     label: str
     ref: str
     sha: str
+    user: Optional[dict] = None
+    # The repository holding the branch. A fork's pull request names the
+    # fork here, and clients tell a fork apart by comparing the two.
+    repo: Optional[dict] = None
 
     model_config = ConfigDict(from_attributes=True)
 

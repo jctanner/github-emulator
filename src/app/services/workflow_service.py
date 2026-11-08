@@ -93,6 +93,7 @@ async def detect_workflows(repo_disk_path: str, ref: str = "HEAD") -> list[dict]
 
 
 from app.services.webhook_service import schedule_webhooks
+from app.services.cross_repo_pulls import same_repository_head, sync_head_ref
 from app.services.workflow_triggers import evaluate_trigger
 
 def expand_matrix(job_config: dict) -> list[dict]:
@@ -1054,7 +1055,21 @@ def _user_payload(user: User | None) -> dict | None:
 
 
 def _repository_payload(repository: Repository) -> dict:
-    owner = _user_payload(repository.owner)
+    # An organization's repository is owned by the organization, not by the
+    # member (or App) that created it, which is what ``Repository.owner`` is.
+    organization = repository.__dict__.get("organization") if repository.owner_type == "Organization" else None
+    if organization is not None:
+        owner = {
+            "login": organization.login,
+            "id": organization.id,
+            "node_id": f"O_{organization.id}",
+            "type": "Organization",
+            "site_admin": False,
+        }
+    elif repository.owner_type == "Organization":
+        owner = {"login": repository.full_name.split("/", 1)[0], "type": "Organization", "site_admin": False}
+    else:
+        owner = _user_payload(repository.owner)
     return {
         "id": repository.id,
         "node_id": f"R_{repository.id}",
@@ -1063,9 +1078,11 @@ def _repository_payload(repository: Repository) -> dict:
         "private": bool(repository.private),
         "default_branch": repository.default_branch,
         "description": repository.description,
+        "fork": bool(repository.fork),
         "owner": owner,
         "html_url": f"{settings.BASE_URL}/{repository.full_name}",
         "url": f"{settings.BASE_URL}/api/v3/repos/{repository.full_name}",
+        "clone_url": f"{settings.BASE_URL}/{repository.full_name}.git",
     }
 
 
@@ -1112,15 +1129,25 @@ def _issue_payload(issue, repository: Repository) -> dict:
 
 
 def _pull_request_payload(pr, issue, repository: Repository) -> dict:
+    # A fork's pull request names the fork as its head repository; workflows
+    # tell a fork apart by comparing head.repo.full_name with base's.
+    head_repository = repository
+    if pr.head_repo_id is not None and pr.head_repo_id != repository.id:
+        # Loaded with the pull request (selectin). Should it not be, the
+        # head is reported as an unnamed other repository: a fork, never
+        # mistaken for the base.
+        head_repository = pr.__dict__.get("head_repository")
     base = {
         "ref": pr.base_ref,
         "sha": pr.base_sha,
         "label": f"{repository.full_name.split('/', 1)[0]}:{pr.base_ref}",
+        "repo": _repository_payload(repository),
     }
     head = {
         "ref": pr.head_ref,
         "sha": pr.head_sha,
-        "label": f"{repository.full_name.split('/', 1)[0]}:{pr.head_ref}",
+        "label": f"{head_repository.full_name.split('/', 1)[0]}:{pr.head_ref}" if head_repository else pr.head_ref,
+        "repo": _repository_payload(head_repository) if head_repository else {"id": pr.head_repo_id, "full_name": "", "fork": True},
     }
     return {
         "id": pr.id,
@@ -1404,6 +1431,7 @@ async def process_push_event(
         .where(
             PullRequest.repo_id == repository.id,
             PullRequest.head_ref == head_branch,
+            same_repository_head(repository.id),
             Issue.state == "open",
             PullRequest.merged.is_(False),
         )
@@ -1431,6 +1459,54 @@ async def process_push_event(
         )
         runs.extend(await dispatch_event(
             db, repository, user, "pull_request_target", "synchronize",
+            pr_payload, ref=pr.base_ref, sha=base_sha,
+        ))
+    runs.extend(await _synchronize_fork_pull_requests(db, repository, user, head_branch, head_sha))
+    return runs
+
+
+async def _synchronize_fork_pull_requests(
+    db: AsyncSession, fork: Repository, user: User, branch: str, head_sha: str,
+) -> list[WorkflowRun]:
+    """A push to a fork's branch moves every open pull request that branch
+    heads in another repository of the network: the base repository's
+    refs/pull/N/head follows it, and the base repository raises
+    pull_request_target ``synchronize``, as GitHub does."""
+    result = await db.execute(
+        select(PullRequest)
+        .join(Issue, PullRequest.issue_id == Issue.id)
+        .where(
+            PullRequest.head_repo_id == fork.id,
+            PullRequest.repo_id != fork.id,
+            PullRequest.head_ref == branch,
+            Issue.state == "open",
+            PullRequest.merged.is_(False),
+        )
+    )
+    runs: list[WorkflowRun] = []
+    for pr in result.scalars().all():
+        base_repository = (
+            await db.execute(select(Repository).where(Repository.id == pr.repo_id))
+        ).scalar_one_or_none()
+        if base_repository is None:
+            continue
+        issue = pr.issue
+        synced = await sync_head_ref(base_repository, fork, branch, issue.number)
+        new_head = synced or head_sha
+        if pr.head_sha == new_head:
+            continue
+        pr.head_sha = new_head
+        pr.last_push_by_id = user.id
+        # Recorded now: dispatch_event commits only when it starts a run, and
+        # a git push's caller may not commit after this.
+        await db.commit()
+        base_sha = await get_ref_sha(base_repository.disk_path, pr.base_ref) or pr.base_sha
+        pr_payload = build_activity_payload(
+            base_repository, user, "synchronize", issue=issue,
+            pull_request=pr, ref=f"refs/heads/{pr.base_ref}", sha=base_sha,
+        )
+        runs.extend(await dispatch_event(
+            db, base_repository, user, "pull_request_target", "synchronize",
             pr_payload, ref=pr.base_ref, sha=base_sha,
         ))
     return runs

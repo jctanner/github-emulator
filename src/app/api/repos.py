@@ -7,7 +7,7 @@ from fastapi import APIRouter, HTTPException, Query, Request, Response
 from sqlalchemy import select, func as sa_func
 
 from app.services import repository_access
-from app.api.deps import AuthUser, CurrentUser, DbSession
+from app.api.deps import AuthUser, CurrentUser, DbSession, require_installation_grant
 from app.api.pagination import pagination_links
 from app.config import settings
 from app.db_loaders import repository_identity_options
@@ -293,7 +293,13 @@ async def delete_repo(owner: str, repo: str, user: AuthUser, db: DbSession):
     # the delete_repo token scope, which the emulator does not enforce, so
     # widening this to every repository admin would let a plain "repo" token
     # delete another member's repository.
-    if user.id != repository.owner_id and not user.site_admin:
+    # An App deletes with administration: write on its installation; the
+    # token's own grant was checked at the authentication chokepoint.
+    if (
+        user.id != repository.owner_id
+        and not user.site_admin
+        and await repository_access.installation_grant(db, repository, user, "administration") != "write"
+    ):
         raise HTTPException(status_code=403, detail="Must have admin rights to delete")
 
     await delete_repository(db, repository)
@@ -475,9 +481,13 @@ async def list_org_repos(
     "/orgs/{org}/repos", status_code=201, response_model=RepoResponse
 )
 async def create_org_repo(
-    org: str, body: dict, user: AuthUser, db: DbSession
+    org: str, body: dict, request: Request, user: AuthUser, db: DbSession
 ):
-    """Create a repository under an organisation."""
+    """Create a repository under an organisation.
+
+    A member may; so may an App installed on the organization whose token
+    grants ``administration: write``, as on GitHub. Its bot is not a member.
+    """
     result = await db.execute(
         select(Organization).where(Organization.login == org)
     )
@@ -485,15 +495,16 @@ async def create_org_repo(
     if organisation is None:
         raise HTTPException(status_code=404, detail="Organization not found")
 
-    membership_result = await db.execute(
-        select(OrgMembership).where(
-            OrgMembership.org_id == organisation.id,
-            OrgMembership.user_id == user.id,
-            OrgMembership.state == "active",
+    if not require_installation_grant(request, organisation.login, "administration", write=True):
+        membership_result = await db.execute(
+            select(OrgMembership).where(
+                OrgMembership.org_id == organisation.id,
+                OrgMembership.user_id == user.id,
+                OrgMembership.state == "active",
+            )
         )
-    )
-    if membership_result.scalar_one_or_none() is None:
-        raise HTTPException(status_code=403, detail="Must be an organization member")
+        if membership_result.scalar_one_or_none() is None:
+            raise HTTPException(status_code=403, detail="Must be an organization member")
 
     name = body.get("name")
     if not name:

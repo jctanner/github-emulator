@@ -1,9 +1,9 @@
 """Organization endpoints."""
 
-from fastapi import APIRouter, HTTPException, Query, Response
+from fastapi import APIRouter, HTTPException, Query, Request, Response
 from sqlalchemy import delete as sa_delete, func as sa_func, select
 
-from app.api.deps import AuthUser, CurrentUser, DbSession
+from app.api.deps import AuthUser, CurrentUser, DbSession, require_installation_grant
 from app.config import settings
 from app.models.organization import Organization, OrgMembership, OrgRoleAssignment
 from app.models.user import User
@@ -312,11 +312,14 @@ async def check_org_member(
 
 
 @router.get("/orgs/{org}/memberships/{username}")
-async def get_org_membership(org: str, username: str, user: AuthUser, db: DbSession):
-    """One user's membership. Visible to the user, org members and site admins."""
+async def get_org_membership(org: str, username: str, request: Request, user: AuthUser, db: DbSession):
+    """One user's membership. Visible to the user, org members, site admins,
+    and an App installed on the organization with ``members: read``."""
     organisation = await _get_org_or_404(org, db)
     target = await _get_user_or_404(username, db)
-    if target.id != user.id and not user.site_admin:
+    if require_installation_grant(request, organisation.login, "members", write=False):
+        pass
+    elif target.id != user.id and not user.site_admin:
         own = await _get_membership(organisation, user, db)
         if own is None or own.state != "active":
             raise HTTPException(

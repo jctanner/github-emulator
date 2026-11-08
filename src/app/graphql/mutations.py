@@ -11,6 +11,7 @@ import strawberry
 from strawberry.types import Info
 from sqlalchemy import select
 
+from app.services.cross_repo_pulls import same_repository_head
 from app.graphql.types.user import GitHubUser, user_from_model
 from app.graphql.types.repository import Repository, repository_from_model
 from app.graphql.types.issue import Issue, issue_from_model, IssueComment, comment_from_model
@@ -91,6 +92,9 @@ class CreatePullRequestInput:
     title: str
     body: Optional[str] = None
     head_ref_name: str = ""
+    # The repository holding head_ref_name, when it is not repository_id:
+    # a fork in the same network (a cross-repository pull request).
+    head_repository_id: Optional[strawberry.ID] = None
     base_ref_name: str = ""
     draft: bool = False
     maintainer_can_modify: bool = True
@@ -956,14 +960,39 @@ class Mutation:
         if not input.base_ref_name:
             raise ValueError("base_ref_name is required")
 
+        from app.services import cross_repo_pulls
+        from app.services.repository_access import can_read
+
+        head_repo = repo
+        if input.head_repository_id is not None:
+            head_repo_id = _decode_node_id(input.head_repository_id)
+            if head_repo_id != repo.id:
+                head_repo = (
+                    await db.execute(select(RepoModel).where(RepoModel.id == head_repo_id))
+                ).scalar_one_or_none()
+                from app.api.deps import installation_token_covers
+
+                if (
+                    head_repo is None
+                    or not await can_read(db, head_repo, current_user)
+                    or not installation_token_covers(info.context.get("request"), head_repo.full_name)
+                ):
+                    raise ValueError(f"Could not resolve to a Repository with the global id of '{input.head_repository_id}'.")
+                if not await cross_repo_pulls.same_network(db, repo, head_repo):
+                    raise ValueError(
+                        f"Head repository {head_repo.full_name} is not in the same network as {repo.full_name}"
+                    )
+
         # Look up head branch SHA
         head_result = await db.execute(
             select(Branch).where(
-                Branch.repo_id == repo.id,
+                Branch.repo_id == head_repo.id,
                 Branch.name == input.head_ref_name,
             )
         )
         head_branch = head_result.scalar_one_or_none()
+        if head_branch is None and head_repo.id != repo.id:
+            raise ValueError(f"Head ref {input.head_ref_name} does not exist in {head_repo.full_name}")
         head_sha = head_branch.sha if head_branch else "0" * 40
 
         # Look up base branch SHA
@@ -998,7 +1027,7 @@ class Mutation:
             repo_id=repo.id,
             head_ref=input.head_ref_name,
             head_sha=head_sha,
-            head_repo_id=repo.id,
+            head_repo_id=head_repo.id,
             base_ref=input.base_ref_name,
             base_sha=base_sha,
             draft=input.draft,
@@ -1008,6 +1037,13 @@ class Mutation:
         db.add(new_pr)
 
         repo.open_issues_count += 1
+
+        if head_repo.id != repo.id:
+            # The base repository carries the fork's head as
+            # refs/pull/N/head, as on GitHub.
+            synced = await cross_repo_pulls.sync_head_ref(repo, head_repo, input.head_ref_name, issue_number)
+            if synced:
+                new_pr.head_sha = synced
 
         await db.commit()
         await db.refresh(new_pr)
@@ -1744,6 +1780,7 @@ class Mutation:
                 heads = (await db.execute(
                     select(PRModel).join(IssueModel, PRModel.issue_id == IssueModel.id).where(
                         PRModel.repo_id == repo.id, PRModel.head_ref == update.branch, IssueModel.state == "open",
+                        same_repository_head(repo.id),
                     )
                 )).scalars().all()
                 for pull_request in heads:

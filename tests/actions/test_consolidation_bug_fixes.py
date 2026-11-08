@@ -55,6 +55,19 @@ async def _repo_with_workflow(client, token, db_session, name="fix-repo", workfl
     repository = (await db_session.execute(
         select(Repository).where(Repository.full_name == full_name)
     )).scalar_one()
+    # Committing the workflow through the contents API is itself a push, which
+    # starts a run, as on GitHub. The tests drive their own pushes, so the
+    # setup commit's run is cleared to leave them the only work queued.
+    setup_runs = (await db_session.execute(
+        select(WorkflowRun).where(WorkflowRun.repo_id == repository.id)
+    )).scalars().all()
+    for run in setup_runs:
+        for job in (await db_session.execute(
+            select(WorkflowJob).where(WorkflowJob.run_id == run.id)
+        )).scalars().all():
+            await db_session.delete(job)
+        await db_session.delete(run)
+    await db_session.commit()
     return repository
 
 

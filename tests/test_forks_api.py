@@ -65,8 +65,9 @@ async def test_fork_preserves_description(client, test_user, test_token, admin_u
 
 
 @pytest.mark.asyncio
-async def test_duplicate_fork_fails(client, test_user, test_token, admin_user, admin_token):
-    """Creating a duplicate fork returns 422."""
+async def test_duplicate_fork_returns_the_existing_fork(client, test_user, test_token, admin_user, admin_token):
+    """Asking again for an existing fork returns it (202), as GitHub does;
+    a name taken by a repository that is not that fork is refused (422)."""
     await client.post(
         f"{API}/user/repos",
         json={"name": "fork-dupe"},
@@ -82,7 +83,15 @@ async def test_duplicate_fork_fails(client, test_user, test_token, admin_user, a
         json={},
         headers=auth_headers(admin_token),
     )
-    assert resp.status_code == 422
+    assert resp.status_code == 202
+    assert resp.json()["full_name"] == "admin/fork-dupe"
+    await client.post(f"{API}/user/repos", json={"name": "taken"}, headers=auth_headers(admin_token))
+    clash = await client.post(
+        f"{API}/repos/testuser/fork-dupe/forks",
+        json={"name": "taken"},
+        headers=auth_headers(admin_token),
+    )
+    assert clash.status_code == 422
 
 
 @pytest.mark.asyncio

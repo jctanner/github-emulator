@@ -199,6 +199,104 @@ def _index_value(value: object, key: object) -> object:
     return None
 
 
+# The job status functions. A job-level condition without any of them is
+# evaluated as ``success() && (condition)`` on GitHub, and its job is skipped
+# when a job it needs did not succeed; one that names a status function is
+# evaluated even then (``always()``, ``!cancelled()``, ``failure()``).
+_STATUS_FUNCTIONS = ("success", "failure", "cancelled", "always")
+_STATUS_CALL_RE = re.compile(r"\b(?:success|failure|cancelled|always)\s*\(\s*\)")
+
+# Context keys the scheduler supplies for the status functions: the job's own
+# ``needs:`` keys and whether the run was cancelled.
+JOB_NEEDS_KEY = "__job_needs__"
+RUN_CANCELLED_KEY = "__run_cancelled__"
+
+
+def uses_status_function(condition: object) -> bool:
+    """Whether a job-level ``if`` names a status function."""
+    return isinstance(condition, str) and bool(_STATUS_CALL_RE.search(condition))
+
+
+def job_status(name: str, context: dict) -> bool:
+    """``success()``, ``failure()``, ``cancelled()`` or ``always()`` for a
+    job, from the results of the jobs it needs."""
+    if name == "always":
+        return True
+    cancelled = bool(context.get(RUN_CANCELLED_KEY))
+    if name == "cancelled":
+        return cancelled
+    needs = context.get("needs") or {}
+    keys = context.get(JOB_NEEDS_KEY)
+    if keys is None:
+        keys = list(needs)
+    results = [str((needs.get(key) or {}).get("result") or "") for key in keys]
+    if name == "failure":
+        return any(result == "failure" for result in results)
+    return not cancelled and all(result == "success" for result in results)
+
+
+def _string(value: object) -> str:
+    if value is None:
+        return ""
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    if isinstance(value, float) and value.is_integer():
+        return str(int(value))
+    return str(value)
+
+
+def _number(value: object) -> float:
+    """Actions' coercion of a value to a number for a mixed-type comparison."""
+    if value is None:
+        return 0.0
+    if isinstance(value, bool):
+        return 1.0 if value else 0.0
+    if isinstance(value, (int, float)):
+        return float(value)
+    if isinstance(value, str):
+        text = value.strip()
+        if not text:
+            return 0.0
+        try:
+            if text.lower().startswith("0x"):
+                return float(int(text, 16))
+            return float(text)
+        except ValueError:
+            return float("nan")
+    return float("nan")  # arrays and objects
+
+
+def _compare(operator: str, left: object, right: object) -> bool:
+    """Actions' comparison: strings case-insensitively; values of different
+    types (null, booleans, numbers, strings) as numbers, so ``null == ''``;
+    arrays and objects equal only to themselves."""
+    if isinstance(left, (list, dict)) or isinstance(right, (list, dict)):
+        if operator == "==":
+            return left is right
+        if operator == "!=":
+            return left is not right
+        return False
+    if isinstance(left, str) and isinstance(right, str):
+        a, b = left.lower(), right.lower()
+    elif type(left) is type(right) and left is not None and not isinstance(left, (int, float)):
+        a, b = left, right
+    else:
+        a, b = _number(left), _number(right)
+        if a != a or b != b:  # NaN: every comparison but != is false
+            return operator == "!="
+    if operator == "==":
+        return a == b
+    if operator == "!=":
+        return a != b
+    if operator == "<":
+        return a < b
+    if operator == ">":
+        return a > b
+    if operator == "<=":
+        return a <= b
+    return a >= b
+
+
 def _parse_json(value: object) -> object:
     """Implement ``fromJSON``: parse a JSON string, passing through non-strings."""
     if isinstance(value, (dict, list)):
@@ -260,7 +358,7 @@ class _IfExpressionParser:
     # ``github.event.action`` still tokenizes as a single name, because the
     # name alternative requires a leading letter and consumes its own dots.
     _TOKEN_RE = re.compile(
-        r"(?P<space>\s+)|(?P<op>\|\||&&|==|!=|[!(),\[\].])|"
+        r"(?P<space>\s+)|(?P<op>\|\||&&|==|!=|<=|>=|[<>!(),\[\].])|"
         r"(?P<string>'(?:\\.|[^'])*'|\"(?:\\.|[^\"])*\")|"
         r"(?P<number>\d+(?:\.\d+)?)|(?P<name>[A-Za-z_][A-Za-z0-9_.-]*)"
     )
@@ -330,11 +428,11 @@ class _IfExpressionParser:
 
     def _parse_comparison(self) -> object:
         left = self._parse_primary()
-        if self._peek("==") or self._peek("!="):
-            operator = self._take()[1]
-            right = self._parse_primary()
-            equal = left == right
-            return equal if operator == "==" else not equal
+        for operator in ("==", "!=", "<=", ">=", "<", ">"):
+            if self._peek(operator):
+                self._take(operator)
+                right = self._parse_primary()
+                return _compare(operator, left, right)
         return left
 
     def _parse_primary(self) -> object:
@@ -390,17 +488,22 @@ class _IfExpressionParser:
             else:
                 return value
 
-    @staticmethod
-    def _call(name: str, arguments: list[object]) -> object:
+    def _call(self, name: str, arguments: list[object]) -> object:
+        if name in _STATUS_FUNCTIONS and not arguments:
+            return job_status(name, self.context)
         if name == "startsWith" and len(arguments) == 2:
-            return str(arguments[0] or "").startswith(str(arguments[1] or ""))
+            return _string(arguments[0]).lower().startswith(_string(arguments[1]).lower())
         if name == "endsWith" and len(arguments) == 2:
-            return str(arguments[0] or "").endswith(str(arguments[1] or ""))
+            return _string(arguments[0]).lower().endswith(_string(arguments[1]).lower())
         if name == "contains" and len(arguments) == 2:
             haystack, needle = arguments
-            return needle in haystack if isinstance(haystack, (list, dict, str)) else False
-        if name == "always" and not arguments:
-            return True
+            # Case-insensitive, as on GitHub: a string contains a substring;
+            # an array contains an item equal to the needle.
+            if isinstance(haystack, list):
+                return any(_compare("==", item, needle) for item in haystack)
+            if isinstance(haystack, dict):
+                return False
+            return _string(needle).lower() in _string(haystack).lower()
         if name == "format" and arguments:
             return _format_expression(arguments[0], arguments[1:])
         if name == "fromJSON" and len(arguments) == 1:

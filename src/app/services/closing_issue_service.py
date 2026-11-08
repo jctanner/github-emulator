@@ -60,7 +60,8 @@ async def _reference_texts(
         return texts
 
     base_ref = getattr(pull_request, "resolved_base_ref", pull_request.base_ref)
-    head_ref = getattr(pull_request, "resolved_head_ref", pull_request.head_ref)
+    # A fork's head is refs/pull/N/head here, not a branch.
+    head_ref = getattr(pull_request, "git_head_ref", None) or getattr(pull_request, "resolved_head_ref", pull_request.head_ref)
     commits = await get_log(
         repository.disk_path,
         ref=f"{base_ref}..{head_ref}",

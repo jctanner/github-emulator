@@ -5,9 +5,8 @@ access to a repository is what the installation carries, not a collaborator
 row. The emulator answered "not a collaborator" for every bot: the
 permission endpoint returned 404 and a git push was refused, so an
 installation token with contents: write could not do what it was minted for.
-Breadboard's onboarding button is the consumer: Fullsend's CLI asks the
-permission endpoint whether the authenticated identity may push before it
-commits a scaffold.
+The permission endpoint, though, does not report an installation's grant
+on GitHub, and no longer does here.
 """
 
 import time
@@ -56,20 +55,21 @@ async def test_an_all_repositories_installation_covers_the_accounts_repositories
     assert elsewhere.status_code == 422
 
 
-async def test_the_permission_endpoint_reports_the_installations_grant(client, admin_token, test_repo_with_init, test_token):
+async def test_the_permission_endpoint_does_not_report_an_installations_grant(client, admin_token, test_repo_with_init, test_token):
+    """GitHub's collaborator permission endpoint does not report what an
+    installation grants its bot (Fullsend's CLI relies on that). Reporting
+    it made an App's bot an authorized actor in Fullsend's dispatch."""
     owner, repo, _ = test_repo_with_init
     await _app(client, admin_token, "2002", "writer", {"contents": "write"}, [])
     resp = await client.get(f"{API}/repos/{owner}/{repo}/collaborators/writer[bot]/permission", headers=auth_headers(test_token))
-    assert resp.status_code == 200, resp.text
-    assert resp.json()["role_name"] == "write"
-    assert resp.json()["user"]["login"] == "writer[bot]"
+    assert resp.status_code == 404, resp.text
 
 
 async def test_a_read_only_installation_reports_read_and_cannot_push(client, admin_token, db_session, test_repo_with_init, test_token):
     owner, repo, _ = test_repo_with_init
     await _app(client, admin_token, "2003", "reader", {"contents": "read"}, [f"{owner}/{repo}"])
     resp = await client.get(f"{API}/repos/{owner}/{repo}/collaborators/reader[bot]/permission", headers=auth_headers(test_token))
-    assert resp.json()["role_name"] == "read"
+    assert resp.status_code == 404
 
     from app.models.repository import Repository
     repository = (await db_session.execute(select(Repository).where(Repository.full_name == f"{owner}/{repo}"))).scalar_one()

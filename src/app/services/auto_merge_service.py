@@ -79,7 +79,7 @@ async def process_auto_merge(
     try:
         merge_sha = await _perform_git_merge(
             disk_path=repository.disk_path,
-            head_ref=pull_request.resolved_head_ref,
+            head_ref=getattr(pull_request, "git_head_ref", pull_request.resolved_head_ref),
             base_ref=pull_request.resolved_base_ref,
             merge_method=merge_method,
             commit_message=body,
@@ -92,7 +92,7 @@ async def process_auto_merge(
     if repository.disk_path and os.path.isdir(repository.disk_path) and merge_sha is None:
         from app.services.git_service import get_ref_sha
 
-        actual_head = await get_ref_sha(repository.disk_path, pull_request.resolved_head_ref)
+        actual_head = await get_ref_sha(repository.disk_path, getattr(pull_request, "git_head_ref", pull_request.resolved_head_ref))
         actual_base = await get_ref_sha(repository.disk_path, pull_request.resolved_base_ref)
         if actual_head and actual_base:
             return False

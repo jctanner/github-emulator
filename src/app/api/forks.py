@@ -4,10 +4,12 @@ import asyncio
 import os
 import shutil
 
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, HTTPException, Query, Request
+from fastapi.responses import JSONResponse
 from sqlalchemy import select
 
-from app.api.deps import AuthUser, CurrentUser, DbSession, get_repo_or_404
+from app.api.deps import AuthUser, CurrentUser, DbSession, get_repo_or_404, require_installation_grant
+from app.models.organization import Organization, OrgMembership
 from app.config import settings
 from app.models.repository import Repository
 from app.api.repos import _repo_json
@@ -20,28 +22,53 @@ BASE = settings.BASE_URL
 
 @router.post("/repos/{owner}/{repo}/forks", status_code=202)
 async def create_fork(
-    owner: str, repo: str, body: dict, user: AuthUser, db: DbSession,
+    owner: str, repo: str, body: dict, request: Request, user: AuthUser, db: DbSession,
 ):
-    """Create a fork."""
+    """Create a fork, of the caller's own or in an organization.
+
+    A fork into ``organization`` is owned by that organization, which the
+    caller must be able to create repositories in: an active member, or an
+    App installed on it with ``administration: write``. Asking again for a
+    fork that already exists returns it, as GitHub does.
+    """
     parent = await get_repo_or_404(owner, repo, db)
 
     target_org = body.get("organization")
+    organization = None
+    if target_org:
+        organization = (
+            await db.execute(select(Organization).where(Organization.login == target_org))
+        ).scalar_one_or_none()
+        if organization is None:
+            raise HTTPException(status_code=422, detail="Validation Failed: organization is invalid")
+        target_org = organization.login
+        if not require_installation_grant(request, organization.login, "administration", write=True):
+            membership = (await db.execute(select(OrgMembership).where(
+                OrgMembership.org_id == organization.id,
+                OrgMembership.user_id == user.id,
+                OrgMembership.state == "active",
+            ))).scalar_one_or_none()
+            if membership is None and not user.site_admin:
+                raise HTTPException(status_code=403, detail="Must be an organization member")
     fork_owner_login = target_org or user.login
     fork_name = body.get("name", parent.name)
     full_name = f"{fork_owner_login}/{fork_name}"
 
     # Check if fork already exists
-    existing = await db.execute(
+    existing = (await db.execute(
         select(Repository).where(Repository.full_name == full_name)
-    )
-    if existing.scalar_one_or_none() is not None:
+    )).scalar_one_or_none()
+    if existing is not None:
+        if existing.fork and existing.parent_id == parent.id:
+            return JSONResponse(status_code=202, content=_repo_json(existing, BASE))
         raise HTTPException(status_code=422, detail="Repository already exists")
 
     disk_path = os.path.join(settings.DATA_DIR, "repos", fork_owner_login, f"{fork_name}.git")
 
     fork = Repository(
         owner_id=user.id,
-        owner_type="User",
+        owner_type="Organization" if organization is not None else "User",
+        organization_id=organization.id if organization is not None else None,
         name=fork_name,
         full_name=full_name,
         description=parent.description,

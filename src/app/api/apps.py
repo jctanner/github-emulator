@@ -11,7 +11,7 @@ from fastapi.responses import JSONResponse
 from jose import JWTError, jwt
 from sqlalchemy import select
 
-from app.api.deps import AuthUser, DbSession, CurrentUser, get_current_user, get_repo_or_404
+from app.api.deps import AuthUser, DbSession, CurrentUser, get_current_user, get_repo_or_404, require_installation_grant
 from app.api.orgs import _is_org_admin
 from app.api.pagination import pagination_links
 from app.config import settings
@@ -307,6 +307,41 @@ async def create_installation_token(installation_id: int, request: Request, body
     installation = (await db.execute(select(AppInstallation).where(AppInstallation.id == installation_id, AppInstallation.app_id == app.id))).scalar_one_or_none()
     if installation is None:
         raise HTTPException(status_code=404, detail="Installation not found")
+    return await _issue_installation_token(db, installation, body, timedelta(hours=1))
+
+
+# The longest lifetime the admin route below will issue.
+ADMIN_TOKEN_MAX_LIFETIME = timedelta(hours=24)
+
+
+@router.post("/admin/apps/{app_id}/installations/{installation_id}/access_tokens", status_code=201)
+async def create_admin_installation_token(app_id: str, installation_id: int, body: dict, user: AuthUser, db: DbSession):
+    """Issue an installation token without the App's JWT, for a site admin.
+
+    Not a GitHub route. It lets a development harness act as an App's bot
+    for a run longer than GitHub's fixed hour: ``expires_in`` (seconds, at
+    most a day) sets the lifetime. Repositories and permissions are scoped
+    exactly as on the GitHub route.
+    """
+    if not user.site_admin:
+        raise HTTPException(status_code=403, detail="site admin required")
+    app = (await db.execute(select(GitHubApp).where(GitHubApp.app_id == app_id))).scalar_one_or_none()
+    if app is None:
+        raise HTTPException(status_code=404, detail="App not found")
+    installation = (await db.execute(select(AppInstallation).where(AppInstallation.id == installation_id, AppInstallation.app_id == app.id))).scalar_one_or_none()
+    if installation is None:
+        raise HTTPException(status_code=404, detail="Installation not found")
+    raw_lifetime = body.get("expires_in", 3600)
+    if isinstance(raw_lifetime, bool) or not isinstance(raw_lifetime, int) or raw_lifetime <= 0:
+        raise HTTPException(status_code=422, detail="expires_in must be a positive number of seconds")
+    lifetime = timedelta(seconds=raw_lifetime)
+    if lifetime > ADMIN_TOKEN_MAX_LIFETIME:
+        raise HTTPException(status_code=422, detail="expires_in may be at most 86400 seconds")
+    await ensure_app_bot(db, app)
+    return await _issue_installation_token(db, installation, body, lifetime)
+
+
+async def _issue_installation_token(db, installation: AppInstallation, body: dict, lifetime: timedelta) -> dict:
     requested = body.get("repositories") or installation.repositories
     if not isinstance(requested, list):
         raise HTTPException(status_code=422, detail="requested repositories must be a list")
@@ -333,7 +368,7 @@ async def create_installation_token(installation_id: int, request: Request, body
             )
     permissions = {str(k): str(v) for k, v in requested.items()}
     raw = "ghs_" + secrets.token_urlsafe(30)
-    expires = datetime.now(timezone.utc) + timedelta(hours=1)
+    expires = datetime.now(timezone.utc) + lifetime
     db.add(AppInstallationToken(installation_id=installation.id, token_hash=hashlib.sha256(raw.encode()).hexdigest(), token_prefix=raw[:8], repositories=sorted(set(requested_full)), permissions=permissions, expires_at=expires))
     await db.commit()
     return {"token": raw, "expires_at": _fmt_dt(expires), "permissions": permissions, "repository_selection": "selected" if installation.repositories else "all", "repositories": [{"full_name": item} for item in sorted(set(requested_full))]}
@@ -430,11 +465,15 @@ async def org_installations(
     per_page: int = Query(30, ge=1, le=100),
     page: int = Query(1, ge=1),
 ):
-    """Every App installation on an organization; organization admins only."""
+    """Every App installation on an organization: for organization admins,
+    and for an App installed on it with ``organization_administration:
+    read``, as on GitHub."""
     organisation = (await db.execute(select(Organization).where(Organization.login == org))).scalar_one_or_none()
     if organisation is None:
         raise HTTPException(status_code=404, detail="Not Found")
-    if not await _is_org_admin(organisation, user, db):
+    if require_installation_grant(request, organisation.login, "organization_administration", write=False):
+        pass
+    elif not await _is_org_admin(organisation, user, db):
         raise HTTPException(status_code=403, detail="You must be an admin of this organization")
     items = (
         await db.execute(

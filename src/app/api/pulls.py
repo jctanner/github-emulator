@@ -16,7 +16,7 @@ from sqlalchemy import select, func as sa_func
 from sqlalchemy.orm import joinedload, raiseload, selectinload
 
 from app.api.deps import (
-    AuthUser, CurrentUser, DbSession, get_current_user, get_repo_or_404,
+    AuthUser, CurrentUser, DbSession, get_current_user, get_repo_or_404, installation_token_covers,
 )
 from app.api.pagination import pagination_links
 from app.config import settings
@@ -148,6 +148,13 @@ def _pr_query(*, include_issue_labels: bool = False):
     return select(PullRequest).options(*options)
 
 
+def _repo_json(repository: Repository, base_url: str) -> dict:
+    """A pull request's head or base repository, as GitHub embeds it."""
+    from app.api.repos import _repo_json as repo_json
+
+    return repo_json(repository, base_url)
+
+
 def _pr_json(pr: PullRequest, base_url: str, *, include_stats: bool = True) -> dict:
     """Build a GitHub-compatible pull-request JSON object.
 
@@ -223,14 +230,14 @@ def _pr_json(pr: PullRequest, base_url: str, *, include_stats: bool = True) -> d
             "ref": head_ref,
             "sha": head_sha,
             "user": _repo_owner_json(head_repo, base_url) if head_repo else user_simple,
-            "repo": None,  # Simplified
+            "repo": _repo_json(head_repo, base_url) if head_repo else None,
         },
         "base": {
             "label": f"{owner_login}:{base_ref}",
             "ref": base_ref,
             "sha": base_sha,
             "user": _repo_owner_json(repo, base_url) if repo else None,
-            "repo": None,  # Simplified
+            "repo": _repo_json(repo, base_url) if repo else None,
         },
         "_links": {
             "self": {"href": pr_url},
@@ -271,15 +278,30 @@ async def _attach_resolved_refs_many(prs: list[PullRequest], repository: Reposit
     A list response used to spawn two or more ``git rev-parse`` processes per
     row, about 0.1 s each, so a 30-row page took seconds.
     """
+    from app.services.cross_repo_pulls import is_cross_repository, pull_ref
+
     owner_login = _repo_namespace(repository)
     resolved: dict[str, tuple[str, str | None]] = {}
     if prs and repository.disk_path and os.path.isdir(repository.disk_path):
-        refs = [ref for pr in prs for ref in (pr.head_ref, pr.base_ref)]
+        # A fork's head is not a branch here; the base repository holds it
+        # as refs/pull/N/head.
+        refs = [
+            ref for pr in prs
+            for ref in ((pull_ref(pr.issue.number) if is_cross_repository(pr) else pr.head_ref), pr.base_ref)
+        ]
         resolved = await normalize_branch_refs(repository.disk_path, refs, owner_login)
     for pr in prs:
-        head_ref, resolved_head_sha = resolved.get(pr.head_ref, (pr.head_ref, None))
+        if is_cross_repository(pr):
+            git_head = pull_ref(pr.issue.number)
+            _, resolved_head_sha = resolved.get(git_head, (git_head, None))
+            head_ref = pr.head_ref
+        else:
+            head_ref, resolved_head_sha = resolved.get(pr.head_ref, (pr.head_ref, None))
+            git_head = head_ref
         base_ref, resolved_base_sha = resolved.get(pr.base_ref, (pr.base_ref, None))
         pr.resolved_head_ref = head_ref
+        # What git operations in the base repository name the head by.
+        pr.git_head_ref = git_head
         pr.resolved_base_ref = base_ref
         pr.resolved_head_sha = resolved_head_sha or pr.head_sha
         pr.resolved_base_sha = resolved_base_sha or pr.base_sha
@@ -501,6 +523,19 @@ async def _perform_git_merge(
 
         work_git_dir = os.path.join(clone_path, ".git")
 
+        if head_ref.startswith("refs/"):
+            # A fork's head (refs/pull/N/head) is not a branch, so the clone
+            # does not carry it. Fetch it to the name the merge methods below
+            # use, origin/<head_ref>.
+            rc, _, err = await _run_git(
+                work_git_dir, "fetch", "--quiet", "origin",
+                f"+{head_ref}:refs/remotes/origin/{head_ref}",
+                env_extra=_merge_env(clone_path),
+            )
+            if rc != 0:
+                logger.warning("git fetch %s failed: %s", head_ref, err.strip())
+                return None
+
         # Checkout the base branch
         rc, _, err = await _run_git(
             work_git_dir, "checkout", base_ref,
@@ -698,7 +733,7 @@ async def list_pulls(
     "/repos/{owner}/{repo}/pulls", status_code=201, response_model=PRResponse
 )
 async def create_pull(
-    owner: str, repo: str, body: dict, user: AuthUser, db: DbSession
+    owner: str, repo: str, body: dict, request: Request, user: AuthUser, db: DbSession
 ):
     """Create a pull request."""
     repository = await get_repo_or_404(owner, repo, db)
@@ -730,8 +765,40 @@ async def create_pull(
     base_sha = body.get("base_sha", "0" * 40)
     owner_login = _repo_namespace(repository)
 
+    # A head in another repository of the network: "owner:branch" naming
+    # another owner, or head_repo naming the repository (which a fork in the
+    # base's own organization needs, since its owner is the same).
+    head_repository = None
+    head_owner, sep, head_branch = head_ref.partition(":")
+    if not sep:
+        head_owner, head_branch = owner_login, head_ref
+    head_repo_name = body.get("head_repo")
+    if isinstance(head_repo_name, str) and "/" in head_repo_name:
+        head_owner, head_repo_name = head_repo_name.split("/", 1)
+    if head_owner != owner_login or (head_repo_name and head_repo_name != repository.name):
+        from app.services import cross_repo_pulls
+        from app.services.repository_access import can_read
+
+        head_repository = await cross_repo_pulls.resolve_fork_for_owner(
+            db, repository, head_owner, head_repo_name or None
+        )
+        if (
+            head_repository is None
+            or not await can_read(db, head_repository, user)
+            or not installation_token_covers(request, head_repository.full_name)
+        ):
+            raise HTTPException(status_code=422, detail="Validation Failed: head is invalid")
+        head_ref = head_branch
+        base_ref = base_ref.split(":", 1)[-1]
+
     # Try to resolve SHAs from the bare repo
-    if repository.disk_path and os.path.isdir(repository.disk_path):
+    if head_repository is not None:
+        normalized_base_ref, resolved_base_sha = await normalize_branch_ref(
+            repository.disk_path, base_ref, owner_login
+        ) if repository.disk_path and os.path.isdir(repository.disk_path) else (base_ref, None)
+        base_ref = normalized_base_ref
+        base_sha = resolved_base_sha or base_sha
+    elif repository.disk_path and os.path.isdir(repository.disk_path):
         normalized_head_ref, resolved_head_sha = await normalize_branch_ref(
             repository.disk_path, head_ref, owner_login
         )
@@ -743,11 +810,22 @@ async def create_pull(
         head_sha = resolved_head_sha or head_sha
         base_sha = resolved_base_sha or base_sha
 
+    if head_repository is not None:
+        from app.services import cross_repo_pulls
+
+        # The base repository carries the fork's head as refs/pull/N/head.
+        synced = await cross_repo_pulls.sync_head_ref(repository, head_repository, head_ref, number)
+        if synced is None:
+            await db.rollback()
+            raise HTTPException(status_code=422, detail="Validation Failed: head is invalid")
+        head_sha = synced
+
     pr = PullRequest(
         issue_id=issue.id,
         repo_id=repository.id,
         head_ref=head_ref,
         head_sha=head_sha,
+        head_repo_id=head_repository.id if head_repository is not None else None,
         base_ref=base_ref,
         base_sha=base_sha,
         draft=body.get("draft", False),
@@ -1012,7 +1090,7 @@ async def merge_pull(
     try:
         git_sha = await _perform_git_merge(
             disk_path=repository.disk_path,
-            head_ref=pr.resolved_head_ref,
+            head_ref=pr.git_head_ref,
             base_ref=pr.resolved_base_ref,
             merge_method=merge_method,
             commit_message=commit_message,
@@ -1034,7 +1112,7 @@ async def merge_pull(
             if repository.disk_path and os.path.isdir(repository.disk_path):
                 from app.services.git_service import get_ref_sha
 
-                actual_head = await get_ref_sha(repository.disk_path, pr.resolved_head_ref)
+                actual_head = await get_ref_sha(repository.disk_path, pr.git_head_ref)
                 actual_base = await get_ref_sha(repository.disk_path, pr.resolved_base_ref)
                 if actual_head and actual_base:
                     await db.rollback()
@@ -1054,7 +1132,7 @@ async def merge_pull(
         if repository.disk_path and os.path.isdir(repository.disk_path):
             from app.services.git_service import get_ref_sha
 
-            actual_head = await get_ref_sha(repository.disk_path, pr.resolved_head_ref)
+            actual_head = await get_ref_sha(repository.disk_path, pr.git_head_ref)
             actual_base = await get_ref_sha(repository.disk_path, pr.resolved_base_ref)
             if actual_head and actual_base:
                 await db.rollback()
@@ -1129,7 +1207,7 @@ async def list_pull_commits(
         return [_placeholder_pr_commit_json(owner, repo, pr)]
 
     commits = await get_log(
-        repository.disk_path, ref=f"{pr.resolved_base_ref}..{pr.resolved_head_ref}"
+        repository.disk_path, ref=f"{pr.resolved_base_ref}..{pr.git_head_ref}"
     )
     if not commits:
         return [_placeholder_pr_commit_json(owner, repo, pr)]
@@ -1164,6 +1242,6 @@ async def list_pull_files(
         return []
 
     files = await get_compare_diff(
-        repository.disk_path, pr.resolved_base_ref, pr.resolved_head_ref
+        repository.disk_path, pr.resolved_base_ref, pr.git_head_ref
     )
     return [_pull_file_json(owner, repo, file) for file in files]
