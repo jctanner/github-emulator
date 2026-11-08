@@ -45,6 +45,8 @@ async def dispatch_ready_jobs(db: AsyncSession, run_id: int) -> list[WorkflowJob
         build_needs_context,
         build_run_expression_context,
         build_steps_data,
+        render_job_labels,
+        strategy_context,
     )
     from app.services.workflow_expressions import (
         JOB_NEEDS_KEY,
@@ -58,14 +60,21 @@ async def dispatch_ready_jobs(db: AsyncSession, run_id: int) -> list[WorkflowJob
     )
     all_jobs = result.scalars().all()
 
+    # ``needs:`` entries reference YAML job keys, not display names. The
+    # instances of a matrix job share its key, and a job that needs it waits
+    # for all of them: it is finished only when every instance is, and
+    # successful only when every instance succeeded.
+    rows_by_key: dict[str, list[WorkflowJob]] = {}
+    for job in all_jobs:
+        rows_by_key.setdefault(job.job_key or job.name, []).append(job)
     completed_keys = set()
     unsuccessful_keys = set()
-    for job in all_jobs:
-        # ``needs:`` entries reference YAML job keys, not display names.
-        key = job.job_key or job.name
-        if job.status == "completed" and job.conclusion == "success":
+    for key, rows in rows_by_key.items():
+        if not all(row.status == "completed" for row in rows):
+            continue
+        if all(row.conclusion == "success" for row in rows):
             completed_keys.add(key)
-        elif job.status == "completed" and job.conclusion in ("failure", "cancelled", "skipped"):
+        else:
             unsuccessful_keys.add(key)
 
     promoted = []
@@ -96,6 +105,7 @@ async def dispatch_ready_jobs(db: AsyncSession, run_id: int) -> list[WorkflowJob
                 # condition names a status function and decides for itself.
                 ready.append(job)
 
+    expansion_failed = False
     if ready:
         base_context = None
         needs_context = None
@@ -117,6 +127,7 @@ async def dispatch_ready_jobs(db: AsyncSession, run_id: int) -> list[WorkflowJob
                     JOB_NEEDS_KEY: _ancestors(job, all_jobs),
                     RUN_CANCELLED_KEY: bool(base_context.get(RUN_CANCELLED_KEY)),
                     "matrix": pending.get("matrix") or {},
+                    "strategy": pending.get("strategy") or strategy_context(None),
                     "job": {
                         "workflow_repository": pending.get("_workflow_repository")
                         or github_ctx.get("repository", ""),
@@ -146,11 +157,22 @@ async def dispatch_ready_jobs(db: AsyncSession, run_id: int) -> list[WorkflowJob
                     ]
                     job.pending_render = None
                     continue
-                job.steps = build_steps_data(
-                    pending.get("steps") or [],
-                    pending.get("env") or {},
-                    context,
-                )
+                instances = [(job, context)]
+                if pending.get("dynamic_matrix") is not None:
+                    instances = await _expand_dynamic_matrix(db, job, pending, context)
+                    if not instances:
+                        expansion_failed = True
+                        continue
+                for instance, instance_context in instances:
+                    instance.labels = render_job_labels(instance.labels, instance_context)
+                    instance.steps = build_steps_data(
+                        pending.get("steps") or [],
+                        pending.get("env") or {},
+                        instance_context,
+                    )
+                    instance.pending_render = None
+                    if instance is not job:
+                        ready.append(instance)
                 job.pending_render = None
             # Concurrency is applied here, where the job becomes eligible to
             # run, not when it was created: a job still waiting on `needs:`
@@ -164,7 +186,89 @@ async def dispatch_ready_jobs(db: AsyncSession, run_id: int) -> list[WorkflowJob
     if promoted or ready:
         await db.flush()
 
+    if expansion_failed:
+        # A job that failed to expand is a finished, unsuccessful need: the
+        # jobs behind it (a cleanup with always(), or ones to skip) are
+        # decided now, since no job will complete to trigger another pass.
+        promoted.extend(await dispatch_ready_jobs(db, run_id))
+
     return promoted
+
+
+async def _expand_dynamic_matrix(
+    db: AsyncSession, job: WorkflowJob, pending: dict, context: dict,
+) -> list[tuple[WorkflowJob, dict]]:
+    """Expand a matrix written as an expression into its job instances.
+
+    ``matrix: ${{ fromJSON(needs.x.outputs.matrix) }}`` can be evaluated only
+    once ``x`` has finished, so the job waits as one row. Here the first
+    instance takes that row and each further one gets a row of its own. Each
+    instance's name and concurrency group are rendered with its own matrix
+    values: rendered without them, every Fullsend harness job shared one
+    group, ``fullsend-harness--<repo>--``, and superseded the others.
+
+    A matrix that is not a mapping or has no instances fails the job, as on
+    GitHub ("Matrix vector 'include' does not contain any values"). Returns
+    the instances with their expression contexts, or [] when the job failed.
+    """
+    from app.services.workflow_expressions import evaluate_expression_value
+    from app.services.workflow_service import (
+        _job_concurrency,
+        matrix_combinations,
+        matrix_job_name,
+        strategy_context,
+    )
+    from app.services.workflow_expressions import render_expressions
+
+    combos = matrix_combinations(
+        evaluate_expression_value(pending["dynamic_matrix"], context)
+    )
+    if not combos:
+        job.status = "completed"
+        job.conclusion = "failure"
+        job.completed_at = datetime.now(timezone.utc)
+        job.steps = [
+            {**step, "status": "completed", "conclusion": "skipped"}
+            for step in (job.steps or [])
+        ]
+        job.pending_render = None
+        return []
+
+    instances = []
+    for index, combo in enumerate(combos):
+        row = job if index == 0 else WorkflowJob(
+            run_id=job.run_id,
+            workflow_name=job.workflow_name,
+            workflow_ref=job.workflow_ref,
+            status="waiting",
+            labels=list(job.labels or []),
+            run_attempt=job.run_attempt,
+            needs=list(job.needs or []),
+            permissions=dict(job.permissions or {}),
+            job_key=job.job_key,
+            outputs_config=dict(job.outputs_config or {}),
+            outputs={},
+            name=job.name,
+        )
+        instance_context = {
+            **context,
+            "matrix": combo,
+            "strategy": strategy_context(
+                pending.get("strategy_options"), index, len(combos), context,
+            ),
+        }
+        row.name = str(render_expressions(
+            matrix_job_name(pending.get("name") or job.name, combo), instance_context,
+        ))
+        group, cancel = _job_concurrency(
+            {"concurrency": pending.get("concurrency")}, instance_context,
+        )
+        row.concurrency_group = group if cancel else None
+        if row is not job:
+            db.add(row)
+        instances.append((row, instance_context))
+    await db.flush()
+    return instances
 
 
 async def check_run_completion(db: AsyncSession, run_id: int) -> WorkflowRun | None:
@@ -185,7 +289,10 @@ async def check_run_completion(db: AsyncSession, run_id: int) -> WorkflowRun | N
         return run
 
     if any(j.status in ("queued", "in_progress", "waiting") for j in jobs):
-        failed_keys = {j.name for j in jobs if j.status == "completed" and j.conclusion == "failure"}
+        failed_keys = {
+            j.job_key or j.name for j in jobs
+            if j.status == "completed" and j.conclusion == "failure"
+        }
         if failed_keys:
             def stranded(j) -> bool:
                 return (

@@ -199,6 +199,48 @@ def _index_value(value: object, key: object) -> object:
     return None
 
 
+class _Filtered(list):
+    """The result of an object filter, to which later accessors apply
+    element-wise."""
+
+
+_MISSING = object()
+
+
+def _index_present(value: object, key: object) -> object:
+    """Like ``_index_value``, but tells a missing property (``_MISSING``)
+    from one that is present and null."""
+    if isinstance(value, dict):
+        return value.get(str(key), _MISSING)
+    if isinstance(value, (list, tuple)):
+        try:
+            return value[int(key)]
+        except (ValueError, TypeError, IndexError):
+            return _MISSING
+    return _MISSING
+
+
+def _index_any(value: object, key: object) -> object:
+    if isinstance(value, _Filtered):
+        return _Filtered(
+            item for item in (_index_present(e, key) for e in value)
+            if item is not _MISSING
+        )
+    return _index_value(value, key)
+
+
+def _object_filter(value: object) -> "_Filtered":
+    """The elements an object filter selects: an array's items or an
+    object's values, taken from each element once already filtered."""
+    out = _Filtered()
+    for element in (value if isinstance(value, _Filtered) else [value]):
+        if isinstance(element, list):
+            out.extend(element)
+        elif isinstance(element, dict):
+            out.extend(element.values())
+    return out
+
+
 # The job status functions. A job-level condition without any of them is
 # evaluated as ``success() && (condition)`` on GitHub, and its job is skipped
 # when a job it needs did not succeed; one that names a status function is
@@ -358,9 +400,12 @@ class _IfExpressionParser:
     # ``github.event.action`` still tokenizes as a single name, because the
     # name alternative requires a leading letter and consumes its own dots.
     _TOKEN_RE = re.compile(
-        r"(?P<space>\s+)|(?P<op>\|\||&&|==|!=|<=|>=|[<>!(),\[\].])|"
+        r"(?P<space>\s+)|(?P<op>\|\||&&|==|!=|<=|>=|[<>!(),\[\].*])|"
         r"(?P<string>'(?:\\.|[^'])*'|\"(?:\\.|[^\"])*\")|"
-        r"(?P<number>\d+(?:\.\d+)?)|(?P<name>[A-Za-z_][A-Za-z0-9_.-]*)"
+        r"(?P<number>\d+(?:\.\d+)?)|"
+        # A dotted name never ends in a dot, so ``include.*.agent`` leaves
+        # the ``.`` and ``*`` of its object filter as tokens of their own.
+        r"(?P<name>[A-Za-z_][A-Za-z0-9_-]*(?:\.[A-Za-z0-9_-]+)*)"
     )
 
     def __init__(self, expression: str, context: dict):
@@ -470,21 +515,38 @@ class _IfExpressionParser:
         return self._parse_accessors(_lookup_context_value(self.context, token))
 
     def _parse_accessors(self, value: object) -> object:
-        """Apply any trailing ``.name`` and ``[index]`` accessors to a value."""
+        """Apply any trailing ``.name``, ``[index]`` and object-filter
+        (``.*``, ``[*]``) accessors to a value.
+
+        A filter yields a ``_Filtered`` list, and an accessor applied to one
+        applies to each element, keeping those that have the property (even
+        when it is null): on GitHub ``fromJSON(m).include.*.agent`` is the
+        list of every entry's agent. Being a type rather than parser state,
+        that survives parentheses, as in ``(x.*).name``.
+        """
         while True:
             if self._peek("."):
                 self._take(".")
+                if self._peek("*"):
+                    self._take("*")
+                    value = _object_filter(value)
+                    continue
                 kind, token = self._take()
                 if kind != "name":
                     raise _ExpressionError("expected property name")
                 # A dotted name token such as ``issue.html_url`` arrives whole.
                 for part in token.split("."):
-                    value = _index_value(value, part)
+                    value = _index_any(value, part)
             elif self._peek("["):
                 self._take("[")
-                index = self._parse_or()
+                if self._peek("*"):
+                    self._take("*")
+                    self._take("]")
+                    value = _object_filter(value)
+                    continue
+                key = self._parse_or()
                 self._take("]")
-                value = _index_value(value, index)
+                value = _index_any(value, key)
             else:
                 return value
 
@@ -515,7 +577,7 @@ class _IfExpressionParser:
 
 # Context roots the server can resolve. ``steps`` is deliberately absent: only
 # the runner knows step outputs.
-_SERVER_CONTEXT_ROOTS = ("github", "inputs", "needs", "vars", "secrets", "matrix", "job")
+_SERVER_CONTEXT_ROOTS = ("github", "inputs", "needs", "vars", "secrets", "matrix", "strategy", "job")
 
 
 def _as_literal(value: object) -> str:
@@ -533,6 +595,55 @@ def _as_literal(value: object) -> str:
         return "true" if value else "false"
     text = str(value).replace("\\", "\\\\").replace("'", "\\'")
     return f"'{text}'"
+
+
+def _json_literal(value: object) -> str:
+    """An array or object as an expression the runner can evaluate. Actions
+    has no array literal, so it is ``fromJSON('...')``, quoted the Actions
+    way (``''`` for a quote)."""
+    text = json.dumps(value, separators=(",", ":")).replace("'", "''")
+    return f"fromJSON('{text}')"
+
+
+def _accessor_chain_end(tokens: list, index: int) -> int:
+    """The index of the last token of the accessors directly after the name
+    at ``index`` (``.name``, ``.*``, ``[...]``), or ``index`` when there are
+    none. A bracket whose contents read anything but literals and
+    server-side contexts ends the chain before it."""
+    last = index
+    j = index + 1
+    while j < len(tokens):
+        text = tokens[j][1]
+        if text == "." and j + 1 < len(tokens) and (
+            tokens[j + 1][0] == "name" or tokens[j + 1][1] == "*"
+        ):
+            last = j = j + 1
+            j += 1
+            continue
+        if text == "[":
+            depth, k = 0, j
+            while k < len(tokens):
+                if tokens[k][1] == "[":
+                    depth += 1
+                elif tokens[k][1] == "]":
+                    depth -= 1
+                    if depth == 0:
+                        break
+                k += 1
+            if k >= len(tokens):
+                break
+            inner = tokens[j + 1:k]
+            if any(
+                t[0] == "name" and t[1] not in ("true", "false", "null")
+                and t[1].split(".", 1)[0] not in _SERVER_CONTEXT_ROOTS
+                for t in inner
+            ):
+                break
+            last = j = k
+            j += 1
+            continue
+        break
+    return last
 
 
 def bind_server_context(expression: str, context: dict) -> str:
@@ -555,7 +666,10 @@ def bind_server_context(expression: str, context: dict) -> str:
         tokens.append((match.lastgroup, match.group(0), match.start(), match.end()))
         position = match.end()
 
+    skip_until = -1
     for index, (kind, text, start, end) in enumerate(tokens):
+        if index <= skip_until:
+            continue
         if kind != "name" or text in ("true", "false", "null"):
             continue
         # A name followed by "(" is a function call, not a context path.
@@ -566,6 +680,24 @@ def bind_server_context(expression: str, context: dict) -> str:
             continue
         if text.split(".", 1)[0] not in _SERVER_CONTEXT_ROOTS:
             continue
+        # A path with trailing accessors (``labels.*.name``, ``labels[0]``)
+        # is bound whole: binding the path alone turned the array into
+        # ``true`` and left ``true.*.name`` for the runner.
+        last = _accessor_chain_end(tokens, index)
+        if last > index:
+            span = expression[start:tokens[last][3]]
+            try:
+                value = _IfExpressionParser(span, context).evaluate()
+            except _ExpressionError:
+                value = _MISSING
+            if value is not _MISSING:
+                literal = (
+                    _json_literal(value) if isinstance(value, (dict, list))
+                    else _as_literal(value)
+                )
+                out.append((start, tokens[last][3], literal))
+                skip_until = last
+                continue
         out.append((start, end, _as_literal(_lookup_context_value(context, text))))
 
     if not out:
@@ -597,6 +729,21 @@ def evaluate_job_if(condition: object, context: dict) -> bool:
     except _ExpressionError as exc:
         logger.warning("Unable to evaluate job condition %r: %s", condition, exc)
         return False
+
+
+def evaluate_expression_value(value: object, context: dict) -> object:
+    """A value that is one whole expression, evaluated to what it yields
+    (an object for ``${{ fromJSON(...) }}``) rather than rendered to text.
+    Anything else is rendered as usual."""
+    if isinstance(value, str):
+        text = value.strip()
+        if text.startswith("${{") and text.endswith("}}") and text.count("${{") == 1:
+            try:
+                return _IfExpressionParser(text[3:-2].strip(), context).evaluate()
+            except _ExpressionError as exc:
+                logger.warning("Unable to evaluate expression %r: %s", value, exc)
+                return None
+    return render_expressions(value, context)
 
 
 def render_expressions(value: object, context: dict, resolve_steps: bool = False) -> object:

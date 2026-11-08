@@ -168,3 +168,43 @@ async def test_failure_sees_a_failed_ancestor_behind_a_skipped_job(executable_wo
     jobs = await _jobs(db_session, run)
     assert jobs["test"].conclusion == "skipped"
     assert jobs["cleanup"].status == "queued"
+
+
+@pytest.mark.parametrize("expression, expected", [
+    ("toJSON(fromJSON('{\"include\":[{\"a\":1},{\"a\":2},{\"b\":3}]}').include.*.a)", "[1,2]"),
+    ("toJSON(fromJSON('{\"x\":{\"n\":1},\"y\":{\"n\":2}}').*.n)", "[1,2]"),
+    ("toJSON(fromJSON('[[1,2],[3]]')[*][*])", "[1,2,3]"),
+    ("fromJSON('{\"include\":[{\"a\":1}]}').include[0].a", "1"),
+])
+def test_object_filters(expression, expected):
+    from app.services.workflow_expressions import render_expressions
+
+    assert render_expressions("${{ " + expression + " }}", {}) == expected
+
+
+def test_object_filter_semantics_follow_the_runner():
+    from app.services.workflow_expressions import render_expressions
+
+    # Present-but-null properties stay; missing ones are dropped.
+    assert render_expressions("${{ toJSON(fromJSON('[{\"x\":null},{\"x\":1},{}]').*.x) }}", {}) == "[null,1]"
+    # A filtered list stays filtered through parentheses.
+    assert render_expressions("${{ toJSON((fromJSON('[{\"x\":1}]').*).x) }}", {}) == "[1]"
+    # Hyphen-led dotted segments still tokenize.
+    assert render_expressions("${{ github.event.-key }}", {"github": {"event": {"-key": "v"}}}) == "v"
+
+
+def test_bound_step_conditions_keep_filters():
+    """A step condition mixing a server-side filter with steps.* is bound
+    for the runner; the filter must be evaluated whole, not as
+    ``true.*.name``."""
+    from app.services.workflow_expressions import bind_server_context
+
+    ctx = {"github": {"event": {"issue": {"labels": [{"name": "bug"}, {"name": "x"}]}}}}
+    bound = bind_server_context(
+        "contains(github.event.issue.labels.*.name, 'bug') && steps.check.outputs.ok == 'yes'", ctx,
+    )
+    assert bound == "contains(fromJSON('[\"bug\",\"x\"]'), 'bug') && steps.check.outputs.ok == 'yes'"
+    assert bind_server_context("github.event.issue.labels[0].name == 'bug' && steps.a.outputs.b", ctx) == \
+        "'bug' == 'bug' && steps.a.outputs.b"
+    # Plain paths bind as before.
+    assert bind_server_context("github.event.issue && steps.a.outputs.b", ctx) == "true && steps.a.outputs.b"

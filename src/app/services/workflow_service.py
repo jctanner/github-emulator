@@ -49,6 +49,7 @@ from app.services.workflow_expressions import (
     _IfExpressionParser,
     _lookup_context,
     bind_server_context,
+    evaluate_expression_value,
     evaluate_job_if,
     render_expressions,
 )
@@ -96,58 +97,129 @@ from app.services.webhook_service import schedule_webhooks
 from app.services.cross_repo_pulls import same_repository_head, sync_head_ref
 from app.services.workflow_triggers import evaluate_trigger
 
+def dynamic_matrix_expression(job_config: dict) -> str | None:
+    """The expression of a dynamic matrix (``matrix: ${{ fromJSON(...) }}``),
+    or None when the matrix is written out or absent."""
+    strategy = job_config.get("strategy") or {}
+    if not isinstance(strategy, dict):
+        return None
+    matrix = strategy.get("matrix")
+    return matrix if isinstance(matrix, str) else None
+
+
+def matrix_combinations(matrix: object) -> list[dict] | None:
+    """The job instances a matrix produces, as on GitHub: the product of its
+    vectors less ``exclude``, then ``include``. An entry of ``include`` that
+    matches no combination becomes one of its own; one that extends a
+    combination without overwriting its original values is merged into it.
+    An include-only matrix is just its entries.
+
+    Returns None for a matrix that is not a mapping, and an empty list for
+    one with no instances, which GitHub fails the job for.
+    """
+    if not isinstance(matrix, dict):
+        return None
+    matrix = dict(matrix)
+    include = matrix.pop("include", None) or []
+    exclude = matrix.pop("exclude", None) or []
+    keys = list(matrix.keys())
+    combos: list[dict] = []
+    if keys:
+        values = [matrix[k] if isinstance(matrix[k], list) else [matrix[k]] for k in keys]
+        for combo in itertools.product(*values):
+            entry = dict(zip(keys, combo))
+            if not any(
+                isinstance(exc, dict) and all(entry.get(k) == v for k, v in exc.items())
+                for exc in exclude
+            ):
+                combos.append(entry)
+    originals = [dict(c) for c in combos]
+    for inc in include if isinstance(include, list) else []:
+        if not isinstance(inc, dict):
+            continue
+        merged = False
+        for combo, original in zip(combos, originals):
+            if all(original[k] == v for k, v in inc.items() if k in original):
+                combo.update(inc)
+                merged = True
+        if not merged:
+            combos.append(dict(inc))
+    return combos
+
+
+def matrix_job_name(template: str, combo: dict) -> str:
+    """A matrix instance's unrendered name: GitHub appends the instance's
+    values only when the name does not already use the matrix context."""
+    if not combo or re.search(r"\$\{\{[^}]*\bmatrix\b", template):
+        return template
+    return f"{template} ({', '.join(str(v) for v in combo.values())})"
+
+
+def strategy_context(
+    strategy: dict | None, index: int = 0, total: int = 1, context: dict | None = None,
+) -> dict:
+    """The ``strategy`` context of one job instance. Fullsend's harness job
+    reads ``strategy.job-index`` to find its own entry in the matrix.
+
+    ``fail-fast`` and ``max-parallel`` may be expressions
+    (``fail-fast: ${{ inputs.fast }}``); with a context they are evaluated.
+    """
+    strategy = strategy if isinstance(strategy, dict) else {}
+    fail_fast = strategy.get("fail-fast", True)
+    max_parallel = strategy.get("max-parallel", total)
+    if context is not None:
+        fail_fast = evaluate_expression_value(fail_fast, context)
+        max_parallel = evaluate_expression_value(max_parallel, context)
+    if isinstance(max_parallel, str):
+        try:
+            max_parallel = int(max_parallel)
+        except ValueError:
+            max_parallel = total
+    return {
+        "fail-fast": fail_fast is not False and str(fail_fast).lower() != "false",
+        "job-index": index,
+        "job-total": total,
+        "max-parallel": max_parallel if isinstance(max_parallel, int) else total,
+    }
+
+
+def render_job_labels(labels: list | None, context: dict) -> list:
+    """A job's runner labels with any expressions in them rendered."""
+    return [
+        str(render_expressions(label, context)) if isinstance(label, str) and "${{" in label else label
+        for label in (labels or [])
+    ]
+
+
 def expand_matrix(job_config: dict) -> list[dict]:
-    """Expand strategy.matrix into individual job configurations."""
+    """Expand strategy.matrix into individual job configurations.
+
+    A dynamic matrix is a string here: it may depend on a job that has not
+    run yet, so the job stays one row and is expanded when it is promoted
+    (see ``dispatch_ready_jobs``).
+    """
     strategy = job_config.get("strategy", {}) or {}
     if not isinstance(strategy, dict):
         return [job_config]
     raw_matrix = strategy.get("matrix", {}) or {}
-    if not isinstance(raw_matrix, dict):
-        # A dynamic matrix (``matrix: ${{ fromJSON(...) }}``) is a string here,
-        # because strategy blocks are not rendered before expansion and the
-        # value may depend on a job that has not run yet. Treat the job as a
-        # single job rather than failing the whole event dispatch: dict() on a
-        # string raises, which previously surfaced as a 500 on the API call
-        # that triggered the workflow.
-        logger.warning(
-            "Unsupported dynamic matrix for job %s; running it as a single job",
-            job_config.get("key", "<unknown>"),
-        )
+    if isinstance(raw_matrix, str):
         return [job_config]
-    matrix = dict(raw_matrix)
-    if not matrix:
-        return [job_config]
-
-    include = matrix.pop("include", [])
-    exclude = matrix.pop("exclude", [])
-
-    keys = list(matrix.keys())
-    values = [matrix[k] if isinstance(matrix[k], list) else [matrix[k]] for k in keys]
-
-    combos = []
-    for combo in itertools.product(*values):
-        entry = dict(zip(keys, combo))
-
-        excluded = False
-        for exc in exclude:
-            if all(entry.get(k) == v for k, v in exc.items()):
-                excluded = True
-                break
-        if not excluded:
-            combos.append(entry)
-
-    for inc in include:
-        combos.append(inc)
-
+    combos = matrix_combinations(raw_matrix)
     if not combos:
         return [job_config]
 
     expanded = []
-    for combo in combos:
+    for index, combo in enumerate(combos):
         job_copy = {k: v for k, v in job_config.items() if k != "strategy"}
         job_copy["_matrix"] = combo
-        name_suffix = ", ".join(f"{v}" for v in combo.values())
-        job_copy["_display_name"] = f"{job_config.get('name', job_config.get('_key', ''))} ({name_suffix})"
+        job_copy["_strategy"] = {
+            "options": {k: v for k, v in strategy.items() if k != "matrix"},
+            "index": index,
+            "total": len(combos),
+        }
+        job_copy["_display_name"] = matrix_job_name(
+            job_config.get("name") or job_config.get("key", ""), combo,
+        )
         expanded.append(job_copy)
 
     return expanded
@@ -602,6 +674,16 @@ async def materialize_reusable_workflows(
     )
 
 
+def _instance_strategy(job_config: dict, context: dict) -> dict:
+    """The strategy context of a job as expanded by ``expand_matrix``."""
+    instance = job_config.get("_strategy")
+    if instance:
+        return strategy_context(
+            instance["options"], instance["index"], instance["total"], context,
+        )
+    return strategy_context(job_config.get("strategy"), context=context)
+
+
 def _job_context(base_context: dict, job_config: dict) -> dict:
     """Build a job's expression context, layering any reusable-call values.
 
@@ -632,6 +714,8 @@ def _job_context(base_context: dict, job_config: dict) -> dict:
     if call_secrets:
         rendered_secrets = render_expressions(call_secrets, context)
         context["secrets"] = {**(base_context.get("secrets") or {}), **rendered_secrets}
+    # After the call's inputs, which ``fail-fast: ${{ inputs.fast }}`` reads.
+    context["strategy"] = _instance_strategy(job_config, context)
     return context
 
 
@@ -767,18 +851,36 @@ def build_needs_context(jobs) -> dict:
     every stage condition read an empty stage and skipped.
     """
     context = {}
+    aliases: dict[str, str] = {}
     for job in jobs:
         key = job.job_key or job.name
         entry = {
             "outputs": job.outputs or {},
             "result": job.conclusion or "",
         }
+        previous = context.get(key)
+        if previous is not None:
+            # Instances of one matrix job share a key. Its result is the
+            # worst of theirs; its outputs are whichever set them.
+            entry = {
+                "outputs": {**previous["outputs"], **entry["outputs"]},
+                "result": _combined_result(previous["result"], entry["result"]),
+            }
         context[key] = entry
+        aliases.pop(key, None)
         bare_key = key.rsplit(" / ", 1)[-1]
         # A prefixed key wins over a bare alias if both somehow exist.
-        if bare_key != key and bare_key not in context:
+        if bare_key != key and (bare_key not in context or aliases.get(bare_key) == key):
+            aliases[bare_key] = key
             context[bare_key] = entry
     return context
+
+
+def _combined_result(first: str, second: str) -> str:
+    for result in ("failure", "cancelled", "success", "skipped"):
+        if result in (first, second):
+            return result
+    return first or second
 
 
 def _topo_sort(jobs: list[dict]) -> list[dict]:
@@ -936,6 +1038,20 @@ async def create_workflow_run(
     skipped_job_created = False
 
     for job_def in job_list:
+        dynamic_matrix = dynamic_matrix_expression(job_def)
+        if dynamic_matrix is not None and not job_def.get("needs"):
+            # Nothing to wait for: the matrix reads only the event and the
+            # call's inputs, so it can be expanded now.
+            value = evaluate_expression_value(
+                dynamic_matrix, _job_context(expression_context, job_def),
+            )
+            job_def = {**job_def, "strategy": {**job_def["strategy"], "matrix": value}}
+            dynamic_matrix = None
+            # An empty or malformed matrix fails the job on GitHub; it must
+            # not fall back to a single instance with no matrix.
+            unexpandable = not matrix_combinations(value)
+        else:
+            unexpandable = False
         expanded = expand_matrix(job_def)
         for job_config in expanded:
             job_expression_context = _job_context(expression_context, job_config)
@@ -960,16 +1076,39 @@ async def create_workflow_run(
                     "steps": job_config.get("steps", []),
                     "env": job_config.get("env") or {},
                     "matrix": job_config.get("_matrix", {}),
+                    "strategy": job_expression_context["strategy"],
                     "_call_inputs": job_config.get("_call_inputs") or {},
                     "_call_secrets": job_config.get("_call_secrets") or {},
                     "_workflow_repository": job_config.get("_workflow_repository") or "",
                     "_workflow_sha": job_config.get("_workflow_sha") or "",
                 }
+                if dynamic_matrix is not None:
+                    # Expanded at promotion, once needs.*.outputs exist. The
+                    # name and concurrency group read matrix.*, so they are
+                    # rendered per instance then too.
+                    pending_render["dynamic_matrix"] = dynamic_matrix
+                    pending_render["name"] = job_config.get("name") or job_config["key"]
+                    pending_render["concurrency"] = job_config.get("concurrency")
+                    pending_render["strategy_options"] = {
+                        k: v for k, v in (job_config.get("strategy") or {}).items()
+                        if k != "matrix"
+                    }
                 should_run = True
 
             conclusion = None
             completed_at = None
-            if not should_run:
+            # The job's condition is decided before its matrix, as on
+            # GitHub: a skipped job is skipped, whatever its matrix.
+            if unexpandable and should_run:
+                initial_status = "completed"
+                conclusion = "failure"
+                completed_at = datetime.now(timezone.utc)
+                skipped_job_created = True
+                steps_data = [
+                    {**step, "status": "completed", "conclusion": "skipped"}
+                    for step in steps_data
+                ]
+            elif not should_run:
                 initial_status = "completed"
                 conclusion = "skipped"
                 completed_at = datetime.now(timezone.utc)
@@ -992,6 +1131,8 @@ async def create_workflow_run(
             # GitHub; this emulator has no queue-behind state, so storing the
             # group would claim a serialisation it does not perform.
             job_group = job_group if job_cancel else None
+            if dynamic_matrix is not None:
+                job_group = None
 
             job = WorkflowJob(
                 run_id=run.id,
@@ -1002,7 +1143,12 @@ async def create_workflow_run(
                 conclusion=conclusion,
                 completed_at=completed_at,
                 steps=steps_data,
-                labels=job_config.get("runs_on", ["ubuntu-latest"]),
+                # runs-on may read matrix.*; a job with needs renders its
+                # labels at promotion, where its matrix is known.
+                labels=(
+                    job_config.get("runs_on", ["ubuntu-latest"]) if needs
+                    else render_job_labels(job_config.get("runs_on", ["ubuntu-latest"]), job_expression_context)
+                ),
                 run_attempt=1,
                 needs=needs,
                 permissions=job_config.get("permissions") or {},
