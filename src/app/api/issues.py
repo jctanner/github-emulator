@@ -430,22 +430,39 @@ async def update_issue(
     # assignee, a state reason - and Fullsend routes every `edited` to
     # triage, so each such update cost a triage run. On GitHub `edited`
     # means the title or body changed, and the payload says which.
-    if issue.state != old_state:
-        action = "closed" if issue.state == "closed" else "reopened"
+    #
+    # A pull request is an issue, and this endpoint closes, reopens and edits
+    # one too. GitHub reports that as a pull_request event, as though it had
+    # gone through the pulls endpoint; the issues event is for plain issues.
+    # Sending `issues` here meant a pull request closed this way started no
+    # workflow that listens for `pull_request_target: closed`.
+    async def dispatch_change(action: str, **extra) -> None:
+        pr = issue.pull_request
+        if pr is None:
+            await dispatch_event(
+                db, repository, user, "issues", action,
+                build_activity_payload(repository, user, action, issue=issue, **extra),
+            )
+            return
         await dispatch_event(
-            db, repository, user, "issues", action,
-            build_activity_payload(repository, user, action, issue=issue),
+            db, repository, user, "pull_request_target", action,
+            build_activity_payload(
+                repository, user, action, issue=issue, pull_request=pr,
+                ref=f"refs/heads/{pr.base_ref}", sha=pr.base_sha, **extra,
+            ),
+            ref=pr.base_ref,
+            sha=pr.base_sha,
         )
+
+    if issue.state != old_state:
+        await dispatch_change("closed" if issue.state == "closed" else "reopened")
     changes: dict[str, dict] = {}
     if issue.title != old_title:
         changes["title"] = {"from": old_title}
     if issue.body != old_body:
         changes["body"] = {"from": old_body}
     if changes:
-        await dispatch_event(
-            db, repository, user, "issues", "edited",
-            build_activity_payload(repository, user, "edited", issue=issue, changes=changes),
-        )
+        await dispatch_change("edited", changes=changes)
     if "assignees" in body:
         new_assignees = {assignee.login: assignee for assignee in (issue.assignees or [])}
         for login, assignee in new_assignees.items():

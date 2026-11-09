@@ -265,3 +265,121 @@ async def test_form_content_type_and_failed_deliveries(client, test_user, test_t
         f"{API}/repos/testuser/forms/hooks/{hook['id']}/deliveries", headers=auth_headers(test_token)
     )).json()
     assert deliveries[0]["success"] is False and deliveries[0]["status_code"] == 500
+
+
+@pytest.mark.asyncio
+async def test_a_comment_on_a_pull_request_marks_its_issue_as_one(
+    client, test_user, test_token, webhook_requests
+):
+    """GitHub sets ``issue.pull_request`` on a pull request's comment events.
+
+    Workflows test ``github.event.issue.pull_request`` to tell a PR comment
+    from an issue comment; without it, Fullsend's ``/fs-fix`` never matched.
+    """
+    await _repo(client, test_token, "prcomment")
+    await _hook(client, test_token, "prcomment", ["issue_comment"])
+    resp = await client.post(
+        f"{API}/repos/testuser/prcomment/pulls",
+        json={"title": "change", "head": "feature", "base": "main"},
+        headers=auth_headers(test_token),
+    )
+    assert resp.status_code == 201
+    pr_number = resp.json()["number"]
+    resp = await client.post(
+        f"{API}/repos/testuser/prcomment/issues",
+        json={"title": "plain"},
+        headers=auth_headers(test_token),
+    )
+    issue_number = resp.json()["number"]
+    for number in (pr_number, issue_number):
+        resp = await client.post(
+            f"{API}/repos/testuser/prcomment/issues/{number}/comments",
+            json={"body": "/fs-fix"},
+            headers=auth_headers(test_token),
+        )
+        assert resp.status_code == 201
+
+    requests = await _settle(webhook_requests)
+    issues = {
+        body["issue"]["number"]: body["issue"]
+        for body in (json.loads(r.content) for r in requests)
+    }
+    pull = issues[pr_number]["pull_request"]
+    assert pull["url"].endswith(f"/repos/testuser/prcomment/pulls/{pr_number}")
+    assert pull["html_url"].endswith(f"/testuser/prcomment/pull/{pr_number}")
+    assert pull["merged_at"] is None
+    assert "pull_request" not in issues[issue_number]
+
+
+@pytest.mark.asyncio
+async def test_closing_a_pull_request_through_the_issues_api_is_a_pull_request_event(
+    client, test_user, test_token, webhook_requests
+):
+    """``PATCH /issues/{n}`` on a pull request reports ``pull_request``.
+
+    Fullsend's behaviour suite closes a pull request that way; the emulator
+    reported ``issues``/``closed``, which no ``pull_request_target: closed``
+    workflow listens for.
+    """
+    await _repo(client, test_token, "issueclose")
+    await _hook(client, test_token, "issueclose", ["*"])
+    resp = await client.post(
+        f"{API}/repos/testuser/issueclose/pulls",
+        json={"title": "change", "head": "feature", "base": "main"},
+        headers=auth_headers(test_token),
+    )
+    number = resp.json()["number"]
+    resp = await client.post(
+        f"{API}/repos/testuser/issueclose/issues",
+        json={"title": "plain"},
+        headers=auth_headers(test_token),
+    )
+    plain = resp.json()["number"]
+    for n, patch in ((number, {"body": "edited"}), (number, {"state": "closed"}),
+                     (plain, {"state": "closed"})):
+        resp = await client.patch(
+            f"{API}/repos/testuser/issueclose/issues/{n}",
+            json=patch,
+            headers=auth_headers(test_token),
+        )
+        assert resp.status_code == 200
+
+    requests = await _settle(webhook_requests)
+    seen = [
+        (r.headers["x-github-event"], body.get("action"),
+         (body.get("pull_request") or body.get("issue") or {}).get("number"))
+        for r in requests
+        for body in [json.loads(r.content)]
+    ]
+    assert ("pull_request", "edited", number) in seen
+    assert ("pull_request", "closed", number) in seen
+    assert ("issues", "closed", plain) in seen
+    assert not any(event == "issues" and n == number for event, _, n in seen
+                   if _ in ("closed", "edited"))
+
+
+@pytest.mark.asyncio
+async def test_a_review_event_reports_its_state_in_lowercase(
+    client, test_user, test_token, webhook_requests
+):
+    """``pull_request_review`` sends ``changes_requested``; REST says
+    ``CHANGES_REQUESTED``. Fullsend's fix stage compares with the former."""
+    await _repo(client, test_token, "reviewstate")
+    await _hook(client, test_token, "reviewstate", ["pull_request_review"])
+    resp = await client.post(
+        f"{API}/repos/testuser/reviewstate/pulls",
+        json={"title": "change", "head": "feature", "base": "main"},
+        headers=auth_headers(test_token),
+    )
+    number = resp.json()["number"]
+    resp = await client.post(
+        f"{API}/repos/testuser/reviewstate/pulls/{number}/reviews",
+        json={"body": "needs work", "event": "REQUEST_CHANGES"},
+        headers=auth_headers(test_token),
+    )
+    assert resp.status_code in (200, 201), resp.text
+    assert resp.json()["state"] == "CHANGES_REQUESTED"
+
+    requests = await _settle(webhook_requests)
+    [event] = [json.loads(r.content) for r in requests]
+    assert event["review"]["state"] == "changes_requested"

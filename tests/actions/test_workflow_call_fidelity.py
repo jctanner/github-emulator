@@ -222,3 +222,196 @@ async def test_a_called_workflows_default_reaches_its_jobs(monkeypatch):
         db,
     )
     assert result["jobs"]["stage / agent"]["env"]["MODE"] == "per-repo"
+
+
+# --- secrets forwarded from the triggering workflow ----------------------
+#
+# A run's own workflow reads the repository's secrets, which are loaded when
+# a job is promoted, not when the run is created. The materialiser substituted
+# `${{ secrets.X }}` against no secrets at all, so every forwarded secret
+# became "" and then overrode the repository's value in the called job.
+
+
+_CALLED_READS_SECRET = {
+    "jobs": {
+        "agent": {
+            "runs-on": ["self-hosted"],
+            "env": {"TOKEN": "${{ secrets.MY_SECRET }}"},
+            "steps": [{"run": "true"}],
+        }
+    }
+}
+
+
+def _promoted_secret(job):
+    base = {"github": {}, "secrets": {"MY_SECRET": "repo-value", "OTHER": "other"}}
+    context = workflow_service._job_context(base, job)
+    return workflow_service.render_expressions(job["env"]["TOKEN"], context)
+
+
+@pytest.mark.asyncio
+async def test_a_forwarded_repository_secret_reaches_the_called_job(monkeypatch):
+    db = _fake_db_and_detect(monkeypatch, _CALLED_READS_SECRET)
+    result = await workflow_service.materialize_reusable_workflows(
+        {"jobs": {"stage": {
+            "uses": "org/config/.github/workflows/called.yml@main",
+            "secrets": {"MY_SECRET": "${{ secrets.MY_SECRET }}"},
+        }}},
+        "caller.git", "main", db,
+    )
+    job = result["jobs"]["stage / agent"]
+    assert _promoted_secret(job) == "repo-value"
+
+
+@pytest.mark.asyncio
+async def test_a_renamed_forwarded_secret_reaches_the_called_job(monkeypatch):
+    db = _fake_db_and_detect(monkeypatch, _CALLED_READS_SECRET)
+    result = await workflow_service.materialize_reusable_workflows(
+        {"jobs": {"stage": {
+            "uses": "org/config/.github/workflows/called.yml@main",
+            "secrets": {"MY_SECRET": "${{ secrets.OTHER }}"},
+        }}},
+        "caller.git", "main", db,
+    )
+    assert _promoted_secret(result["jobs"]["stage / agent"]) == "other"
+
+
+@pytest.mark.asyncio
+async def test_inherit_from_the_triggering_workflow_reaches_the_called_job(monkeypatch):
+    db = _fake_db_and_detect(monkeypatch, _CALLED_READS_SECRET)
+    result = await workflow_service.materialize_reusable_workflows(
+        {"jobs": {"stage": {
+            "uses": "org/config/.github/workflows/called.yml@main",
+            "secrets": "inherit",
+        }}},
+        "caller.git", "main", db,
+    )
+    assert _promoted_secret(result["jobs"]["stage / agent"]) == "repo-value"
+
+
+@pytest.mark.asyncio
+async def test_a_called_job_does_not_see_secrets_it_was_not_passed(monkeypatch):
+    db = _fake_db_and_detect(monkeypatch, {"jobs": {"agent": {
+        "runs-on": ["self-hosted"],
+        "env": {"TOKEN": "${{ secrets.OTHER }}"},
+        "steps": [{"run": "true"}],
+    }}})
+    result = await workflow_service.materialize_reusable_workflows(
+        {"jobs": {"stage": {
+            "uses": "org/config/.github/workflows/called.yml@main",
+            "secrets": {"MY_SECRET": "${{ secrets.MY_SECRET }}"},
+        }}},
+        "caller.git", "main", db,
+    )
+    assert result["jobs"]["stage / agent"]["env"]["TOKEN"] == ""
+
+
+@pytest.mark.asyncio
+async def test_a_plain_job_keeps_its_secret_expression_for_promotion(monkeypatch):
+    db = _fake_db_and_detect(monkeypatch, _CALLED_READS_SECRET)
+    result = await workflow_service.materialize_reusable_workflows(
+        {"jobs": {"plain": {
+            "runs-on": ["self-hosted"],
+            "env": {"TOKEN": "${{ secrets.MY_SECRET }}"},
+            "steps": [{"run": "true"}],
+        }}},
+        "caller.git", "main", db,
+    )
+    assert _promoted_secret(result["jobs"]["plain"]) == "repo-value"
+
+
+def _fake_db_and_detect_many(monkeypatch, workflows):
+    """Like _fake_db_and_detect, for several called workflows by file name."""
+    config_repo = SimpleNamespace(full_name="org/config", disk_path="config.git")
+
+    async def fake_detect(path, ref="HEAD"):
+        return [
+            {"_path": f".github/workflows/{name}", **body}
+            for name, body in workflows.items()
+        ]
+
+    class Result:
+        def scalar_one_or_none(self):
+            return config_repo
+
+    class FakeDB:
+        async def execute(self, _query):
+            return Result()
+
+    monkeypatch.setattr(workflow_service, "detect_workflows", fake_detect)
+    return FakeDB()
+
+
+def _promoted(job, key, repo_secrets):
+    context = workflow_service._job_context({"github": {}, "secrets": repo_secrets}, job)
+    return workflow_service.render_expressions(job["env"][key], context)
+
+
+@pytest.mark.asyncio
+async def test_swapped_forwarded_secrets_each_reach_their_own_name(monkeypatch):
+    db = _fake_db_and_detect(monkeypatch, {"jobs": {"agent": {
+        "runs-on": ["self-hosted"],
+        "env": {"GOT_A": "${{ secrets.A }}", "GOT_B": "${{ secrets.B }}"},
+        "steps": [{"run": "true"}],
+    }}})
+    result = await workflow_service.materialize_reusable_workflows(
+        {"jobs": {"stage": {
+            "uses": "org/config/.github/workflows/called.yml@main",
+            "secrets": {"A": "${{ secrets.B }}", "B": "${{ secrets.A }}"},
+        }}},
+        "caller.git", "main", db,
+    )
+    job = result["jobs"]["stage / agent"]
+    repo = {"A": "repo-a", "B": "repo-b"}
+    assert _promoted(job, "GOT_A", repo) == "repo-b"
+    assert _promoted(job, "GOT_B", repo) == "repo-a"
+
+
+@pytest.mark.asyncio
+async def test_a_secret_renamed_at_two_levels_reaches_the_innermost_job(monkeypatch):
+    db = _fake_db_and_detect_many(monkeypatch, {
+        "middle.yml": {"jobs": {"inner": {
+            "uses": "org/config/.github/workflows/leaf.yml@main",
+            "secrets": {"LEAF": "${{ secrets.MID }}"},
+        }}},
+        "leaf.yml": {"jobs": {"agent": {
+            "runs-on": ["self-hosted"],
+            "env": {"GOT": "${{ secrets.LEAF }}", "UNPASSED": "${{ secrets.MID }}"},
+            "steps": [{"run": "true"}],
+        }}},
+    })
+    result = await workflow_service.materialize_reusable_workflows(
+        {"jobs": {"outer": {
+            "uses": "org/config/.github/workflows/middle.yml@main",
+            "secrets": {"MID": "${{ secrets.TOP }}"},
+        }}},
+        "caller.git", "main", db,
+    )
+    [job] = [j for name, j in result["jobs"].items() if name.endswith("agent")]
+    repo = {"TOP": "top-value", "MID": "repo-mid", "LEAF": "repo-leaf"}
+    assert _promoted(job, "GOT", repo) == "top-value"
+    # The leaf was passed only LEAF, so its MID is unset.
+    assert job["env"]["UNPASSED"] == ""
+
+
+@pytest.mark.asyncio
+async def test_a_secret_passed_as_an_input_follows_the_callers_mapping(monkeypatch):
+    db = _fake_db_and_detect_many(monkeypatch, {
+        "middle.yml": {
+            "on": {"workflow_call": {"inputs": {"token": {"type": "string"}}}},
+            "jobs": {"agent": {
+                "runs-on": ["self-hosted"],
+                "env": {"GOT": "${{ inputs.token }}"},
+                "steps": [{"run": "true"}],
+            }},
+        },
+    })
+    result = await workflow_service.materialize_reusable_workflows(
+        {"jobs": {"outer": {
+            "uses": "org/config/.github/workflows/middle.yml@main",
+            "with": {"token": "${{ secrets.TOP }}"},
+        }}},
+        "caller.git", "main", db,
+    )
+    job = result["jobs"]["outer / agent"]
+    assert _promoted(job, "GOT", {"TOP": "top-value"}) == "top-value"

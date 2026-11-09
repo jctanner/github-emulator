@@ -289,3 +289,30 @@ def test_strategy_options_may_be_expressions():
         "fail-fast": False, "job-index": 1, "job-total": 4, "max-parallel": 3,
     }
     assert strategy_context({}, 0, 2)["fail-fast"] is True
+
+
+@pytest.mark.asyncio
+async def test_a_matrix_job_skipped_before_it_expands_keeps_its_unrendered_name(
+    executable_workflow, db_session, test_user,  # noqa: F811
+):
+    """GitHub names a matrix job that never expanded by its template.
+
+    Fullsend's behaviour suite reads ``Harness run (${{ matrix.agent }})`` as
+    "no harness scheduled". The emulator rendered it against an empty matrix,
+    so a skipped job read ``Harness run ()``: an instance that was scheduled.
+    """
+    _repo, workflow, _ = executable_workflow
+    run = await _run(db_session, workflow, test_user, {
+        "harness-dispatch": _dispatch_job(), "harness-run": HARNESS,
+    })
+    rows = await _rows(db_session, run)
+    [harness] = [r for r in rows if r.job_key == "harness-run"]
+    assert harness.name == "Harness run (${{ matrix.agent }})"
+
+    dispatch = next(r for r in rows if r.job_key == "harness-dispatch")
+    await _finish(db_session, dispatch, "success", {"matrix": ""})
+    await dispatch_ready_jobs(db_session, run.id)
+    await db_session.commit()
+    [harness] = [r for r in await _rows(db_session, run) if r.job_key == "harness-run"]
+    assert (harness.status, harness.conclusion) == ("completed", "skipped")
+    assert harness.name == "Harness run (${{ matrix.agent }})"

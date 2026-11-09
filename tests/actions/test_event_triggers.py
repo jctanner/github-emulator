@@ -342,7 +342,8 @@ async def test_pull_request_review_and_push_sync_events(
         ("push", ""),
         ("pull_request_target", "synchronize"),
     ]
-    assert runs[1].trigger_payload["review"]["state"] == "APPROVED"
+    # The event payload's form, not the REST API's APPROVED.
+    assert runs[1].trigger_payload["review"]["state"] == "approved"
     assert runs[2].trigger_payload["created"] is False
     assert runs[3].trigger_payload["pull_request"]["number"] == 1
 

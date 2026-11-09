@@ -568,6 +568,17 @@ class _IfExpressionParser:
             return _string(needle).lower() in _string(haystack).lower()
         if name == "format" and arguments:
             return _format_expression(arguments[0], arguments[1:])
+        if name == "join" and len(arguments) in (1, 2):
+            # join(array, separator=","): each item as a string. A non-array
+            # is returned as a string. Fullsend passes PR and issue labels to
+            # its routing as join(labels.*.name, ','); without join they
+            # rendered empty, so the fullsend-fix label was never seen.
+            items, separator = arguments[0], ","
+            if len(arguments) == 2:
+                separator = _string(arguments[1])
+            if isinstance(items, list):
+                return separator.join(_string(item) for item in items)
+            return _string(items)
         if name == "fromJSON" and len(arguments) == 1:
             return _parse_json(arguments[0])
         if name == "toJSON" and len(arguments) == 1:

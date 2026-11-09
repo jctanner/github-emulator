@@ -320,13 +320,29 @@ def _combine_conditions(caller_condition: object, child_condition: object) -> st
     return f"({caller_text}) && ({child_text})"
 
 
-def _render_reusable_call_context(value: object, inputs: dict, secrets: dict) -> object:
+def _render_reusable_call_context(
+    value: object, inputs: dict, secrets: dict | None, *, chain: bool = False,
+) -> object:
     """Resolve only the contexts supplied to a reusable workflow call.
 
     ``github.*`` and ``steps.*`` belong to the eventual caller/runner context
     and must remain available for the normal expression pass.  Inputs and
     secrets, however, are lexical values of the called workflow and must be
     substituted before its jobs are flattened into the caller run.
+
+    ``secrets`` is None in the top-level workflow, whose secrets are the
+    repository's. Those are read when the job is promoted, so ``secrets.*``
+    stays an expression for ``_job_context`` to render.
+
+    A passed secret may itself be such an expression, written in the
+    repository's names (``A: ${{ secrets.B }}``). ``chain`` is for a call's
+    own ``with:`` and ``secrets:``, which are written in the caller's names:
+    there the expression is substituted, so a mapping follows each call back
+    to the repository. Anywhere else the callee's ``secrets.A`` is kept and
+    resolved by ``_job_context`` from the call's secrets. Substituting it
+    there too put ``secrets.B`` in the callee's body, which the call's secrets
+    then remapped a second time, so a swap (``A: B``, ``B: A``) read back the
+    wrong value.
     """
     if isinstance(value, str):
         def replace(match):
@@ -342,17 +358,25 @@ def _render_reusable_call_context(value: object, inputs: dict, secrets: dict) ->
             if expression.startswith("inputs."):
                 return _lookup_context({"inputs": inputs}, expression)
             if expression.startswith("secrets."):
+                if secrets is None:
+                    return match.group(0)
+                passed = secrets.get(expression.split(".", 2)[1])
+                if not chain and isinstance(passed, str) and "${{" in passed:
+                    return match.group(0)
                 return _lookup_context({"secrets": secrets}, expression)
             return match.group(0)
 
         return _EXPRESSION_RE.sub(replace, value)
     if isinstance(value, dict):
         return {
-            key: _render_reusable_call_context(item, inputs, secrets)
+            key: _render_reusable_call_context(item, inputs, secrets, chain=chain)
             for key, item in value.items()
         }
     if isinstance(value, list):
-        return [_render_reusable_call_context(item, inputs, secrets) for item in value]
+        return [
+            _render_reusable_call_context(item, inputs, secrets, chain=chain)
+            for item in value
+        ]
     return value
 
 
@@ -529,7 +553,7 @@ async def _materialize_reusable_jobs(
     db: AsyncSession | None,
     *,
     inputs: dict,
-    secrets: dict,
+    secrets: dict | None,
     depth: int,
     ancestry: tuple[str, ...],
 ) -> dict:
@@ -564,7 +588,9 @@ async def _materialize_reusable_jobs(
             expanded[key] = placeholder
             continue
 
-        call_inputs = _render_reusable_call_context(config.get("with", {}), inputs, secrets)
+        call_inputs = _render_reusable_call_context(
+            config.get("with", {}), inputs, secrets, chain=True,
+        )
         if not isinstance(call_inputs, dict):
             call_inputs = {}
         call_inputs, missing_required = apply_workflow_call_inputs(called, call_inputs)
@@ -579,9 +605,16 @@ async def _materialize_reusable_jobs(
         # while looking like it had been honoured.
         raw_secrets = config.get("secrets")
         if isinstance(raw_secrets, str) and raw_secrets.strip() == "inherit":
-            call_secrets = dict(secrets)
+            call_secrets = None if secrets is None else dict(secrets)
         else:
-            call_secrets = _render_reusable_call_context(raw_secrets or {}, inputs, secrets)
+            # In the top-level workflow, a forwarded ``${{ secrets.X }}`` stays
+            # an expression, rendered against the repository's secrets when
+            # the job is promoted. Substituting it here, where those secrets
+            # are not loaded, froze every forwarded secret to "", and the
+            # empty value then overrode the repository's own.
+            call_secrets = _render_reusable_call_context(
+                raw_secrets or {}, inputs, secrets, chain=True,
+            )
             if not isinstance(call_secrets, dict):
                 call_secrets = {}
 
@@ -614,7 +647,9 @@ async def _materialize_reusable_jobs(
             # substituted lexically, so the called workflow's inputs and
             # secrets travel with the job and enter its expression context.
             child["_call_inputs"] = {**call_inputs, **(child.get("_call_inputs") or {})}
-            child["_call_secrets"] = {**call_secrets, **(child.get("_call_secrets") or {})}
+            child["_call_secrets"] = {
+                **(call_secrets or {}), **(child.get("_call_secrets") or {}),
+            }
             # Where this job's workflow actually came from. The stage jobs check
             # out their upstream defaults at exactly this repo and commit, which
             # is how ADR 0062 keeps the dispatch and its defaults in step.
@@ -668,7 +703,7 @@ async def materialize_reusable_workflows(
         ref,
         db,
         inputs=inputs or {},
-        secrets=secrets or {},
+        secrets=secrets,
         depth=0,
         ancestry=(),
     )
@@ -776,6 +811,18 @@ def build_steps_data(steps: list, job_env: dict, context: dict) -> list[dict]:
         for key in ("run", "shell", "working-directory", "uses", "with"):
             if key in step:
                 step_data[key] = render_expressions(step[key], context)
+        if "continue-on-error" in step:
+            # Evaluated to its value, so the runner sees a boolean: rendered
+            # as text, an input false became "False". One that reads
+            # steps.* goes to the runner, which evaluates it after the step
+            # has run, with the server-side contexts in it bound here as a
+            # mixed step condition's are.
+            value = step["continue-on-error"]
+            if isinstance(value, str) and _RUNTIME_CONDITION_RE.search(value):
+                value = "${{ " + bind_server_context(_condition_body(value), context) + " }}"
+            else:
+                value = evaluate_expression_value(value, context)
+            step_data["continue-on-error"] = value
         if "id" in step:
             step_data["id"] = step["id"]
         if step_env:
@@ -1056,6 +1103,15 @@ async def create_workflow_run(
         for job_config in expanded:
             job_expression_context = _job_context(expression_context, job_config)
             display_name = render_expressions(job_config.get("_display_name", job_config.get("name", job_config["key"])), job_expression_context)
+            if dynamic_matrix is not None:
+                # Not expanded yet, so there is no matrix to render a
+                # matrix.* name with. GitHub shows such a job, and one skipped
+                # before it expands, under its unrendered name
+                # ("Harness run (${{ matrix.agent }})"). Rendering it against
+                # an empty matrix gave "Harness run ()", which reads as an
+                # instance that was scheduled. Instances are named when they
+                # expand at promotion.
+                display_name = job_config.get("name") or job_config["key"]
             needs = job_config.get("needs", [])
             initial_status = "queued" if not needs else "waiting"
             should_run = evaluate_job_if(job_config.get("if"), job_expression_context)
@@ -1255,7 +1311,7 @@ def _label_payload(label) -> dict:
 
 
 def _issue_payload(issue, repository: Repository) -> dict:
-    return {
+    payload = {
         "id": issue.id,
         "node_id": f"I_{issue.id}",
         "number": issue.number,
@@ -1272,6 +1328,22 @@ def _issue_payload(issue, repository: Repository) -> dict:
         "html_url": f"{settings.BASE_URL}/{repository.full_name}/issues/{issue.number}",
         "repository": _repository_payload(repository),
     }
+    # GitHub marks an issue that is a pull request with a `pull_request`
+    # object, in event payloads as in the REST API. Workflows test it to tell
+    # a comment on a pull request from one on an issue
+    # (`github.event.issue.pull_request`). Without it, every PR comment read
+    # as an issue comment, so `/fs-fix` and `/fs-review` never matched.
+    pr = issue.__dict__.get("pull_request")
+    if pr is not None:
+        number_path = f"{repository.full_name}/pull/{issue.number}"
+        payload["pull_request"] = {
+            "url": f"{settings.BASE_URL}/api/v3/repos/{repository.full_name}/pulls/{issue.number}",
+            "html_url": f"{settings.BASE_URL}/{number_path}",
+            "diff_url": f"{settings.BASE_URL}/{number_path}.diff",
+            "patch_url": f"{settings.BASE_URL}/{number_path}.patch",
+            "merged_at": pr.merged_at.isoformat() if pr.merged_at else None,
+        }
+    return payload
 
 
 def _pull_request_payload(pr, issue, repository: Repository) -> dict:
@@ -1366,7 +1438,11 @@ def build_activity_payload(
             "id": review.id,
             "node_id": f"REV_{review.id}",
             "body": review.body,
-            "state": review.state,
+            # The REST API reports CHANGES_REQUESTED; the pull_request_review
+            # event reports changes_requested. Workflows compare with the
+            # event's form, so Fullsend's fix stage never started from a
+            # review while the payload carried the REST one.
+            "state": (review.state or "").lower(),
             "user": _user_payload(review.user),
             "commit_id": review.commit_id,
             "submitted_at": review.submitted_at.isoformat() if review.submitted_at else None,
@@ -1458,7 +1534,8 @@ async def dispatch_event(
             ref_spec,
             db,
             inputs=payload.get("inputs", {}),
-            secrets=payload.get("secrets", {}),
+            # None: the secrets are the repository's, read at job promotion.
+            secrets=payload.get("secrets"),
         )
         run = await create_workflow_run(
             db,

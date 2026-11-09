@@ -390,6 +390,98 @@ def _github_context(job: dict | None, github_token: str = "") -> dict:
     }
 
 
+# GitHub's runner writes a workflow command to the job log in its rendered
+# form: `::notice file=a.py::text` is stored as `##[notice]text`, and
+# `::group::name` as `##[group]name`. Tools that read job logs, Fullsend's
+# behaviour tests among them, look for the rendered form. `::add-mask::` and
+# `::debug::` are left as they are.
+#
+# As in the runner's parser, the properties run to the first `::`, so a
+# property may hold a single colon (`file=C:\\a.py`). The message's escapes
+# (`%25`, `%0D`, `%0A`) are decoded, so a multiline notice reads as one.
+_WORKFLOW_COMMAND_RE = re.compile(
+    r"^::(notice|warning|error|group|endgroup)(?: (?:(?!::)[^\r\n])*)?::([^\r\n]*)",
+    re.MULTILINE,
+)
+
+
+def _unescape_command_data(text: str) -> str:
+    return text.replace("%0D", "\r").replace("%0A", "\n").replace("%25", "%")
+
+
+def _render_workflow_commands(text: str) -> str:
+    def replace(match: "re.Match[str]") -> str:
+        return f"##[{match.group(1)}]{_unescape_command_data(match.group(2))}"
+
+    return _WORKFLOW_COMMAND_RE.sub(replace, text)
+
+
+class _StepRecord(dict):
+    """A step's outputs, plus the ``outcome`` and ``conclusion`` it ended with.
+
+    It is a dict of the outputs so everything that already reads
+    ``step_outputs[id]`` as outputs (job outputs, the server report) is
+    unchanged; ``_runner_context`` reads the two results from the attributes.
+    """
+
+    def __init__(self, outputs=None, outcome="success", conclusion=None):
+        super().__init__(outputs or {})
+        self.outcome = outcome
+        self.conclusion = outcome if conclusion is None else conclusion
+
+
+def _continues_on_error(step: dict, step_outputs: dict, job=None, inputs=None) -> bool:
+    """Whether a step's ``continue-on-error`` is set.
+
+    It is evaluated after the step has run, as GitHub does, so an expression
+    can read the step's own outputs. The server sends a boolean, or an
+    expression that reads ``steps.*``.
+    """
+    value = step.get("continue-on-error")
+    if isinstance(value, bool):
+        return value
+    if not isinstance(value, str):
+        return False
+    text = value.strip()
+    if text.startswith("${{") and text.endswith("}}"):
+        try:
+            return bool(_StepIfParser(
+                text[3:-2].strip(), _runner_context(inputs, step_outputs, job=job),
+            ).evaluate())
+        except ValueError as exc:
+            log.warning("Could not evaluate continue-on-error %r: %s", value, exc)
+            return False
+    return text.lower() == "true"
+
+
+def _record_step(
+    step_outputs: dict, step: dict, outcome: str, continue_on_error=None,
+    job=None, inputs=None,
+) -> str:
+    """Record a finished or skipped step and return its conclusion.
+
+    GitHub exposes both results to later steps: ``outcome`` is what the step
+    did, ``conclusion`` is that after ``continue-on-error``, so a failing
+    step that continues on error has outcome failure and conclusion success.
+    Without them ``steps.<id>.outcome == 'success'`` was always false, and a
+    step guarded on an earlier one never ran.
+
+    ``continue_on_error`` is the step's unrendered setting: rendering it
+    before the step ran would freeze an expression on the step's own
+    outputs to false.
+    """
+    record = _StepRecord(
+        step.get("outputs") if outcome != "skipped" else {}, outcome,
+    )
+    if step.get("id"):
+        step_outputs[str(step["id"])] = record
+    if outcome == "failure" and _continues_on_error(
+        {"continue-on-error": continue_on_error}, step_outputs, job, inputs,
+    ):
+        record.conclusion = "success"
+    return record.conclusion
+
+
 def _runner_context(
     inputs: dict | None,
     step_outputs: dict[str, dict[str, str]] | None,
@@ -403,7 +495,11 @@ def _runner_context(
     """
     return {
         "steps": {
-            str(key): {"outputs": dict(value or {})}
+            str(key): {
+                "outputs": dict(value or {}),
+                "outcome": getattr(value, "outcome", "success"),
+                "conclusion": getattr(value, "conclusion", "success"),
+            }
             for key, value in (step_outputs or {}).items()
         },
         "inputs": {str(k): v for k, v in (inputs or {}).items()},
@@ -935,7 +1031,7 @@ class RunnerClient:
 
         def append_log(chunk: str) -> None:
             if chunk:
-                self._upload_logs(job_repository, job_id, chunk)
+                self._upload_logs(job_repository, job_id, _render_workflow_commands(chunk))
 
         append_log(f"Job {job_id}: {job.get('name', '')}\n")
 
@@ -958,6 +1054,7 @@ class RunnerClient:
             if not should_run:
                 step["status"] = "completed"
                 step["conclusion"] = "skipped"
+                _record_step(step_outputs, step, "skipped")
                 append_log(
                     "Skipped because an earlier step failed\n"
                     if not all_passed and step.get("if") is None
@@ -976,11 +1073,15 @@ class RunnerClient:
             )
             runtime_env.update(step_updates)
             if rendered_step.get("id"):
-                outputs = dict(rendered_step.get("outputs") or {})
-                step_outputs[str(rendered_step["id"])] = outputs
-                step["outputs"] = outputs
+                step["outputs"] = dict(rendered_step.get("outputs") or {})
+            outcome = result
+            result = _record_step(
+                step_outputs, rendered_step, outcome, step.get("continue-on-error"), job,
+            )
             step["status"] = "completed"
             step["conclusion"] = result
+            if outcome != result:
+                append_log("Continuing because the step sets continue-on-error\n")
             append_log("##[endgroup]\n")
 
             if result != "success":
@@ -1852,6 +1953,7 @@ class RunnerClient:
                 if log_callback:
                     log_callback(message)
                 log_lines.append(message)
+                _record_step(step_outputs, action_step, "skipped")
                 continue
             rendered = _render_local_action(action_step, inputs, step_outputs, github_token, job)
             rendered.setdefault("number", index)
@@ -1869,8 +1971,10 @@ class RunnerClient:
             runtime_env.update(updates)
             if not log_callback:
                 log_lines.append(output)
-            if rendered.get("id"):
-                step_outputs[str(rendered["id"])] = dict(rendered.get("outputs") or {})
+            result = _record_step(
+                step_outputs, rendered, result, action_step.get("continue-on-error"),
+                job, inputs,
+            )
             if result != "success":
                 # Remember the first failure and carry on: a later step may
                 # still be meant to run, and the action's own result is the
