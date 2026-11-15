@@ -42,6 +42,8 @@ class WorkflowRunResponse(BaseModel):
     html_url: str
     created_at: str
     updated_at: str
+    run_started_at: str | None = None
+    display_title: str | None = None
     actor: SimpleUser | None = None
 
 
@@ -55,8 +57,11 @@ class WorkflowJobResponse(BaseModel):
     run_id: int
     name: str
     workflow_name: str | None = None
+    head_sha: str | None = None
+    head_branch: str | None = None
     status: str
     conclusion: str | None = None
+    created_at: str | None = None
     started_at: str | None = None
     completed_at: str | None = None
     steps: list[dict[str, Any]] = []

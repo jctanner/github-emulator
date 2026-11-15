@@ -2,7 +2,6 @@
 
 import asyncio
 import copy
-import fnmatch
 import itertools
 import logging
 import re
@@ -11,11 +10,11 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 
 import yaml
-from sqlalchemy import select, func
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
-from app.models.actions import Workflow, WorkflowRun, WorkflowJob, Secret
+from app.models.actions import Secret, Workflow, WorkflowJob, WorkflowRun
 from app.models.issue import Issue
 from app.models.pull_request import PullRequest
 from app.models.repository import Repository
@@ -43,7 +42,7 @@ class EventEnvelope:
     occurred_at: datetime
 
 
-from app.services.workflow_expressions import (
+from app.services.workflow_expressions import (  # noqa: E402 (after the event types it needs)
     _EXPRESSION_RE,
     _ExpressionError,
     _IfExpressionParser,
@@ -53,6 +52,7 @@ from app.services.workflow_expressions import (
     evaluate_job_if,
     render_expressions,
 )
+
 
 async def detect_workflows(repo_disk_path: str, ref: str = "HEAD") -> list[dict]:
     """Read workflow files from *ref* in a bare repository."""
@@ -93,9 +93,10 @@ async def detect_workflows(repo_disk_path: str, ref: str = "HEAD") -> list[dict]
     return workflows
 
 
-from app.services.webhook_service import schedule_webhooks
-from app.services.cross_repo_pulls import same_repository_head, sync_head_ref
-from app.services.workflow_triggers import evaluate_trigger
+from app.services.cross_repo_pulls import same_repository_head, sync_head_ref  # noqa: E402
+from app.services.webhook_service import schedule_webhooks  # noqa: E402
+from app.services.workflow_triggers import evaluate_trigger  # noqa: E402
+
 
 def dynamic_matrix_expression(job_config: dict) -> str | None:
     """The expression of a dynamic matrix (``matrix: ${{ fromJSON(...) }}``),
@@ -127,7 +128,7 @@ def matrix_combinations(matrix: object) -> list[dict] | None:
     if keys:
         values = [matrix[k] if isinstance(matrix[k], list) else [matrix[k]] for k in keys]
         for combo in itertools.product(*values):
-            entry = dict(zip(keys, combo))
+            entry = dict(zip(keys, combo, strict=True))
             if not any(
                 isinstance(exc, dict) and all(entry.get(k) == v for k, v in exc.items())
                 for exc in exclude
@@ -138,7 +139,7 @@ def matrix_combinations(matrix: object) -> list[dict] | None:
         if not isinstance(inc, dict):
             continue
         merged = False
-        for combo, original in zip(combos, originals):
+        for combo, original in zip(combos, originals, strict=False):
             if all(original[k] == v for k, v in inc.items() if k in original):
                 combo.update(inc)
                 merged = True
@@ -883,7 +884,48 @@ async def build_run_expression_context(db, run) -> dict:
             "run_number": run.run_number,
             "sha": run.head_sha,
             "server_url": settings.BASE_URL,
+            **await github_identity_context(db, run),
         },
+    }
+
+
+async def github_identity_context(db: AsyncSession, run: WorkflowRun) -> dict:
+    """The ``github`` context values that name who and what started the run.
+
+    GitHub sets each of these on every run; expressions rendered here (step
+    env, with:, if:) read ``${{ github.actor }}`` and the rest, and they were
+    empty: actor, actor_id, triggering_actor, api_url, graphql_url,
+    repository_id, repository_owner_id, run_attempt and workflow_ref (probed
+    side by side with GitHub). GitHub gives ids and run_attempt as strings.
+    """
+    # Read with getattr: callers may pass a partial run (tests do).
+    repo_id = getattr(run, "repo_id", None)
+    actor_id = getattr(run, "actor_id", None)
+    workflow_id = getattr(run, "workflow_id", None)
+    repo = (await db.execute(
+        select(Repository).where(Repository.id == repo_id)
+    )).scalar_one_or_none() if repo_id else None
+    actor = (await db.execute(
+        select(User).where(User.id == actor_id)
+    )).scalar_one_or_none() if actor_id else None
+    workflow = (await db.execute(
+        select(Workflow).where(Workflow.id == workflow_id)
+    )).scalar_one_or_none() if workflow_id else None
+    payload = getattr(run, "trigger_payload", None) or {}
+    ref = payload.get("ref") or f"refs/heads/{getattr(run, 'head_branch', '')}"
+    full_name = repo.full_name if repo else ""
+    login = actor.login if actor else ""
+    return {
+        "actor": login,
+        "actor_id": str(actor.id) if actor else "",
+        "triggering_actor": login,
+        "api_url": f"{settings.BASE_URL}/api/v3",
+        "graphql_url": f"{settings.BASE_URL}/api/graphql",
+        "repository_id": str(repo.id) if repo else "",
+        "repository_owner_id": str(repo.owner_id) if repo else "",
+        "run_attempt": str(getattr(run, "run_attempt", None) or 1),
+        "workflow": workflow.name if workflow else "",
+        "workflow_ref": f"{full_name}/{workflow.path}@{ref}" if workflow and full_name else "",
     }
 
 
@@ -1050,6 +1092,7 @@ async def create_workflow_run(
             "run_number": run.run_number,
             "sha": head_sha,
             "server_url": settings.BASE_URL,
+            **await github_identity_context(db, run),
         },
     }
 
@@ -1795,8 +1838,8 @@ async def get_ref_sha(repo_disk_path: str, ref: str) -> str:
     return stdout.decode().strip() if proc.returncode == 0 else ""
 
 
-from app.services.workflow_scheduler import (
-    cancel_workflow_run,
+from app.services.workflow_scheduler import (  # noqa: E402 (imports this module back)
+    cancel_workflow_run,  # noqa: F401 (re-exported: callers import it from here)
     check_run_completion,
     dispatch_ready_jobs,
 )

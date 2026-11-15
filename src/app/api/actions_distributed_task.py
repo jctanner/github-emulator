@@ -671,6 +671,8 @@ def _job_request_message(
             }),
             "matrix": None,
             "github": _context_dictionary({
+                "actor": run.actor.login if run and run.actor else "",
+                "actor_id": str(run.actor_id) if run and run.actor_id else "",
                 "api_url": f"{runner_base_url}/api/v3",
                 "base_ref": "",
                 "event_name": run.event if run else "workflow_dispatch",
@@ -691,7 +693,12 @@ def _job_request_message(
                 "server_url": runner_base_url,
                 "sha": sha,
                 "token": access_token,
+                "triggering_actor": run.actor.login if run and run.actor else "",
                 "workflow": workflow_name,
+                "workflow_ref": (
+                    f"{repo_full_name}/{run.workflow.path}@{ref}"
+                    if run and run.workflow and run.workflow.path else ""
+                ),
                 "workspace": "",
             }),
         },
