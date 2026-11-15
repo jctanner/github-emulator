@@ -19,3 +19,5 @@ a GitHub release with its digest. Based on the Jira CC-43 reference pattern.
 - Workflow actionlint, publication regression tests, bash syntax and git diff --check passed locally.
 - CI and container smoke: must pass in the PR before merge.
 - First release and image digest: pending.
+
+Container smoke diagnostics found a relative SQLite URL in the standalone Dockerfile. Fixed it to use the intended absolute /data path. No workflow was retried; the change is validated by a new PR commit.
