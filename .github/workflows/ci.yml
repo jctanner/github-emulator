@@ -18,18 +18,11 @@ jobs:
         with:
           python-version: '3.13'
       - run: uv sync --extra dev
-      - run: uv run pytest tests/ -q --disable-warnings
-  frontend:
-    runs-on: ubuntu-latest
-    defaults:
-      run:
-        working-directory: src/frontend
-    steps:
-      - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
           node-version: '22'
           cache: npm
           cache-dependency-path: src/frontend/package-lock.json
-      - run: npm ci
-      - run: npm run build
+      - run: npm ci && npm run build
+        working-directory: src/frontend
+      - run: uv run pytest tests/ -q --disable-warnings

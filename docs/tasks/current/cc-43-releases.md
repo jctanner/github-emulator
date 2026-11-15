@@ -21,3 +21,9 @@ a GitHub release with its digest. Based on the Jira CC-43 reference pattern.
 - First release and image digest: pending.
 
 Container smoke diagnostics found a relative SQLite URL in the standalone Dockerfile. Fixed it to use the intended absolute /data path. No workflow was retried; the change is validated by a new PR commit.
+
+Full Python CI passed 1065 tests and failed one static-file security-header
+test because the separate frontend job's dist directory is not shared with
+the Python runner. The CI test job now builds the frontend in its own
+workspace before running the complete Python suite. The redundant separate
+frontend job is removed. No backend tests were skipped or marked optional.
