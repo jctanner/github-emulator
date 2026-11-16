@@ -110,18 +110,24 @@ async def _create_runner_from_registration(
         labels = ["self-hosted", "linux"]
 
     runner_token = f"ghp_runner_{secrets.token_urlsafe(32)}"
-    name = body.get("name", body.get("agentName", "unnamed-runner"))
+    given_name = body.get("name") or body.get("agentName")
+    name = given_name or "unnamed-runner"
     # A pod that restarts registers again under the same name. That used to
     # create a new row each time and leave the old one reporting online -
     # 39 registrations for one deployment on 2026-08-28. The same name in
     # the same scope is the same runner: reuse the row, re-key its token.
+    # actions/runner's config.sh sends no name here (only url and
+    # runner_event; the name comes with the agent add that follows), so an
+    # unnamed registration is always a new runner. Reusing the placeholder
+    # row re-keyed it under runners registering at the same time, and the
+    # earlier ones' tokens stopped working (401).
     scope_filter = (
         Runner.repo_id == reg.repo_id if reg is not None
         else Runner.enterprise_slug == enterprise_reg.enterprise_slug
     )
     existing = (await db.execute(
         select(Runner).where(Runner.name == name, scope_filter)
-    )).scalars().first()
+    )).scalars().first() if given_name else None
     if existing is not None:
         existing.os = normalise_runner_os(body.get("os", body.get("osDescription"))) or existing.os
         existing.status = "online"
