@@ -50,6 +50,7 @@ from app.services.workflow_expressions import (  # noqa: E402 (after the event t
     bind_server_context,
     evaluate_expression_value,
     evaluate_job_if,
+    ref_facts,
     render_expressions,
 )
 
@@ -811,7 +812,7 @@ def build_steps_data(steps: list, job_env: dict, context: dict) -> list[dict]:
             step_data["if"] = _resolve_step_condition(step["if"], context)
         for key in ("run", "shell", "working-directory", "uses", "with"):
             if key in step:
-                step_data[key] = render_expressions(step[key], context)
+                step_data[key] = render_expressions(step[key], context, for_runner=key in ("run", "with"))
         if "continue-on-error" in step:
             # Evaluated to its value, so the runner sees a boolean: rendered
             # as text, an input false became "False". One that reads
@@ -827,7 +828,7 @@ def build_steps_data(steps: list, job_env: dict, context: dict) -> list[dict]:
         if "id" in step:
             step_data["id"] = step["id"]
         if step_env:
-            step_data["env"] = render_expressions(step_env, context)
+            step_data["env"] = render_expressions(step_env, context, for_runner=True)
         steps_data.append(step_data)
     return steps_data
 
@@ -902,15 +903,18 @@ async def github_identity_context(db: AsyncSession, run: WorkflowRun) -> dict:
     repo_id = getattr(run, "repo_id", None)
     actor_id = getattr(run, "actor_id", None)
     workflow_id = getattr(run, "workflow_id", None)
+    # Columns only: the Repository and User entities load their eager
+    # relationships (issues, labels, branches, tokens, memberships...).
     repo = (await db.execute(
-        select(Repository).where(Repository.id == repo_id)
-    )).scalar_one_or_none() if repo_id else None
+        select(Repository.id, Repository.owner_id, Repository.full_name, Repository.private)
+        .where(Repository.id == repo_id)
+    )).one_or_none() if repo_id else None
     actor = (await db.execute(
-        select(User).where(User.id == actor_id)
-    )).scalar_one_or_none() if actor_id else None
+        select(User.id, User.login).where(User.id == actor_id)
+    )).one_or_none() if actor_id else None
     workflow = (await db.execute(
-        select(Workflow).where(Workflow.id == workflow_id)
-    )).scalar_one_or_none() if workflow_id else None
+        select(Workflow.name, Workflow.path).where(Workflow.id == workflow_id)
+    )).one_or_none() if workflow_id else None
     payload = getattr(run, "trigger_payload", None) or {}
     ref = payload.get("ref") or f"refs/heads/{getattr(run, 'head_branch', '')}"
     full_name = repo.full_name if repo else ""
@@ -926,6 +930,29 @@ async def github_identity_context(db: AsyncSession, run: WorkflowRun) -> dict:
         "run_attempt": str(getattr(run, "run_attempt", None) or 1),
         "workflow": workflow.name if workflow else "",
         "workflow_ref": f"{full_name}/{workflow.path}@{ref}" if workflow and full_name else "",
+        **static_github_facts(ref, getattr(run, "head_sha", None) or "", full_name, repo.private if repo else None),
+    }
+
+
+def static_github_facts(ref: str, sha: str, full_name: str, private: bool | None) -> dict:
+    """The github context values derived from the ref, sha and repository.
+
+    GitHub sets each on every run, and the runner exports them as GITHUB_REF_NAME,
+    GITHUB_REF_TYPE, GITHUB_REF_PROTECTED and GITHUB_WORKFLOW_SHA. They rendered
+    empty here.
+    """
+    from urllib.parse import urlparse
+
+    host = urlparse(settings.BASE_URL).netloc or "localhost"
+    return {
+        **ref_facts(ref),
+        # A boolean, as on GitHub. Branch protection does not change what a
+        # job may do here.
+        "ref_protected": False,
+        "workflow_sha": sha,
+        "repository_visibility": "" if private is None else ("private" if private else "public"),
+        "repositoryUrl": f"git://{host}/{full_name}.git" if full_name else "",
+        "retention_days": "90",
     }
 
 

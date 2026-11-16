@@ -158,11 +158,35 @@ _EXPRESSION_RE = _ExpressionScanner()
 _NEEDS_PARSER_RE = re.compile(r"\(|&&|==|!=|'|\"")
 # A reference to the runner context root, as a whole path segment.
 _RUNNER_CONTEXT_RE = re.compile(r"(?<![\w.])runner\.")
+# Context values only the runner knows: where it checked out, which action is
+# running, its file commands, and the job's own status. Rendered here they came
+# out empty; the runner fills them in when they are left for it.
+_RUNNER_FILLED = (
+    r"github\.(?:token|workspace|action|action_path|action_ref|action_repository|action_status"
+    r"|event_path|path|env|output|state|step_summary|job)(?![\w])"
+    # job.workflow_* are the server's (the runner gets no job context for them).
+    r"|job\.(?:status|container|services|check_run_id)(?![\w])"
+)
+_RUNNER_FILLED_RE = re.compile(r"(?<![\w.])(?:" + _RUNNER_FILLED + ")")
+_RUNNER_FILLED_PATH_RE = re.compile(r"^(?:" + _RUNNER_FILLED + ")")
+
+
+def ref_facts(ref: str) -> dict:
+    """github.ref_name and github.ref_type for a full ref, as GitHub sets them."""
+    ref = ref or ""
+    for prefix, kind in (("refs/heads/", "branch"), ("refs/tags/", "tag")):
+        if ref.startswith(prefix):
+            return {"ref_name": ref[len(prefix):], "ref_type": kind}
+    if ref.startswith("refs/pull/"):
+        return {"ref_name": ref[len("refs/pull/"):], "ref_type": "branch"}
+    return {"ref_name": ref, "ref_type": "branch" if ref else ""}
 
 def _lookup_context(context: dict, expression: str) -> str:
     value = _lookup_context_value(context, expression)
     if value is None:
         return ""
+    if isinstance(value, bool):
+        return "true" if value else "false"
     if isinstance(value, (dict, list)):
         import json
         return json.dumps(value, separators=(",", ":"))
@@ -506,11 +530,11 @@ class _IfExpressionParser:
             self._take(")")
             return self._parse_accessors(self._call(token, arguments))
 
-        if token == "true":
+        if token == "true":  # noqa: S105 (an expression token, not a password)
             return True
-        if token == "false":
+        if token == "false":  # noqa: S105 (an expression token, not a password)
             return False
-        if token == "null":
+        if token == "null":  # noqa: S105 (an expression token, not a password)
             return None
         return self._parse_accessors(_lookup_context_value(self.context, token))
 
@@ -604,7 +628,8 @@ def _as_literal(value: object) -> str:
         # ``github.event.issue.pull_request``, so collapse to a boolean rather
         # than inventing a comparable string.
         return "true" if value else "false"
-    text = str(value).replace("\\", "\\\\").replace("'", "\\'")
+    # Actions quotes a quote by doubling it; it has no backslash escapes.
+    text = str(value).replace("'", "''")
     return f"'{text}'"
 
 
@@ -691,6 +716,8 @@ def bind_server_context(expression: str, context: dict) -> str:
             continue
         if text.split(".", 1)[0] not in _SERVER_CONTEXT_ROOTS:
             continue
+        if _RUNNER_FILLED_PATH_RE.match(text):
+            continue
         # A path with trailing accessors (``labels.*.name``, ``labels[0]``)
         # is bound whole: binding the path alone turned the array into
         # ``true`` and left ``true.*.name`` for the runner.
@@ -757,16 +784,24 @@ def evaluate_expression_value(value: object, context: dict) -> object:
     return render_expressions(value, context)
 
 
-def render_expressions(value: object, context: dict, resolve_steps: bool = False) -> object:
+def render_expressions(
+    value: object, context: dict, resolve_steps: bool = False, for_runner: bool = False,
+) -> object:
     """Render the small expression subset needed by the M2 runner contract.
 
     ``resolve_steps`` renders ``steps.*`` references instead of preserving
     them. Job ``outputs:`` are resolved server-side after the job finishes, at
     which point its step outputs are known, so that caller opts in.
+
+    ``for_runner`` marks a value the runner evaluates again (a step's run,
+    with and env): an expression reading a value only the runner knows is
+    left for it, with the server's own contexts bound in.
     """
     if isinstance(value, str):
         def replace(match):
             expression = match.group(1).strip()
+            if for_runner and _RUNNER_FILLED_RE.search(expression):
+                return "${{ " + bind_server_context(expression, context) + " }}"
             # Step outputs only exist after a prior step has run. Preserve the
             # expression for the runner's runtime renderer.
             if expression == "github.token":
@@ -794,27 +829,30 @@ def render_expressions(value: object, context: dict, resolve_steps: bool = False
                         "Unable to render expression %r: %s", expression, exc
                     )
                     return ""
-                if value is None or value is False:
+                # GitHub writes a false result as "false" and a null one as "".
+                if value is None:
                     return ""
-                if value is True:
-                    return "true"
+                if isinstance(value, bool):
+                    return "true" if value else "false"
                 if isinstance(value, (dict, list)):
                     return json.dumps(value, separators=(",", ":"))
                 return str(value)
             # Keep one workflow usable for both an automatic event and an
             # explicit workflow_dispatch. This is the common GitHub Actions
-            # fallback form used by the Fullsend fixtures.
-            for alternative in expression.split("||"):
-                resolved = _lookup_context(context, alternative)
-                if resolved:
-                    return resolved
-            return ""
+            # fallback form used by the Fullsend fixtures. ``a || b`` is the
+            # first truthy alternative, else the last one.
+            alternatives = expression.split("||")
+            for alternative in alternatives:
+                raw = _lookup_context_value(context, alternative)
+                if _expression_truthy(raw):
+                    return _lookup_context(context, alternative)
+            return _lookup_context(context, alternatives[-1])
         return _EXPRESSION_RE.sub(replace, value)
     if isinstance(value, dict):
         return {
-            key: render_expressions(item, context, resolve_steps)
+            key: render_expressions(item, context, resolve_steps, for_runner)
             for key, item in value.items()
         }
     if isinstance(value, list):
-        return [render_expressions(item, context, resolve_steps) for item in value]
+        return [render_expressions(item, context, resolve_steps, for_runner) for item in value]
     return value

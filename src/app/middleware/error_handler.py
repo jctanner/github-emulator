@@ -109,8 +109,13 @@ async def github_error_handler(request: Request, exc: GitHubError) -> JSONRespon
 
 
 async def http_401_handler(request: Request, exc: Exception) -> JSONResponse:
-    """Handle 401 Unauthorized."""
-    resp = _build_error_response(401, "Requires authentication")
+    """Handle 401 Unauthorized.
+
+    GitHub answers "Bad credentials" when a credential was sent and refused
+    (revoked, expired or unknown), and "Requires authentication" when none was.
+    """
+    message = "Bad credentials" if request.headers.get("authorization") else "Requires authentication"
+    resp = _build_error_response(401, message)
     # Preserve WWW-Authenticate header so git clients know to send credentials,
     # but not on a page's own fetch: there a Basic challenge makes the browser
     # open its native sign-in dialog, and the web UI signs in with its own form.
