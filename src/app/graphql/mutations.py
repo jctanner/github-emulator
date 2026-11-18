@@ -869,11 +869,17 @@ class Mutation:
         # original issue closes as DUPLICATE. REST reports it in lowercase.
         state_reason = input.state_reason
         if input.duplicate_issue_id is not None:
-            duplicate_of = (
-                await db.execute(
-                    select(IssueModel).where(IssueModel.id == _decode_node_id(input.duplicate_issue_id))
+            # Only an Issue node id names an issue, and one the caller cannot
+            # see answers as missing, so the field cannot probe hidden issues.
+            decoded = _decode_typed_node_id(input.duplicate_issue_id)
+            duplicate_of = None
+            if decoded and decoded[0] == "Issue":
+                duplicate_of = (
+                    await db.execute(select(IssueModel).where(IssueModel.id == decoded[1]))
+                ).scalar_one_or_none()
+                duplicate_of = await _visible_or_none(
+                    info, duplicate_of, duplicate_of.repo_id if duplicate_of else None
                 )
-            ).scalar_one_or_none()
             if duplicate_of is None or duplicate_of.id == issue.id:
                 raise ValueError(f"Issue with id {input.duplicate_issue_id} not found")
             state_reason = state_reason or IssueClosedStateReason.DUPLICATE

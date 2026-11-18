@@ -102,3 +102,36 @@ async def test_close_issue_as_a_duplicate_of_another(client, test_token, repo):
 
     assert "errors" not in result, result
     assert result["data"]["closeIssue"]["issue"]["stateReason"] == "DUPLICATE"
+
+
+@pytest.mark.asyncio
+async def test_a_duplicate_the_caller_cannot_see_is_not_found(client, test_token, admin_token, repo):
+    """An issue in a repository hidden from the caller answers as missing, so
+    ``duplicateIssueId`` cannot reveal which hidden issues exist."""
+    import base64
+
+    resp = await client.post(
+        f"{API}/user/repos", json={"name": "hidden-dups", "private": True}, headers=auth_headers(admin_token)
+    )
+    assert resp.status_code == 201, resp.text
+    hidden = await client.post(
+        f"{API}/repos/admin/hidden-dups/issues", json={"title": "Hidden"}, headers=auth_headers(admin_token)
+    )
+    assert hidden.status_code == 201, hidden.text
+    copy = await _issue(client, test_token, "Copy")
+    original = await _issue(client, test_token, "Original")
+    original_db_id = base64.b64decode(original["node_id"]).decode().split(":")[1]
+
+    for duplicate_id in (
+        hidden.json()["node_id"],
+        # Only an Issue id names an issue, not another type's id with the same number.
+        base64.b64encode(f"PullRequest:{original_db_id}".encode()).decode(),
+    ):
+        result = await _gql(
+            client, test_token, CLOSE, {"input": {"issueId": copy["node_id"], "duplicateIssueId": duplicate_id}}
+        )
+        assert result.get("errors"), result
+        assert "not found" in result["errors"][0]["message"]
+
+    still_open = await client.get(f"{API}/repos/testuser/reasons/issues/{copy['number']}", headers=auth_headers(test_token))
+    assert still_open.json()["state"] == "open"
