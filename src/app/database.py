@@ -1,4 +1,4 @@
-from sqlalchemy import event, text
+from sqlalchemy import event, make_url, text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.orm import DeclarativeBase
 
@@ -12,10 +12,18 @@ class Base(DeclarativeBase):
 def _pool_args(url: str) -> dict:
     """Pool sizing for a file-backed SQLite database.
 
-    An in-memory database uses a single shared connection (StaticPool),
+    An in-memory database (``:memory:``, a ``mode=memory`` URI, or no
+    database name at all) uses a single shared connection (StaticPool),
     which takes no size.
     """
-    if url.startswith("sqlite") and ":memory:" not in url and "mode=memory" not in url:
+    parsed = make_url(url)
+    database = parsed.database or ""
+    in_memory = (
+        database in ("", ":memory:")
+        or "mode=memory" in database
+        or parsed.query.get("mode") == "memory"
+    )
+    if parsed.get_backend_name() == "sqlite" and not in_memory:
         return {
             "pool_size": settings.SQLITE_POOL_SIZE,
             "max_overflow": settings.SQLITE_MAX_OVERFLOW,

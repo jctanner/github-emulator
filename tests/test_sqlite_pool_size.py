@@ -5,6 +5,8 @@ SQLAlchemy's default 5 + 10 let a dozen runners' polls and log posts take
 every connection, and other requests queued about a second for one.
 """
 
+from sqlalchemy.ext.asyncio import create_async_engine
+
 from app.config import settings
 from app.database import _pool_args, engine
 
@@ -21,9 +23,13 @@ def test_a_file_database_gets_the_configured_pool():
 def test_an_in_memory_database_takes_no_pool_size():
     assert _pool_args("sqlite+aiosqlite:///:memory:") == {}
     assert _pool_args("sqlite+aiosqlite:///file:x?mode=memory&cache=shared&uri=true") == {}
+    # No database name is an in-memory database too.
+    for url in ("sqlite+aiosqlite://", "sqlite+aiosqlite:///"):
+        assert _pool_args(url) == {}
+        create_async_engine(url, **_pool_args(url)).sync_engine.dispose()
 
 
 def test_the_engine_uses_the_pool():
     pool = engine.sync_engine.pool
-    if settings.DATABASE_URL.startswith("sqlite") and ":memory:" not in settings.DATABASE_URL:
+    if _pool_args(settings.DATABASE_URL):
         assert pool.size() == settings.SQLITE_POOL_SIZE

@@ -195,7 +195,8 @@ async def stale_row_handler(request: Request, exc: Exception) -> JSONResponse:
     import logging
 
     logging.getLogger("github_emulator").info(
-        "%s %s updated a row another request deleted: %s", request.method, request.url.path, exc
+        "%s %s updated a row another request deleted: %s", request.method,
+        request.url.path.encode("unicode_escape").decode("ascii"), exc
     )
     return _build_error_response(404, "Not Found")
 
