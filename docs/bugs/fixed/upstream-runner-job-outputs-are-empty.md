@@ -27,5 +27,10 @@ only in the `JobCompleted` plan event. Three things stopped that:
   and then completes the job. At version 8 the listener no longer finishes
   the job request, so this is what releases the jobs that need it, with the
   outputs in place.
+- The event needs the job's own token with a valid signature, and only a
+  job in progress takes it.
+- The job token now lasts as long as the job, as GitHub's does: its
+  timeout (default 360 minutes) plus 5 minutes, at most 24 hours. It
+  lasted one hour, so a longer job could not report its completion.
 
 Tests: `tests/actions/test_runner_job_outputs.py`.

@@ -186,3 +186,44 @@ async def test_plan_events_need_a_signed_job_token(client, db_session, uses_work
     job = (await db_session.execute(select(WorkflowJob))).scalars().first()
     assert job.status == "in_progress"
     assert not job.outputs
+
+
+@pytest.mark.asyncio
+async def test_the_job_token_lasts_as_long_as_the_job(
+    client, db_session, uses_workflow, test_token, monkeypatch  # noqa: F811
+):
+    """GitHub's job token is valid until the job ends. A job that runs past an
+    hour still reports its completion; after the job's timeout the token is
+    refused."""
+    import time
+    from types import SimpleNamespace
+
+    from app.services import job_token_service
+
+    body = await _claim_job(client, test_token)
+    token = body["variables"]["system.github.token"]["Value"]
+    start = time.time()
+
+    monkeypatch.setattr(job_token_service, "time", SimpleNamespace(time=lambda: start + 7 * 3600))
+    assert await job_token_service.validate_job_token(db_session, token) is None
+    expired = await _raise(client, body, token, _event(body["jobId"], {}))
+    assert expired.status_code == 401
+
+    monkeypatch.setattr(job_token_service, "time", SimpleNamespace(time=lambda: start + 2 * 3600))
+    resp = await _raise(client, body, token, _event(body["jobId"], {"stage": {"value": "late"}}))
+    assert resp.status_code == 200, resp.text
+    db_session.expire_all()
+    job = (await db_session.execute(select(WorkflowJob))).scalars().first()
+    assert (job.status, job.outputs) == ("completed", {"stage": "late"})
+
+
+@pytest.mark.parametrize(
+    ("timeout_minutes", "seconds"),
+    [(None, 365 * 60), (30, 35 * 60), (360, 365 * 60), (2000, 24 * 3600)],
+)
+def test_job_token_lifetime(timeout_minutes, seconds):
+    from types import SimpleNamespace
+
+    from app.services.job_token_service import job_token_lifetime
+
+    assert job_token_lifetime(SimpleNamespace(timeout_minutes=timeout_minutes)) == seconds
