@@ -3,10 +3,14 @@
 ADR-0002: the database row keeps name, size and a path -> size index; the
 bytes live under ``DATA_DIR/artifacts/{artifact_id}/``. Both upload paths,
 the REST route and the Actions results service the upload-artifact action
-talks to, store through here so they cannot drift apart.
+talks to, store through here so they cannot drift apart. A results-service
+upload also keeps the blob it sent under ``DATA_DIR/artifact-blobs/``, so its
+download returns those exact bytes.
 """
 
+import contextlib
 import io
+import json
 import os
 import shutil
 import zipfile
@@ -55,40 +59,143 @@ def zip_members(raw: bytes) -> dict[str, bytes]:
     return payload
 
 
-async def store_artifact(
-    db, *, run_id: int, repo_id: int, name: str, payload: dict[str, bytes],
-) -> WorkflowArtifact:
-    """Create the row, write the files, and record the index.
+class ArtifactTooLarge(ValueError):
+    """An artifact over ``settings.ARTIFACT_MAX_BYTES``."""
 
-    A failed write removes both the directory and the row rather than leaving
-    an index pointing at a partial upload.
+
+def _blobs_dir() -> str:
+    return os.path.join(settings.DATA_DIR, "artifact-blobs")
+
+
+def blob_path(artifact_id: int) -> str:
+    """The blob a results-service upload sent, kept byte for byte."""
+    return os.path.join(_blobs_dir(), str(artifact_id))
+
+
+def blob_meta(artifact_id: int) -> dict | None:
+    """The stored blob's content type, file name, sha256 and job, if any."""
+    try:
+        with open(blob_path(artifact_id) + ".json") as handle:
+            return json.load(handle)
+    except (OSError, ValueError):
+        return None
+
+
+def remove_files(artifact_id: int) -> None:
+    """Remove everything stored for an artifact: its files and its blob."""
+    shutil.rmtree(artifact_dir(artifact_id), ignore_errors=True)
+    for path in (blob_path(artifact_id), blob_path(artifact_id) + ".json"):
+        with contextlib.suppress(FileNotFoundError):
+            os.remove(path)
+
+
+async def delete_artifact(db, artifact: WorkflowArtifact) -> None:
+    remove_files(artifact.id)
+    await db.delete(artifact)
+    await db.commit()
+
+
+async def _store(db, *, run_id: int, repo_id: int, name: str, write) -> WorkflowArtifact:
+    """Create the row, write the files with ``write(artifact_id)``, record its index.
+
+    A failed write removes both the files and the row rather than leaving an
+    index pointing at a partial upload.
     """
     artifact = WorkflowArtifact(run_id=run_id, repo_id=repo_id, name=name, files={}, size_in_bytes=0)
     db.add(artifact)
     await db.commit()
     await db.refresh(artifact)
 
-    index: dict[str, int] = {}
-    total = 0
     try:
-        for relative, content in payload.items():
-            target = member_path(artifact.id, relative)
-            os.makedirs(os.path.dirname(target), exist_ok=True)
-            with open(target, "wb") as handle:
-                handle.write(content)
-            index[relative] = len(content)
-            total += len(content)
-    except Exception:
-        shutil.rmtree(artifact_dir(artifact.id), ignore_errors=True)
+        index = write(artifact.id)
+    except BaseException:
+        remove_files(artifact.id)
         await db.delete(artifact)
         await db.commit()
         raise
 
     artifact.files = index
-    artifact.size_in_bytes = total
+    artifact.size_in_bytes = sum(index.values())
     await db.commit()
     await db.refresh(artifact)
     return artifact
+
+
+async def store_artifact(
+    db, *, run_id: int, repo_id: int, name: str, payload: dict[str, bytes],
+) -> WorkflowArtifact:
+    """Store an artifact given as member path -> content (the REST upload)."""
+
+    def write(artifact_id: int) -> dict[str, int]:
+        index: dict[str, int] = {}
+        for relative, content in payload.items():
+            target = member_path(artifact_id, relative)
+            os.makedirs(os.path.dirname(target), exist_ok=True)
+            with open(target, "wb") as handle:
+                handle.write(content)
+            index[relative] = len(content)
+        return index
+
+    return await _store(db, run_id=run_id, repo_id=repo_id, name=name, write=write)
+
+
+def _extract_zip(artifact_id: int, source: str, limit: int) -> dict[str, int]:
+    """Expand a zip into the artifact's directory, at most ``limit`` bytes in all."""
+    with zipfile.ZipFile(source) as archive:
+        members = [m for m in archive.infolist() if not m.is_dir()]
+        if sum(m.file_size for m in members) > limit:
+            raise ArtifactTooLarge(f"the archive expands to more than {limit} bytes")
+        index: dict[str, int] = {}
+        total = 0
+        for member in members:
+            target = member_path(artifact_id, member.filename)
+            os.makedirs(os.path.dirname(target), exist_ok=True)
+            with archive.open(member) as src, open(target, "wb") as out:
+                while chunk := src.read(1 << 20):
+                    total += len(chunk)
+                    if total > limit:
+                        raise ArtifactTooLarge(f"the archive expands to more than {limit} bytes")
+                    out.write(chunk)
+            index[member.filename] = member.file_size
+        return index
+
+
+async def store_blob_artifact(
+    db, *, run_id: int, repo_id: int, job_id: int, name: str, source: str,
+    archived: bool, content_type: str, file_name: str, sha256: str,
+) -> WorkflowArtifact:
+    """Store a results-service upload: the blob as sent, and an index for REST.
+
+    The blob at ``source`` is moved into place unchanged, so a download
+    returns the bytes the client uploaded. The REST routes read the files
+    under the artifact directory: an archived upload's zip members, or the
+    one unarchived file under the artifact's name.
+    """
+    limit = settings.ARTIFACT_MAX_BYTES
+
+    def write(artifact_id: int) -> dict[str, int]:
+        index = None
+        if archived:
+            try:
+                index = _extract_zip(artifact_id, source, limit)
+            except zipfile.BadZipFile:
+                # Not a zip after all: keep it as the one file it is.
+                shutil.rmtree(artifact_dir(artifact_id), ignore_errors=True)
+        if index is None:
+            target = member_path(artifact_id, name)
+            os.makedirs(os.path.dirname(target), exist_ok=True)
+            shutil.copyfile(source, target)
+            index = {name: os.path.getsize(target)}
+        os.makedirs(_blobs_dir(), exist_ok=True)
+        os.replace(source, blob_path(artifact_id))
+        with open(blob_path(artifact_id) + ".json", "w") as handle:
+            json.dump({
+                "content_type": content_type, "file_name": file_name,
+                "sha256": sha256, "job_id": job_id,
+            }, handle)
+        return index
+
+    return await _store(db, run_id=run_id, repo_id=repo_id, name=name, write=write)
 
 
 def zip_artifact(artifact: WorkflowArtifact) -> io.BytesIO:

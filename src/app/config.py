@@ -53,6 +53,12 @@ class Settings(BaseSettings):
     # seconds goes back to the queue: the claim response was lost.
     RUNNER_CLAIM_ACK_SECONDS: int = 120
 
+    # Limits on an artifact uploaded through the Actions results service
+    # (upload-artifact@v4+): the bytes of one uploaded blob, and of the files
+    # a zip expands to, and the entries in one block list (Azure's own limit).
+    ARTIFACT_MAX_BYTES: int = 10 * 1024 ** 3
+    ARTIFACT_MAX_BLOCKS: int = 50_000
+
     # The memory watchdog (app/services/memory_watch.py). The process has
     # been OOM-killed at 1.5 GiB three times with nothing naming a cause; it
     # now reports in-flight requests and the largest allocation sites when

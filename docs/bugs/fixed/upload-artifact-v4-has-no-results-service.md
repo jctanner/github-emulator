@@ -18,18 +18,26 @@ and job from.
 ## Fix
 
 `src/app/api/actions_results.py` serves `CreateArtifact`, `FinalizeArtifact`,
-`ListArtifacts` and `GetSignedArtifactURL`, and the signed block-blob upload
-and download URLs. The job token carries the `Actions.Results` scope, and the
-job message's `SystemVssConnection` endpoint carries `ResultsServiceUrl`. A
-finalized upload is stored through `app.services.artifact_storage`, the same
-path as the REST upload. ADR-0004 records the design.
+`ListArtifacts`, `GetSignedArtifactURL` and `DeleteArtifact`, and the signed,
+expiring block-blob upload and download URLs. The job token carries the
+`Actions.Results` scope, and the job message's `SystemVssConnection` endpoint
+carries `ResultsServiceUrl`. A download returns the uploaded blob byte for
+byte. A finalized upload is also stored through `app.services.artifact_storage`,
+the same path as the REST upload, so the REST routes see it. ADR-0004 records
+the design, including the size limits.
 
 The actions still refuse any server host but `github.com`, `*.ghe.com` and
 `*.localhost`, so a stack that runs them needs a `*.localhost` host name.
 
 ## Regression coverage
 
-`tests/actions/test_results_artifacts.py` covers the job message's results
-URL, an upload, list and download round trip, an unarchived upload, a
-duplicate artifact name, a hash mismatch, a missing or mismatched runtime
-token, and a wrong URL signature.
+`tests/actions/test_results_artifacts.py` covers:
+
+- the job message's results URL;
+- an upload, list and download round trip;
+- byte-for-byte downloads of a zip, an unarchived file and an unarchived `.zip`;
+- `overwrite: true` (delete, then create the same name);
+- a retried `CreateArtifact` and a retried `FinalizeArtifact`;
+- a duplicate name, a hash mismatch, a missing or mismatched runtime token;
+- a wrong or expired URL signature;
+- the size, block-count and expanded-size limits.

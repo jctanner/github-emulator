@@ -1,7 +1,6 @@
 """Actions endpoints -- workflows, runs, jobs, secrets, variables."""
 
 import os
-import shutil
 import zipfile
 
 from fastapi import APIRouter, HTTPException, Query, Request
@@ -287,9 +286,7 @@ async def delete_artifact(owner: str, repo: str, artifact_id: int, user: AuthUse
     repository = await get_repo_or_404(owner, repo, db)
     await _require_repository_role(request, db, repository, user, "push")
     artifact = await _get_artifact_or_404(owner, repo, artifact_id, db)
-    shutil.rmtree(artifact_storage.artifact_dir(artifact_id), ignore_errors=True)
-    await db.delete(artifact)
-    await db.commit()
+    await artifact_storage.delete_artifact(db, artifact)
 
 
 async def _check_read_access(db, repository, current_user) -> None:

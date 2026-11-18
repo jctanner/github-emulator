@@ -8,11 +8,17 @@ import base64
 import hashlib
 import io
 import json
+import os
+import re
+import time
+import types
 import zipfile
 from urllib.parse import urlsplit
 
 import pytest
 
+from app.api import actions_results
+from app.config import settings
 from tests.actions.test_uses_steps import _claim_job, uses_workflow  # noqa: F401
 from tests.conftest import API, auth_headers
 
@@ -51,8 +57,11 @@ async def _twirp(client, method, headers, body):
     return await client.post(f"{SERVICE}/{method}", json=body, headers=headers)
 
 
-async def _upload(client, headers, ids, name, content, blocks=2):
-    resp = await _twirp(client, "CreateArtifact", headers, {**ids, "name": name, "version": 7})
+async def _upload(client, headers, ids, name, content, blocks=2, mime_type=None):
+    create = {**ids, "name": name, "version": 7}
+    if mime_type:
+        create["mime_type"] = mime_type
+    resp = await _twirp(client, "CreateArtifact", headers, create)
     assert resp.status_code == 200, resp.text
     upload = _path(resp.json()["signed_upload_url"])
     size = -(-len(content) // blocks)
@@ -163,8 +172,8 @@ async def test_the_service_needs_the_runtime_token(client, uses_workflow, test_t
     body, headers, ids = await _job(client, test_token)
     no_token = await _twirp(client, "ListArtifacts", {}, ids)
     assert no_token.status_code == 401
-    forged = headers["Authorization"].rsplit(".", 1)[0] + ".forged"
-    bad = await _twirp(client, "ListArtifacts", {"Authorization": forged}, ids)
+    wrong_signature = headers["Authorization"].rsplit(".", 1)[0] + ".unsigned"
+    bad = await _twirp(client, "ListArtifacts", {"Authorization": wrong_signature}, ids)
     assert bad.status_code == 401
     other_job = await _twirp(client, "ListArtifacts", headers, {
         **ids, "workflow_job_run_backend_id": "999999",
@@ -177,10 +186,216 @@ async def test_signed_urls_refuse_a_wrong_signature(client, uses_workflow, test_
     body, headers, ids = await _job(client, test_token)
     resp = await _twirp(client, "CreateArtifact", headers, {**ids, "name": "sig", "version": 7})
     upload = _path(resp.json()["signed_upload_url"])
-    tampered = upload.split("?sig=")[0] + "?sig=" + "0" * 64
+    tampered = re.sub(r"sig=[0-9a-f]+", "sig=" + "0" * 64, upload)
     assert (await client.put(tampered, content=b"x")).status_code == 403
 
     finalize = await _upload(client, headers, ids, "sig2", _zip({"a": b"1"}))
     artifact_id = finalize.json()["artifact_id"]
     resp = await client.get(f"/_apis/results/artifacts/{artifact_id}/download?sig=" + "0" * 64)
     assert resp.status_code == 403
+    signed = await _twirp(client, "GetSignedArtifactURL", headers, {**ids, "name": "sig2"})
+    download = re.sub(r"sig=[0-9a-f]+", "sig=" + "0" * 64, _path(signed.json()["signed_url"]))
+    assert (await client.get(download)).status_code == 403
+
+
+async def _download(client, headers, ids, name):
+    signed = await _twirp(client, "GetSignedArtifactURL", headers, {**ids, "name": name})
+    assert signed.status_code == 200, signed.text
+    return await client.get(_path(signed.json()["signed_url"]))
+
+
+def _upload_dir(upload_url: str) -> str:
+    key = urlsplit(upload_url).path.rsplit("/", 1)[1]
+    return os.path.join(settings.DATA_DIR, "artifact-uploads", key)
+
+
+@pytest.mark.asyncio
+async def test_an_archived_download_is_the_uploaded_zip_byte_for_byte(
+    client, uses_workflow, test_token  # noqa: F811
+):
+    body, headers, ids = await _job(client, test_token)
+    # Stored, not deflated: a zip the server rebuilt would differ.
+    content = _zip({"b.txt": b"second", "a.txt": b"first"})
+    finalize = await _upload(client, headers, ids, "bundle", content, mime_type="application/zip")
+    assert finalize.status_code == 200, finalize.text
+
+    download = await _download(client, headers, ids, "bundle")
+    assert download.status_code == 200
+    assert download.content == content
+    assert download.headers["content-type"] == "application/zip"
+    assert 'filename="bundle.zip"' in download.headers["content-disposition"]
+
+
+@pytest.mark.asyncio
+async def test_an_unarchived_file_downloads_as_sent(
+    client, uses_workflow, test_token  # noqa: F811
+):
+    body, headers, ids = await _job(client, test_token)
+    finalize = await _upload(client, headers, ids, "report.txt", b"plain text", blocks=1, mime_type="text/plain")
+    assert finalize.status_code == 200, finalize.text
+
+    download = await _download(client, headers, ids, "report.txt")
+    assert download.content == b"plain text"
+    assert download.headers["content-type"].startswith("text/plain")
+    assert 'filename="report.txt"' in download.headers["content-disposition"]
+
+
+@pytest.mark.asyncio
+async def test_an_unarchived_zip_file_stays_one_file(
+    client, uses_workflow, test_token  # noqa: F811
+):
+    """`archive: false` on a .zip: the artifact is the file, not its members."""
+    body, headers, ids = await _job(client, test_token)
+    content = _zip({"inner.txt": b"inside"})
+    finalize = await _upload(client, headers, ids, "release.zip", content, mime_type="application/zip")
+    assert finalize.status_code == 200, finalize.text
+
+    download = await _download(client, headers, ids, "release.zip")
+    assert download.content == content
+    assert 'filename="release.zip"' in download.headers["content-disposition"]
+    rest = await client.get(
+        f"{API}/repos/testuser/uses-step-repo/actions/artifacts/{finalize.json()['artifact_id']}",
+        headers=auth_headers(test_token),
+    )
+    assert rest.json()["files"] == {"release.zip": len(content)}
+
+
+@pytest.mark.asyncio
+async def test_overwrite_deletes_then_creates_the_same_name(
+    client, uses_workflow, test_token  # noqa: F811
+):
+    """upload-artifact's `overwrite: true`: DeleteArtifact, then CreateArtifact again."""
+    body, headers, ids = await _job(client, test_token)
+    first = await _upload(client, headers, ids, "out", _zip({"v": b"1"}))
+    first_id = first.json()["artifact_id"]
+
+    deleted = await _twirp(client, "DeleteArtifact", headers, {**ids, "name": "out"})
+    assert deleted.status_code == 200, deleted.text
+    assert deleted.json() == {"ok": True, "artifact_id": first_id}
+    listed = await _twirp(client, "ListArtifacts", headers, {**ids, "name_filter": "out"})
+    assert listed.json()["artifacts"] == []
+    rest = await client.get(
+        f"{API}/repos/testuser/uses-step-repo/actions/artifacts/{first_id}",
+        headers=auth_headers(test_token),
+    )
+    assert rest.status_code == 404
+
+    second = await _upload(client, headers, ids, "out", _zip({"v": b"2"}))
+    assert second.status_code == 200, second.text
+    assert second.json()["artifact_id"] != first_id
+    missing = await _twirp(client, "DeleteArtifact", headers, {**ids, "name": "gone"})
+    assert missing.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_a_retried_create_replaces_the_abandoned_upload(
+    client, uses_workflow, test_token  # noqa: F811
+):
+    body, headers, ids = await _job(client, test_token)
+    abandoned = await _twirp(client, "CreateArtifact", headers, {**ids, "name": "retry", "version": 7})
+    abandoned_url = _path(abandoned.json()["signed_upload_url"])
+
+    content = _zip({"r": b"retried"})
+    finalize = await _upload(client, headers, ids, "retry", content)
+    assert finalize.status_code == 200, finalize.text
+    assert (await _download(client, headers, ids, "retry")).content == content
+    # The replaced upload is gone; its URL no longer takes data.
+    assert (await client.put(abandoned_url, content=b"late")).status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_a_retried_finalize_returns_the_committed_artifact(
+    client, uses_workflow, test_token  # noqa: F811
+):
+    body, headers, ids = await _job(client, test_token)
+    content = _zip({"f": b"final"})
+    first = await _upload(client, headers, ids, "fin", content)
+    assert first.status_code == 200, first.text
+    request = {**ids, "name": "fin", "size": str(len(content)),
+               "hash": f"sha256:{hashlib.sha256(content).hexdigest()}"}
+
+    again = await _twirp(client, "FinalizeArtifact", headers, request)
+    assert again.status_code == 200, again.text
+    assert again.json()["artifact_id"] == first.json()["artifact_id"]
+    other = await _twirp(client, "FinalizeArtifact", headers, {**request, "hash": "sha256:" + "0" * 64})
+    assert other.status_code == 409
+
+
+@pytest.mark.asyncio
+async def test_expired_urls_are_refused(
+    client, uses_workflow, test_token, monkeypatch  # noqa: F811
+):
+    body, headers, ids = await _job(client, test_token)
+    await _upload(client, headers, ids, "old", _zip({"o": b"1"}))
+    created = await _twirp(client, "CreateArtifact", headers, {**ids, "name": "late", "version": 7})
+    upload = _path(created.json()["signed_upload_url"])
+    signed = await _twirp(client, "GetSignedArtifactURL", headers, {**ids, "name": "old"})
+    download = _path(signed.json()["signed_url"])
+
+    later = time.time() + 7 * 3600
+    monkeypatch.setattr(actions_results, "time", types.SimpleNamespace(time=lambda: later))
+    assert (await client.put(upload, content=b"data")).status_code == 403
+    assert not os.path.exists(os.path.join(_upload_dir(upload), "blob"))
+    assert (await client.get(download)).status_code == 403
+
+
+@pytest.mark.asyncio
+async def test_an_upload_over_the_size_limit_is_refused(
+    client, uses_workflow, test_token, monkeypatch  # noqa: F811
+):
+    monkeypatch.setattr(settings, "ARTIFACT_MAX_BYTES", 10)
+    body, headers, ids = await _job(client, test_token)
+    created = await _twirp(client, "CreateArtifact", headers, {**ids, "name": "big", "version": 7})
+    upload = _path(created.json()["signed_upload_url"])
+    directory = _upload_dir(upload)
+
+    # One Put Blob, and one block, over the limit.
+    assert (await client.put(upload, content=b"x" * 11)).status_code == 413
+    block = base64.b64encode(b"block-0000").decode()
+    assert (await client.put(f"{upload}&comp=block&blockid={block}", content=b"x" * 11)).status_code == 413
+    # Blocks within the limit whose list adds up past it.
+    ids_ = []
+    for index in range(2):
+        block = base64.b64encode(f"block-{index:04d}".encode()).decode()
+        put = await client.put(f"{upload}&comp=block&blockid={block}", content=b"x" * 6)
+        assert put.status_code == 201
+        ids_.append(block)
+    block_list = "<BlockList>" + "".join(f"<Latest>{b}</Latest>" for b in ids_) + "</BlockList>"
+    assert (await client.put(f"{upload}&comp=blocklist", content=block_list.encode())).status_code == 413
+    assert not [n for n in os.listdir(directory) if n.startswith("blob")]
+
+
+@pytest.mark.asyncio
+async def test_a_block_list_over_the_entry_limit_is_refused(
+    client, uses_workflow, test_token, monkeypatch  # noqa: F811
+):
+    monkeypatch.setattr(settings, "ARTIFACT_MAX_BLOCKS", 2)
+    body, headers, ids = await _job(client, test_token)
+    created = await _twirp(client, "CreateArtifact", headers, {**ids, "name": "many", "version": 7})
+    upload = _path(created.json()["signed_upload_url"])
+    block = base64.b64encode(b"block-0000").decode()
+    assert (await client.put(f"{upload}&comp=block&blockid={block}", content=b"x")).status_code == 201
+    block_list = "<BlockList>" + f"<Latest>{block}</Latest>" * 3 + "</BlockList>"
+    assert (await client.put(f"{upload}&comp=blocklist", content=block_list.encode())).status_code == 413
+    assert not [n for n in os.listdir(_upload_dir(upload)) if n.startswith("blob")]
+
+
+@pytest.mark.asyncio
+async def test_a_zip_expanding_past_the_limit_is_refused(
+    client, uses_workflow, test_token, monkeypatch  # noqa: F811
+):
+    monkeypatch.setattr(settings, "ARTIFACT_MAX_BYTES", 1000)
+    body, headers, ids = await _job(client, test_token)
+    buffer = io.BytesIO()
+    with zipfile.ZipFile(buffer, "w", zipfile.ZIP_DEFLATED) as archive:
+        archive.writestr("zeros", b"\0" * 5000)
+    content = buffer.getvalue()
+    assert len(content) < 1000
+
+    finalize = await _upload(client, headers, ids, "bomb", content)
+    assert finalize.status_code == 429, finalize.text
+    assert finalize.json()["code"] == "resource_exhausted"
+    listed = await _twirp(client, "ListArtifacts", headers, {**ids, "name_filter": "bomb"})
+    assert listed.json()["artifacts"] == []
+    stored = os.path.join(settings.DATA_DIR, "artifacts")
+    assert not os.path.isdir(stored) or os.listdir(stored) == []
