@@ -586,6 +586,8 @@ async def test_pool_distributed_task_protocol_flow(
     assert body["steps"][0]["reference"]["type"] == "Script"
     assert body["steps"][0]["inputs"]["map"][0]["Value"] == "printf 'hello from runner\\n'"
     assert body["steps"][0]["environment"]["map"] == [
+        # gh reaches the emulator only through GH_HOST (not GITHUB_API_URL).
+        {"Key": "GH_HOST", "Value": "testserver"},
         {"Key": "STEP_FLAG", "Value": "1"},
         {
             "Key": "EXPR_FLAG",

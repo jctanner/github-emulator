@@ -586,6 +586,10 @@ def _job_request_message(
         if may_mint
         else {}
     )
+    # gh does not read GITHUB_API_URL. Without GH_HOST every gh call in a step
+    # went to api.github.com with the emulator's token and failed with "Bad
+    # credentials" (the Python runner sets it per step for the same reason).
+    step_environment = {**oidc_environment, "GH_HOST": _gh_host(runner_base_url)}
     body = {
         "messageType": "PipelineAgentJobRequest",
         "jobId": job_guid,
@@ -605,7 +609,7 @@ def _job_request_message(
             "id": timeline_id,
         },
         "steps": [
-            _job_step_message(job, step, oidc_environment)
+            _job_step_message(job, step, step_environment)
             for step in (job.steps or [])
         ],
         # The job's `outputs:`, which the runner evaluates against its steps
@@ -742,11 +746,37 @@ def _job_step_message(
         "condition": step.get("if") or "success()",
         # The step's own env wins, so a workflow can still override these.
         "environment": _template_mapping(
-            {**(extra_environment or {}), **(step.get("env") or {})}
+            _with_gh_enterprise_token({**(extra_environment or {}), **(step.get("env") or {})})
         ),
         "reference": reference,
         "inputs": _template_mapping(inputs),
     }
+
+
+def _gh_host(base_url: str) -> str:
+    """The emulator's host as gh's GH_HOST takes it: no scheme, no default port."""
+    parts = urlsplit(base_url)
+    default = {"http": 80, "https": 443}.get(parts.scheme)
+    if parts.port and parts.port != default:
+        return f"{parts.hostname}:{parts.port}"
+    return parts.hostname or ""
+
+
+def _with_gh_enterprise_token(environment: dict) -> dict:
+    """Mirror the token the workflow chose into gh's enterprise variables.
+
+    gh treats any host but github.com as GitHub Enterprise and reads its
+    credential from GH_ENTERPRISE_TOKEN, ignoring GH_TOKEN. Only a token the
+    workflow declared is mirrored, as the same expression so the runner
+    resolves it when the step starts: an ambient job token here would outrank
+    a narrower token a step mints for itself (the Python runner learnt the
+    same). A workflow that sets the enterprise variables itself wins.
+    """
+    token = environment.get("GH_TOKEN") or environment.get("GITHUB_TOKEN")
+    if token:
+        environment.setdefault("GH_ENTERPRISE_TOKEN", token)
+        environment.setdefault("GITHUB_ENTERPRISE_TOKEN", token)
+    return environment
 
 
 def _unsupported_uses_script(uses: str) -> str:
