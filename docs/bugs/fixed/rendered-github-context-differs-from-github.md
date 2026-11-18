@@ -46,11 +46,15 @@ Two authentication answers differed as well:
 - A server value bound into an expression left for the runner quotes a quote
   the Actions way (`''`), not with a backslash, which the runner rejects. An
   object or array passed as a function argument is bound whole
-  (`fromJSON('...')`).
+  (`fromJSON('...')`). A bound string that holds a brace is bound as JSON
+  too, with its braces escaped, so event data such as an issue title can
+  never end the expression it is bound into.
 - `working-directory` and `shell` are left for the runner the same way as
   `run`.
 - The emulator's own runner finishes what the server leaves: it reads `''`
-  inside a string, writes a false result as `false`, and knows `job.status`.
+  inside a string, writes a false result as `false`, knows `job.status`, has
+  `fromJSON` and `toJSON`, and gives `github.env`, `github.output`,
+  `github.path` and `github.event_path` their file paths.
 - `GET /installation/repositories` with a job token lists the run's
   repository with `repository_selection: selected`. A personal access token
   still gets 403.

@@ -360,7 +360,20 @@ def _lookup_context_path(context: dict, path: str):
     return value
 
 
-def _github_context(job: dict | None, github_token: str = "") -> dict:
+def _step_files(number) -> dict:
+    """Where _run_step puts a step's command files and the event payload."""
+    state = Path(WORKDIR) / ".runner-state"
+    files = {"event_path": str(state / "event.json")}
+    if number is not None:
+        files.update({
+            "env": str(state / f"env-{number}"),
+            "output": str(state / f"output-{number}"),
+            "path": str(state / f"path-{number}"),
+        })
+    return files
+
+
+def _github_context(job: dict | None, github_token: str = "", step_number=None) -> dict:
     """Build the ``github`` context for expressions the runner resolves.
 
     The runner already computes every one of these for the step environment.
@@ -390,6 +403,7 @@ def _github_context(job: dict | None, github_token: str = "") -> dict:
         "api_url": API,
         "workflow": str(job.get("workflow_name") or job.get("name") or ""),
         "job": str(job.get("name", "")),
+        **_step_files(step_number),
     }
 
 
@@ -491,6 +505,7 @@ def _runner_context(
     github_token: str = "",
     job: dict | None = None,
     job_status: str = "success",
+    step_number=None,
 ) -> dict:
     """Build the context the runner can resolve expressions against.
 
@@ -507,7 +522,7 @@ def _runner_context(
             for key, value in (step_outputs or {}).items()
         },
         "inputs": {str(k): v for k, v in (inputs or {}).items()},
-        "github": _github_context(job, github_token),
+        "github": _github_context(job, github_token, step_number),
         # job.status is the runner's to know: the server leaves it for us.
         "job": {"status": job_status},
         # The runner context describes this machine, so only the runner can
@@ -667,6 +682,13 @@ class _StepIfParser:
             return str(arguments[0] or "").startswith(str(arguments[1] or ""))
         if name == "endsWith" and len(arguments) == 2:
             return str(arguments[0] or "").endswith(str(arguments[1] or ""))
+        if name == "fromJSON" and len(arguments) == 1:
+            try:
+                return json.loads(str(arguments[0]))
+            except json.JSONDecodeError as exc:
+                raise ValueError(f"fromJSON: {exc}") from exc
+        if name == "toJSON" and len(arguments) == 1:
+            return json.dumps(arguments[0], indent=2)
         if name == "contains" and len(arguments) == 2:
             haystack, needle = arguments
             return needle in haystack if isinstance(haystack, (list, dict, str)) else False
@@ -801,7 +823,9 @@ def _evaluate_step_if(
 _NEEDS_PARSER_RE = re.compile(r"\|\||&&|==|!=|\(|'|\"")
 
 
-def _render_local_action(value, inputs, step_outputs, github_token="", job=None, job_status="success"):
+def _render_local_action(
+    value, inputs, step_outputs, github_token="", job=None, job_status="success", step_number=None,
+):
     """Render the expressions the runner resolves at execution time.
 
     ``github.token`` is resolved here rather than on the server so the
@@ -822,7 +846,7 @@ def _render_local_action(value, inputs, step_outputs, github_token="", job=None,
             if expression == "github.token":
                 return github_token
             if _NEEDS_PARSER_RE.search(expression):
-                context = _runner_context(inputs, step_outputs, github_token, job, job_status)
+                context = _runner_context(inputs, step_outputs, github_token, job, job_status, step_number)
                 try:
                     resolved = _StepIfParser(expression, context).evaluate()
                 except ValueError as exc:
@@ -840,7 +864,7 @@ def _render_local_action(value, inputs, step_outputs, github_token="", job=None,
                 return str(resolved)
             try:
                 resolved = _lookup_context_path(
-                    _runner_context(inputs, step_outputs, github_token, job, job_status),
+                    _runner_context(inputs, step_outputs, github_token, job, job_status, step_number),
                     expression,
                 )
             except ValueError:
@@ -852,12 +876,12 @@ def _render_local_action(value, inputs, step_outputs, github_token="", job=None,
         return _EXPRESSION_RE.sub(replace, value)
     if isinstance(value, dict):
         return {
-            key: _render_local_action(item, inputs, step_outputs, github_token, job, job_status)
+            key: _render_local_action(item, inputs, step_outputs, github_token, job, job_status, step_number)
             for key, item in value.items()
         }
     if isinstance(value, list):
         return [
-            _render_local_action(item, inputs, step_outputs, github_token, job, job_status)
+            _render_local_action(item, inputs, step_outputs, github_token, job, job_status, step_number)
             for item in value
         ]
     return value
@@ -1084,6 +1108,7 @@ class RunnerClient:
 
             rendered_step = _render_local_action(
                 step, {}, step_outputs, job_token, job, "success" if all_passed else "failure",
+                step.get("number", 0),
             )
             result, _step_log, step_updates = self._run_step(
                 rendered_step, job, runtime_env, log_callback=append_log,

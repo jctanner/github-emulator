@@ -629,16 +629,41 @@ def _as_literal(value: object) -> str:
         # than inventing a comparable string.
         return "true" if value else "false"
     # Actions quotes a quote by doubling it; it has no backslash escapes.
-    text = str(value).replace("'", "''")
-    return f"'{text}'"
+    text = str(value)
+    if "{" in text or "}" in text:
+        # A value with a brace could hold ``}}`` or ``${{`` and end the
+        # expression it is bound into early. As JSON, its braces are escapes.
+        return _json_literal(text)
+    return "'" + text.replace("'", "''") + "'"
+
+
+# Stand-ins for braces inside JSON strings while the JSON is encoded.
+_OPEN, _CLOSE = "\ufdd0", "\ufdd1"
+
+
+def _hide_braces(value: object) -> object:
+    if isinstance(value, str):
+        return value.replace("{", _OPEN).replace("}", _CLOSE)
+    if isinstance(value, dict):
+        return {_hide_braces(str(k)): _hide_braces(v) for k, v in value.items()}
+    if isinstance(value, list):
+        return [_hide_braces(item) for item in value]
+    return value
 
 
 def _json_literal(value: object) -> str:
-    """An array or object as an expression the runner can evaluate. Actions
-    has no array literal, so it is ``fromJSON('...')``, quoted the Actions
-    way (``''`` for a quote)."""
-    text = json.dumps(value, separators=(",", ":")).replace("'", "''")
-    return f"fromJSON('{text}')"
+    """A value as ``fromJSON('...')``, which the runner can evaluate. Actions
+    has no array or object literal. Quotes are doubled, the Actions way.
+
+    The text never holds ``${{`` or ``}}``, so data bound into an expression
+    cannot end it early: a brace inside a string is a ``\\u007b`` or
+    ``\\u007d`` escape, and two structural closing braces get a space.
+    """
+    text = json.dumps(_hide_braces(value), separators=(",", ":"))
+    text = text.replace("\\ufdd0", "\\u007b").replace("\\ufdd1", "\\u007d")
+    while "}}" in text:
+        text = text.replace("}}", "} }")
+    return "fromJSON('" + text.replace("'", "''") + "')"
 
 
 def _accessor_chain_end(tokens: list, index: int) -> int:

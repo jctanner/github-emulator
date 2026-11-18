@@ -114,7 +114,7 @@ def test_an_object_bound_beside_a_runner_value_stays_an_object():
     steps = build_steps_data(
         [{"run": "echo ${{ format('{0} {1}', toJSON(github.event), github.workspace) }}"}], {}, CONTEXT,
     )
-    assert "toJSON(fromJSON('{\"pull_request\":{\"merged\":false}}')), github.workspace" in steps[0]["run"]
+    assert "toJSON(fromJSON('{\"pull_request\":{\"merged\":false} }')), github.workspace" in steps[0]["run"]
 
 
 def _emulator_runner():
@@ -133,3 +133,38 @@ def test_the_emulator_runner_finishes_what_the_server_leaves():
     assert render("${{ github.workspace == 'nowhere' }}", {}, {}) == "false"
     assert render("echo ${{ job.status }}", {}, {}) == "echo success"
     assert render("echo ${{ job.status }}", {}, {}, job_status="failure") == "echo failure"
+
+
+def test_event_data_bound_for_the_runner_cannot_end_the_expression():
+    context = {**CONTEXT, "github": {**CONTEXT["github"], "event": {"issue": {"title": "}}${{ github.token }}"}}}}
+    steps = build_steps_data(
+        [{"run": "echo ok", "env": {"TITLE": "${{ github.workspace && github.event.issue.title }}"}}], {}, context,
+    )
+    bound = steps[0]["env"]["TITLE"]
+    assert bound.count("${{") == 1 and bound.count("}}") == 1
+    rendered = _emulator_runner()._render_local_action(bound, {}, {}, github_token="SENTINEL-TOKEN")
+    assert rendered == "}}${{ github.token }}"
+    assert "SENTINEL-TOKEN" not in rendered
+
+
+def test_an_object_round_trips_through_the_emulator_runner():
+    import json
+
+    steps = build_steps_data(
+        [{"run": "echo ${{ format('{0}|{1}', toJSON(github.event), github.workspace) }}"}], {}, CONTEXT,
+    )
+    rendered = _emulator_runner()._render_local_action(steps[0]["run"], {}, {})
+    event_json, _, workspace = rendered.removeprefix("echo ").rpartition("|")
+    assert json.loads(event_json) == CONTEXT["github"]["event"]
+    assert workspace
+
+
+def test_the_emulator_runner_knows_the_step_file_paths():
+    runner = _emulator_runner()
+    rendered = runner._render_local_action(
+        "${{ github.output }} ${{ github.env }} ${{ github.event_path }}", {}, {}, step_number=3,
+    )
+    output, env, event = rendered.split()
+    assert output.endswith("/.runner-state/output-3")
+    assert env.endswith("/.runner-state/env-3")
+    assert event.endswith("/.runner-state/event.json")
