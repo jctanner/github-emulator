@@ -215,6 +215,7 @@ async def upload_artifact(
     Either way the bytes land on disk and the row keeps only the index.
     """
     repository = await get_repo_or_404(owner, repo, db)
+    await _require_repository_role(request, db, repository, user, "push")
     run = (await db.execute(select(WorkflowRun).where(WorkflowRun.id == run_id, WorkflowRun.repo_id == repository.id))).scalar_one_or_none()
     if run is None:
         raise HTTPException(status_code=404, detail="Workflow run not found")
@@ -332,7 +333,9 @@ async def download_artifact(owner: str, repo: str, artifact_id: int, archive_for
 
 
 @router.delete("/repos/{owner}/{repo}/actions/artifacts/{artifact_id}", status_code=204)
-async def delete_artifact(owner: str, repo: str, artifact_id: int, user: AuthUser, db: DbSession):
+async def delete_artifact(owner: str, repo: str, artifact_id: int, user: AuthUser, request: Request, db: DbSession):
+    repository = await get_repo_or_404(owner, repo, db)
+    await _require_repository_role(request, db, repository, user, "push")
     artifact = await _get_artifact_or_404(owner, repo, artifact_id, db)
     shutil.rmtree(_artifact_dir(artifact_id), ignore_errors=True)
     await db.delete(artifact)
@@ -350,6 +353,35 @@ async def _check_read_access(db, repository, current_user) -> None:
     """
     if not await repository_access.can_read(db, repository, current_user):
         raise HTTPException(status_code=404, detail="Not Found")
+
+
+# A person's own permission on the repository that each role accepts.
+_ROLE_PERMISSIONS = {"push": {"push", "maintain", "admin"}, "admin": {"admin"}}
+
+
+async def _require_repository_role(request: Request, db, repository, user, role: str) -> None:
+    """403 unless the caller holds ``role`` ("push" or "admin") on the repository.
+
+    GitHub requires write access to dispatch, cancel or re-run a workflow and
+    to manage artifacts, and admin access (the owner, for a personal
+    repository) for Actions secrets, variables and permissions. A job's
+    GITHUB_TOKEN and an App installation token were already held to their
+    own permissions and repositories when they authenticated, so this is a
+    person's credential: a site admin, or the person's permission on the
+    repository.
+    """
+    if getattr(request.state, "workflow_job", None) is not None:
+        return
+    if getattr(request.state, "is_installation_token", False):
+        return
+    if user.site_admin:
+        return
+    permission = await repository_access.repository_permission(db, repository, user)
+    if permission in _ROLE_PERMISSIONS[role]:
+        return
+    if role == "admin":
+        raise HTTPException(status_code=403, detail="Must have admin rights to Repository.")
+    raise HTTPException(status_code=403, detail="Must have write access to this repository.")
 
 
 def _paged_json(request: Request, page: int, per_page: int, total: int, body: dict) -> JSONResponse:
@@ -486,10 +518,11 @@ async def list_runs_for_workflow(
 
 @router.post("/repos/{owner}/{repo}/actions/workflows/{workflow_id}/dispatches", status_code=204)
 async def dispatch_workflow(
-    owner: str, repo: str, workflow_id: str, body: dict, user: AuthUser, db: DbSession,
+    owner: str, repo: str, workflow_id: str, body: dict, user: AuthUser, request: Request, db: DbSession,
 ):
     """Dispatch a workflow configured with ``workflow_dispatch``."""
     repository = await get_repo_or_404(owner, repo, db)
+    await _require_repository_role(request, db, repository, user, "push")
     if repository.actions_enabled is False:
         raise HTTPException(status_code=403, detail="Actions is disabled on this repository")
     # ``gh workflow run`` passes either the id, the stored path, or the
@@ -605,10 +638,17 @@ async def _referenced_workflows(db, run: WorkflowRun) -> list[dict]:
 
 @router.post("/repos/{owner}/{repo}/actions/runs/{run_id}/cancel", status_code=202)
 async def cancel_workflow_run(
-    owner: str, repo: str, run_id: int, db: DbSession, user: AuthUser,
+    owner: str, repo: str, run_id: int, db: DbSession, user: AuthUser, request: Request,
 ):
     """Cancel a workflow run."""
     repository = await get_repo_or_404(owner, repo, db)
+    await _require_repository_role(request, db, repository, user, "push")
+    # Only a run of this repository, as on GitHub.
+    owned = (await db.execute(select(WorkflowRun.id).where(
+        WorkflowRun.id == run_id, WorkflowRun.repo_id == repository.id,
+    ))).scalar_one_or_none()
+    if owned is None:
+        raise HTTPException(status_code=404, detail="Not Found")
     from app.services.workflow_service import cancel_workflow_run as do_cancel
     run = await do_cancel(db, run_id)
     if run is None:
@@ -619,7 +659,7 @@ async def cancel_workflow_run(
 
 @router.post("/repos/{owner}/{repo}/actions/runs/{run_id}/rerun", status_code=201)
 async def rerun_workflow(
-    owner: str, repo: str, run_id: int, db: DbSession, user: AuthUser,
+    owner: str, repo: str, run_id: int, db: DbSession, user: AuthUser, request: Request,
 ):
     """Re-run a workflow.
 
@@ -634,6 +674,7 @@ async def rerun_workflow(
         create_workflow_run, detect_workflows, materialize_reusable_workflows,
     )
     repository = await get_repo_or_404(owner, repo, db)
+    await _require_repository_role(request, db, repository, user, "push")
     result = await db.execute(
         select(WorkflowRun).where(WorkflowRun.id == run_id, WorkflowRun.repo_id == repository.id)
     )
@@ -800,10 +841,11 @@ async def get_secret(
 
 @router.put("/repos/{owner}/{repo}/actions/secrets/{secret_name}", status_code=201)
 async def create_or_update_secret(
-    owner: str, repo: str, secret_name: str, body: dict, user: AuthUser, db: DbSession,
+    owner: str, repo: str, secret_name: str, body: dict, user: AuthUser, request: Request, db: DbSession,
 ):
     """Create or update a repository secret."""
     repository = await get_repo_or_404(owner, repo, db)
+    await _require_repository_role(request, db, repository, user, "admin")
     result = await db.execute(
         select(Secret).where(Secret.repo_id == repository.id, Secret.name == secret_name)
     )
@@ -828,10 +870,11 @@ async def create_or_update_secret(
 
 @router.delete("/repos/{owner}/{repo}/actions/secrets/{secret_name}", status_code=204)
 async def delete_secret(
-    owner: str, repo: str, secret_name: str, user: AuthUser, db: DbSession,
+    owner: str, repo: str, secret_name: str, user: AuthUser, request: Request, db: DbSession,
 ):
     """Delete a repository secret."""
     repository = await get_repo_or_404(owner, repo, db)
+    await _require_repository_role(request, db, repository, user, "admin")
     result = await db.execute(
         select(Secret).where(Secret.repo_id == repository.id, Secret.name == secret_name)
     )
@@ -856,7 +899,7 @@ async def get_actions_permissions(
 
 @router.put("/repos/{owner}/{repo}/actions/permissions", status_code=204)
 async def set_actions_permissions(
-    owner: str, repo: str, body: dict, user: AuthUser, db: DbSession,
+    owner: str, repo: str, body: dict, user: AuthUser, request: Request, db: DbSession,
 ):
     """Enable or disable Actions on the repository.
 
@@ -865,6 +908,7 @@ async def set_actions_permissions(
     CI on every push.
     """
     repository = await get_repo_or_404(owner, repo, db)
+    await _require_repository_role(request, db, repository, user, "admin")
     if "enabled" not in body or not isinstance(body["enabled"], bool):
         raise HTTPException(status_code=422, detail="enabled must be true or false")
     repository.actions_enabled = body["enabled"]
@@ -892,10 +936,11 @@ async def get_workflow_permissions(
 
 @router.put("/repos/{owner}/{repo}/actions/permissions/workflow", status_code=204)
 async def set_workflow_permissions(
-    owner: str, repo: str, body: dict, user: AuthUser, db: DbSession,
+    owner: str, repo: str, body: dict, user: AuthUser, request: Request, db: DbSession,
 ):
     """Set the repository's default workflow permissions."""
     repository = await get_repo_or_404(owner, repo, db)
+    await _require_repository_role(request, db, repository, user, "admin")
     if "default_workflow_permissions" in body:
         value = str(body["default_workflow_permissions"]).strip().lower()
         if value not in ("read", "write"):
@@ -932,10 +977,11 @@ async def list_variables(
 
 @router.post("/repos/{owner}/{repo}/actions/variables", status_code=201)
 async def create_variable(
-    owner: str, repo: str, body: dict, user: AuthUser, db: DbSession,
+    owner: str, repo: str, body: dict, user: AuthUser, request: Request, db: DbSession,
 ):
     """Create a repository variable."""
     repository = await get_repo_or_404(owner, repo, db)
+    await _require_repository_role(request, db, repository, user, "admin")
     name = body.get("name", "")
     value = body.get("value", "")
     if not name:
@@ -987,10 +1033,11 @@ async def get_variable(
 
 @router.patch("/repos/{owner}/{repo}/actions/variables/{variable_name}")
 async def update_variable(
-    owner: str, repo: str, variable_name: str, body: dict, user: AuthUser, db: DbSession,
+    owner: str, repo: str, variable_name: str, body: dict, user: AuthUser, request: Request, db: DbSession,
 ):
     """Update a repository variable."""
     repository = await get_repo_or_404(owner, repo, db)
+    await _require_repository_role(request, db, repository, user, "admin")
     result = await db.execute(
         select(Variable).where(Variable.repo_id == repository.id, Variable.name == variable_name)
     )
@@ -1009,10 +1056,11 @@ async def update_variable(
 
 @router.delete("/repos/{owner}/{repo}/actions/variables/{variable_name}", status_code=204)
 async def delete_variable(
-    owner: str, repo: str, variable_name: str, user: AuthUser, db: DbSession,
+    owner: str, repo: str, variable_name: str, user: AuthUser, request: Request, db: DbSession,
 ):
     """Delete a repository variable."""
     repository = await get_repo_or_404(owner, repo, db)
+    await _require_repository_role(request, db, repository, user, "admin")
     result = await db.execute(
         select(Variable).where(Variable.repo_id == repository.id, Variable.name == variable_name)
     )
