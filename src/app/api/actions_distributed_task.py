@@ -1428,24 +1428,55 @@ async def dt_action_archive(
 async def dt_create_hub_plan_log(
     hub_name: str, plan_id: str, request: Request, db: DbSession,
 ):
-    """Create a log placeholder or append raw log bytes from the upstream runner."""
+    """Create a log for one of the job's timeline records.
+
+    The worker creates a log per step, then appends the step's whole log file
+    to it (JobServerQueue.UploadFile). It deserializes the answer into a
+    TaskLog, whose constructor requires the path: an answer without one threw
+    "Value cannot be null. (Parameter 'path')" and no step log was uploaded.
+    """
     job = await _job_for_plan(request, db, plan_id)
     content_type = request.headers.get("content-type", "")
     if "application/octet-stream" in content_type:
-        log_data = await request.body()
-        log_path = _job_log_path(job.id)
-        os.makedirs(os.path.dirname(log_path), exist_ok=True)
-        with open(log_path, "ab") as f:
-            f.write(log_data)
-
-        return {"id": 1, "lineCount": 0}
+        log_id = _next_step_log_id(job.id)
+        _append_step_log(job.id, log_id, await request.body())
+        return _task_log(log_id, f"logs/{log_id}")
 
     body = await request.json()
-    return {
-        "id": body.get("id", body.get("Id", 1)),
-        "lineCount": 0,
-        "createdOn": datetime.now(timezone.utc).isoformat(),
-    }
+    log_id = _next_step_log_id(job.id)
+    return _task_log(log_id, str(body.get("path", body.get("Path", "")) or f"logs/{log_id}"))
+
+
+def _step_log_dir(job_id: int) -> str:
+    """Where a job's uploaded step logs live, one file per log id.
+
+    Kept apart from the job log, which the live console feed already writes:
+    the uploaded step logs repeat those lines, and appending them there
+    printed every line twice.
+    """
+    return os.path.join(os.path.dirname(_job_log_path(job_id)), str(job_id))
+
+
+def _next_step_log_id(job_id: int) -> int:
+    directory = _step_log_dir(job_id)
+    os.makedirs(directory, exist_ok=True)
+    taken = [int(name.split(".")[0]) for name in os.listdir(directory) if name.split(".")[0].isdigit()]
+    log_id = max(taken, default=0) + 1
+    # Reserve the id now: the worker appends to it in a later request.
+    open(os.path.join(directory, f"{log_id}.log"), "ab").close()
+    return log_id
+
+
+def _append_step_log(job_id: int, log_id: int, data: bytes) -> None:
+    directory = _step_log_dir(job_id)
+    os.makedirs(directory, exist_ok=True)
+    with open(os.path.join(directory, f"{log_id}.log"), "ab") as f:
+        f.write(data)
+
+
+def _task_log(log_id: int, path: str) -> dict:
+    now = datetime.now(timezone.utc).isoformat()
+    return {"id": log_id, "path": path, "lineCount": 0, "createdOn": now, "lastChangedOn": now}
 
 
 @router.post("/_apis/distributedtask/hubs/{hub_name}/plans/{plan_id}/logs/{log_id}")
@@ -1457,16 +1488,10 @@ async def dt_append_hub_plan_log(
     request: Request,
     db: DbSession,
 ):
-    """Append uploaded log file bytes from the upstream runner worker."""
+    """Append an uploaded step log file to the log the worker created for it."""
     job = await _job_for_plan(request, db, plan_id)
-
-    log_data = await request.body()
-    log_path = _job_log_path(job.id)
-    os.makedirs(os.path.dirname(log_path), exist_ok=True)
-    with open(log_path, "ab") as f:
-        f.write(log_data)
-
-    return {"id": log_id, "lineCount": 0}
+    _append_step_log(job.id, log_id, await request.body())
+    return _task_log(log_id, f"logs/{log_id}")
 
 
 @router.patch("/_apis/distributedtask/hubs/{hub_name}/plans/{plan_id}/timelines/{timeline_id}/records")
@@ -1484,4 +1509,8 @@ async def dt_update_hub_timeline_records(
 
     await _update_timeline_for_job(job, body, db)
     await db.commit()
-    return body.get("value", body.get("records", []))
+    # The worker reads this as VssJsonCollectionWrapper<List<TimelineRecord>>,
+    # {"count", "value"}. A bare array failed to deserialize, so it treated
+    # every update as failed and kept resending it.
+    records = body.get("value", body.get("records", []))
+    return {"count": len(records), "value": records}
