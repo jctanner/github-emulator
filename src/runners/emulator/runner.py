@@ -12,7 +12,9 @@ Environment variables:
   RUNNER_LABELS         - Comma-separated labels (default: self-hosted,linux)
   RUNNER_WORKDIR        - Working directory for job execution (default: /tmp/runner-work)
   RUNNER_TLS_VERIFY     - false to skip verifying the emulator's certificate
-                          (default true; SSL_CERT_FILE names a private CA)
+                          (default true: httpx's certifi bundle, or the CA
+                          bundle SSL_CERT_FILE or SSL_CERT_DIR names instead;
+                          not the OS trust store)
 """
 
 import glob
@@ -917,8 +919,10 @@ class RunnerClient:
     def __init__(self):
         self.runner_id = None
         self.runner_token = None
-        # Verify the emulator's certificate against the system roots, or the
-        # CA in SSL_CERT_FILE. RUNNER_TLS_VERIFY=false turns it off for a
+        # Verify the emulator's certificate. httpx checks it against certifi's
+        # bundle, or against SSL_CERT_FILE (or SSL_CERT_DIR) instead when set;
+        # it does not read the OS trust store, so a private CA is passed with
+        # SSL_CERT_FILE. RUNNER_TLS_VERIFY=false turns it off for a
         # deployment whose certificate nothing here can check.
         verify = os.environ.get("RUNNER_TLS_VERIFY", "true").strip().lower() not in ("0", "false", "no")
         self.client = httpx.Client(verify=verify, timeout=60.0)

@@ -18,11 +18,16 @@ trust.
 
 ## Fix
 
-- `RunnerClient` verifies against the system roots by default, and honours
-  `SSL_CERT_FILE` for a private CA.
-- `RUNNER_TLS_VERIFY=false` (also `0` or `no`) turns verification off.
-  `docker-compose.yml` sets it for the internal Caddy name, so the compose
-  stack behaves as before.
+- `RunnerClient` verifies by default. httpx checks the certificate against
+  certifi's bundle, or against `SSL_CERT_FILE` (or `SSL_CERT_DIR`) instead
+  when set. It does not read the OS trust store, so a private CA goes in
+  `SSL_CERT_FILE`.
+- `RUNNER_TLS_VERIFY=false` (also `0` or `no`) turns verification off and
+  keeps the old behaviour. The shipped runner configurations set it
+  explicitly, because their emulator address is not a name the certificate
+  carries: `docker-compose.yml` (`https://github-emulator`) and the
+  `Vagrantfile` runner (`https://192.168.123.10`). Each overrides from the
+  environment.
 - A failed log upload is logged instead of being silently dropped.
 - Tests: `tests/actions/test_runner_tls_verify.py` (default on, the three
   off spellings, other values keep it on). The default-on test fails on the
