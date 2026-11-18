@@ -1,17 +1,17 @@
 """Small GitHub Apps/installations surface for resettable dev stacks."""
 
-from datetime import datetime, timedelta, timezone
 import hashlib
 import secrets
+from datetime import datetime, timedelta, timezone
 
-from cryptography.hazmat.primitives import hashes, serialization
+from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric import rsa
 from fastapi import APIRouter, HTTPException, Query, Request
 from fastapi.responses import JSONResponse
 from jose import JWTError, jwt
 from sqlalchemy import select
 
-from app.api.deps import AuthUser, DbSession, CurrentUser, get_current_user, get_repo_or_404, require_installation_grant
+from app.api.deps import AuthUser, CurrentUser, DbSession, get_current_user, get_repo_or_404, require_installation_grant
 from app.api.orgs import _is_org_admin
 from app.api.pagination import pagination_links
 from app.config import settings
@@ -19,8 +19,8 @@ from app.models.apps import AppInstallation, AppInstallationToken, GitHubApp
 from app.models.organization import Organization
 from app.models.repository import Repository
 from app.models.user import User
-from app.schemas.user import _fmt_dt
 from app.schemas.settings import InstallationResponse
+from app.schemas.user import _fmt_dt
 from app.services.auth_service import ensure_app_bot
 
 router = APIRouter(tags=["apps"])
