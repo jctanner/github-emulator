@@ -15,7 +15,7 @@ from sqlalchemy import select
 from app.models.actions import Workflow, WorkflowJob, WorkflowRun
 from app.models.repository import Repository
 from app.services.job_token_service import issue_job_token
-from tests.conftest import auth_headers  # noqa: F401 - keeps fixture import style
+from tests.conftest import API, auth_headers  # noqa: F401 - keeps fixture import style
 
 TRIAGE_PERMISSIONS = {
     "actions": "write",
@@ -156,7 +156,6 @@ async def test_pull_request_claims_carry_head_and_base_refs(client, db_session, 
 
 @pytest.mark.asyncio
 async def test_repository_owner_id_is_the_organizations_id(client, db_session, admin_token):
-    from tests.conftest import API
 
     made = await client.post(
         f"{API}/admin/organizations", headers=auth_headers(admin_token),

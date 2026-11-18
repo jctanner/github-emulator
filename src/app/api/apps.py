@@ -346,8 +346,9 @@ async def _narrowed_repositories(db, installation: AppInstallation, body: dict) 
 
     GitHub documents `repositories` (names) and `repository_ids` as two ways
     to narrow a token. When both are given, the emulator grants their union.
-    A missing or null field does not narrow; any other non-list is refused,
-    so a malformed request cannot fall through to an un-narrowed token.
+    A missing or null field, or an empty list, does not narrow (GitHub's docs
+    don't say what an empty list does). Any other non-list value is refused,
+    so a value of the wrong type cannot fall through to an un-narrowed token.
     """
     names = body.get("repositories")
     ids = body.get("repository_ids")

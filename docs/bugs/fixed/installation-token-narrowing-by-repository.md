@@ -26,7 +26,9 @@ The emulator:
 - `repository_ids` are resolved to full names, and the token gets the union
   of both lists. An unknown id, an id that is not a positive 64-bit integer,
   and a field that is present but not a list (`""`, `0`, `{}`) are refused
-  with 422, so a malformed request cannot get an un-narrowed token.
+  with 422, so a value of the wrong type cannot get an un-narrowed token.
+  A missing field, `null` or an empty list does not narrow the token, as
+  before; GitHub's docs don't say what an empty list does.
 - A token narrowed by either parameter reports `"selected"`. A token that is
   not narrowed, on an installation with access to all repositories, stays
   `"all"`.
