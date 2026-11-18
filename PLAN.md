@@ -145,6 +145,7 @@ Actions visibility and runner evaluation.
 - `docs/bugs/fixed/two-runners-claim-the-same-job.md`
 - `docs/bugs/fixed/upstream-runner-keeps-running-a-cancelled-job.md`
 - `docs/bugs/fixed/runner-stays-busy-after-its-job-is-deleted.md`
+- `docs/bugs/fixed/cancellation-never-reaches-a-runner-that-moved-on.md`
 
 ## Decisions
 

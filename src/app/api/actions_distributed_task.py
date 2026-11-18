@@ -1012,24 +1012,34 @@ async def _pending_cancellation(runner: Runner, db) -> dict | None:
     Without it the runner never heard: the job was cancelled in the database
     and ran to its end anyway, so a superseded stage ran twice; or the job
     vanished and the runner stayed busy for good.
+
+    Reads are fresh (``populate_existing``): the long poll keeps one session,
+    which does not expire objects on commit, so a cancellation committed by
+    another request mid-poll was otherwise hidden behind the job row loaded
+    on the first pass.
     """
-    if not (runner.busy or runner.status == "busy"):
-        return None
     held = _holding.get(runner.id)
     if held is not None:
+        # Held means busy: the hold ends only where the runner is freed.
         job_id, job_guid = held
         job = (await db.execute(
-            select(WorkflowJob).where(WorkflowJob.id == job_id)
+            select(WorkflowJob)
+            .where(WorkflowJob.id == job_id)
+            .execution_options(populate_existing=True)
         )).scalar_one_or_none()
         if job is not None and job.conclusion != "cancelled":
             return None
     else:
         # After a restart nothing is held in memory; ask the database.
+        await db.refresh(runner, attribute_names=["busy", "status"])
+        if not (runner.busy or runner.status == "busy"):
+            return None
         job = (await db.execute(
             select(WorkflowJob)
             .where(WorkflowJob.runner_id == runner.id)
             .order_by(WorkflowJob.started_at.desc(), WorkflowJob.id.desc())
             .limit(1)
+            .execution_options(populate_existing=True)
         )).scalar_one_or_none()
         if job is None or job.conclusion != "cancelled":
             return None
@@ -1083,9 +1093,25 @@ async def _settle_idle_runner(runner: Runner, status: str, db) -> None:
     await db.commit()
 
 
+async def _runner_moved_on(runner: Runner, job: WorkflowJob, db) -> bool:
+    """Whether the runner now runs a job other than ``job``."""
+    held = _holding.get(runner.id)
+    if held is not None and held[0] != job.id:
+        return True
+    other = (await db.execute(
+        select(WorkflowJob.id).where(
+            WorkflowJob.runner_id == runner.id,
+            WorkflowJob.status == "in_progress",
+            WorkflowJob.id != job.id,
+        ).limit(1)
+    )).scalar_one_or_none()
+    return other is not None
+
+
 async def _complete_job(job: WorkflowJob, runner: Runner, result_str: str, db) -> None:
     # A job cancelled while it ran keeps that conclusion when its runner
-    # reports the end; the report still frees the runner.
+    # reports the end; the report still frees the runner, unless the runner
+    # has already taken another job.
     if not (job.status == "completed" and job.conclusion == "cancelled"):
         job.status = "completed"
         job.conclusion = _result_to_conclusion(result_str)
@@ -1093,8 +1119,16 @@ async def _complete_job(job: WorkflowJob, runner: Runner, result_str: str, db) -
         if _is_success_result(result_str):
             _complete_queued_steps(job, result_str)
 
-    runner.busy = False
-    runner.status = "online"
+    if await _runner_moved_on(runner, job, db):
+        # A late report of a job's end can land after the runner took its
+        # next job. Freeing it then hid that job's cancellation, and offered
+        # the runner a second job while it ran one.
+        logger.info("Runner %s reported job %s after taking another; left busy", runner.name, job.id)
+    else:
+        if _holding.get(runner.id, (None,))[0] == job.id:
+            del _holding[runner.id]
+        runner.busy = False
+        runner.status = "online"
     await db.flush()
 
     await dispatch_ready_jobs(db, job.run_id)
@@ -1164,6 +1198,10 @@ async def dt_get_messages(
             _holding[runner.id] = (int(body["requestId"]), str(body["jobId"]))
             return message
 
+        # End the read transaction: under SQLite WAL it pins the snapshot it
+        # started with, and the next pass must see a cancellation or a newly
+        # queued job committed meanwhile.
+        await db.commit()
         await asyncio.sleep(2)
 
     return Response(status_code=204)
