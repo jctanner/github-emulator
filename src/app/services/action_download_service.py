@@ -19,6 +19,7 @@ workflow never touches the GitHub API.
 
 from __future__ import annotations
 
+import asyncio
 import os
 import re
 import tempfile
@@ -177,6 +178,65 @@ async def fetch_action_archive(name_with_owner: str, sha: str, fmt: str) -> str:
         raise UpstreamActionError(
             f"could not fetch {name_with_owner}@{sha} from {url}: {exc}"
         ) from exc
+    finally:
+        if os.path.exists(tmp):
+            os.unlink(tmp)
+    return path
+
+
+# --- actions hosted on this emulator ------------------------------------------
+#
+# GHES resolves `uses: owner/repo@ref` against a repository it holds, and
+# goes to github.com only for a repository it lacks. This emulator does the
+# same, and also goes upstream when the repository is here but lacks the ref,
+# so a partial local copy of a public action still works. Without this, an
+# action pushed to a repository here was looked up upstream and failed with
+# "does not exist upstream". Which local repositories a job may use is decided
+# by the caller (see actions_distributed_task._local_action_repository).
+
+
+async def _git(disk_path: str, *args: str) -> tuple[int, bytes]:
+    proc = await asyncio.create_subprocess_exec(
+        "git", *args,
+        stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.DEVNULL,
+        env={**os.environ, "GIT_DIR": disk_path},
+    )
+    stdout, _ = await proc.communicate()
+    return proc.returncode or 0, stdout
+
+
+async def resolve_local_action_sha(disk_path: str, ref: str) -> str | None:
+    """The commit `ref` (branch, tag or SHA) names in a local repository, if any."""
+    code, out = await _git(disk_path, "rev-parse", "--verify", "--quiet", f"{ref}^{{commit}}")
+    return out.decode().strip() if code == 0 and out.strip() else None
+
+
+def local_archive_cache_path(name_with_owner: str, sha: str, fmt: str) -> str:
+    # Apart from the upstream cache: a repository here may share its name
+    # with one on github.com.
+    owner, repo = name_with_owner.split("/", 1)
+    return os.path.join(settings.DATA_DIR, "actions-archives-local", owner, repo, f"{sha}.{fmt}")
+
+
+async def build_local_action_archive(disk_path: str, name_with_owner: str, sha: str, fmt: str) -> str:
+    """Path of a `git archive` of `sha`, shaped like GitHub's: one top directory."""
+    if fmt not in ("tar.gz", "zip"):
+        raise UpstreamActionError(f"unsupported archive format {fmt!r}", not_found=True)
+    path = local_archive_cache_path(name_with_owner, sha, fmt)
+    if os.path.exists(path):
+        return path
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    owner, repo = name_with_owner.split("/", 1)
+    fd, tmp = tempfile.mkstemp(dir=os.path.dirname(path), prefix=".partial-")
+    os.close(fd)
+    try:
+        code, _ = await _git(
+            disk_path, "archive", f"--format={fmt}", f"--prefix={owner}-{repo}-{sha[:7]}/",
+            f"--output={tmp}", sha,
+        )
+        if code != 0:
+            raise UpstreamActionError(f"no commit {sha} in {name_with_owner}", not_found=True)
+        os.replace(tmp, path)
     finally:
         if os.path.exists(tmp):
             os.unlink(tmp)

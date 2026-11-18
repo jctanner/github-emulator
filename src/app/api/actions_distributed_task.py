@@ -18,7 +18,7 @@ from urllib.parse import parse_qs, urlsplit, urlunsplit
 
 from fastapi import APIRouter, HTTPException, Query, Request
 from fastapi.responses import FileResponse, JSONResponse, Response
-from sqlalchemy import and_, exists, or_, select, update
+from sqlalchemy import and_, exists, func, or_, select, update
 from sqlalchemy.orm.attributes import flag_modified
 
 from app.api.actions_dispatch import _claim_queued_job
@@ -49,9 +49,11 @@ from app.models.actions import (
 from app.models.repository import Repository
 from app.services.action_download_service import (
     UpstreamActionError,
+    build_local_action_archive,
     fetch_action_archive,
     parse_uses,
     resolve_action_sha,
+    resolve_local_action_sha,
 )
 from app.services.auth_service import hash_token
 from app.services.job_token_service import validate_job_token
@@ -1928,7 +1930,7 @@ async def dt_resolve_action_download_info(
     here: the runner downloads it with the job token as a Basic credential,
     which GitHub would reject and this service can verify.
     """
-    await _job_for_plan(request, db, plan_id)
+    job = await _job_for_plan(request, db, plan_id)
     body = await request.json()
     references = body.get("actions") or body.get("Actions") or []
     base = _runner_reachable_base_url(_request_base(request))
@@ -1942,14 +1944,28 @@ async def dt_resolve_action_download_info(
                 400, "NonRetryableActionDownloadInfoException",
                 f"action reference needs nameWithOwner and ref: {reference!r}",
             )
-        try:
-            sha = await resolve_action_sha(name, ref)
-        except UpstreamActionError as exc:
-            if exc.not_found:
-                return _wrapped_exception(
-                    404, "UnresolvableActionDownloadInfoException", str(exc)
-                )
-            return _wrapped_exception(502, "DistributedTaskException", str(exc))
+        # A repository on this emulator first, then upstream. GHES resolves a
+        # repository it holds locally and goes to github.com only for one it
+        # lacks; this emulator also goes upstream when the repository is here
+        # but lacks the ref, so a partial local copy of a public action works.
+        held, local = await _local_action_repository(name, job, db)
+        if held and local is None:
+            # Here, but not usable by this job's repository: as unresolvable as
+            # on GitHub, and not looked up upstream under the same name.
+            return _wrapped_exception(
+                404, "UnresolvableActionDownloadInfoException",
+                f"Unable to resolve action {name}@{ref}, repository not found",
+            )
+        sha = await resolve_local_action_sha(local.disk_path, ref) if local else None
+        if sha is None:
+            try:
+                sha = await resolve_action_sha(name, ref)
+            except UpstreamActionError as exc:
+                if exc.not_found:
+                    return _wrapped_exception(
+                        404, "UnresolvableActionDownloadInfoException", str(exc)
+                    )
+                return _wrapped_exception(502, "DistributedTaskException", str(exc))
         archive = f"{base}/_apis/distributedtask/actions/archives/{name}/{sha}/archive"
         resolved[f"{name}@{ref}"] = {
             "nameWithOwner": name,
@@ -1962,15 +1978,61 @@ async def dt_resolve_action_download_info(
     return {"actions": resolved}
 
 
+async def _local_action_repository(
+    name_with_owner: str, job: WorkflowJob, db,
+) -> tuple[bool, Repository | None]:
+    """Whether this emulator holds the repository a `uses:` reference names,
+    and that repository when the job may use it as an action.
+
+    As on GitHub, a workflow may use an action from a public repository, from
+    its own repository, or from a private one with the same owner (GitHub
+    also requires that owner to allow it; this emulator has no such setting).
+    """
+    repository = (await db.execute(
+        select(Repository)
+        .where(func.lower(Repository.full_name) == name_with_owner.lower())
+        .order_by(Repository.id)
+    )).scalars().first()
+    if repository is None or not repository.disk_path:
+        return False, None
+    if not repository.private and (repository.visibility or "public") == "public":
+        return True, repository
+    job_repository = (await db.execute(
+        select(Repository)
+        .join(WorkflowRun, WorkflowRun.repo_id == Repository.id)
+        .where(WorkflowRun.id == job.run_id)
+    )).scalars().first()
+    if job_repository is not None and (
+        job_repository.id == repository.id
+        or _owner_login(job_repository) == _owner_login(repository)
+    ):
+        return True, repository
+    return True, None
+
+
+def _owner_login(repository: Repository) -> str:
+    return repository.full_name.split("/", 1)[0].lower()
+
+
 @router.get("/_apis/distributedtask/actions/archives/{owner}/{repo}/{sha}/archive.{fmt}")
 @router.get("/{owner_}/{repo_}/_apis/distributedtask/actions/archives/{owner}/{repo}/{sha}/archive.{fmt}")
 async def dt_action_archive(
     owner: str, repo: str, sha: str, fmt: str, request: Request, db: DbSession,
 ):
-    """Serve an action archive, fetched from upstream once per SHA."""
-    await _get_job_from_download_credential(request, db)
+    """Serve an action archive: built from a repository here when it holds the
+    commit, else fetched from upstream once per SHA."""
+    job = await _get_job_from_download_credential(request, db)
+    name = f"{owner}/{repo}"
+    held, local = await _local_action_repository(name, job, db)
+    if held and local is None:
+        # The same rule as when the download was resolved, since a job can
+        # also request this URL directly, without resolving it first.
+        raise HTTPException(status_code=404, detail="Not Found")
     try:
-        path = await fetch_action_archive(f"{owner}/{repo}", sha, fmt)
+        if local and await resolve_local_action_sha(local.disk_path, sha) == sha:
+            path = await build_local_action_archive(local.disk_path, name, sha, fmt)
+        else:
+            path = await fetch_action_archive(name, sha, fmt)
     except UpstreamActionError as exc:
         raise HTTPException(status_code=404 if exc.not_found else 502, detail=str(exc)) from exc
     media = "application/gzip" if fmt == "tar.gz" else "application/zip"
