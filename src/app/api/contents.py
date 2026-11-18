@@ -4,7 +4,6 @@ import asyncio
 import base64
 import os
 import tempfile
-from datetime import datetime, timezone
 
 from fastapi import APIRouter, HTTPException, Request, Response
 from fastapi.responses import JSONResponse
@@ -15,7 +14,7 @@ from app.git.bare_repo import parse_tree, read_object
 from app.schemas.browse import ContentResponse
 from app.schemas.user import _make_node_id
 from app.services.api_push import after_api_commit
-from app.services.branch_service import record_branch
+from app.services.branch_service import record_moved_branch
 
 router = APIRouter(tags=["contents"])
 
@@ -305,9 +304,9 @@ async def create_or_update_file(
         await _git(repo_path, "update-ref", f"refs/heads/{branch}", commit_sha, parent_sha or "")
     except RuntimeError:
         raise HTTPException(status_code=409, detail=f"{path} does not match {sha}" if sha else "Conflict") from None
-    await record_branch(db, repository, branch, commit_sha)
-    repository.pushed_at = datetime.now(timezone.utc)
-    await db.commit()
+    repository = await record_moved_branch(
+        db, repository, branch, parent_sha, commit_sha, refresh=(user,),
+    )
     await after_api_commit(db, repository, user, branch, parent_sha, commit_sha)
 
     api = f"{BASE}/api/v3"
@@ -372,9 +371,9 @@ async def delete_file(
             pass
     commit_sha = (await _git(repo_path, "commit-tree", new_tree_sha, "-m", message, "-p", parent_sha)).strip()
     await _git(repo_path, "update-ref", f"refs/heads/{branch}", commit_sha, parent_sha)
-    await record_branch(db, repository, branch, commit_sha)
-    repository.pushed_at = datetime.now(timezone.utc)
-    await db.commit()
+    repository = await record_moved_branch(
+        db, repository, branch, parent_sha, commit_sha, refresh=(user,),
+    )
     await after_api_commit(db, repository, user, branch, parent_sha, commit_sha)
 
     api = f"{BASE}/api/v3"

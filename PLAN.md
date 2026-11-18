@@ -176,6 +176,7 @@ Actions visibility and runner evaluation.
 - `docs/bugs/fixed/workflow-lookups-resync-the-workflow-table-on-every-request.md`
 - `docs/bugs/fixed/connection-pool-caps-concurrent-runners.md`
 - `docs/bugs/fixed/writes-fail-after-a-5s-lock-wait.md`
+- `docs/bugs/fixed/api-commit-answers-503-after-the-branch-moved.md`
 
 ## Decisions
 

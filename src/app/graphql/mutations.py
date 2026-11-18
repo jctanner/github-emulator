@@ -1665,7 +1665,7 @@ class Mutation:
         """
         from app.git.bare_repo import MissingPathError, StaleBranchError, commit_files
         from app.models.repository import Repository as RepoModel
-        from app.services.branch_service import record_branch
+        from app.services.branch_service import record_moved_branch
 
         current_user = _require_auth(info)
         db = info.context["db"]
@@ -1728,9 +1728,7 @@ class Mutation:
         except MissingPathError as exc:
             raise _typed_error("UNPROCESSABLE", f"A path was requested for deletion which does not exist as of commit oid `{input.expected_head_oid}`: {exc}") from None
 
-        await record_branch(db, repo, branch, oid)
-        repo.pushed_at = datetime.now(timezone.utc)
-        await db.commit()
+        await record_moved_branch(db, repo, branch, input.expected_head_oid, oid)
 
         return CreateCommitOnBranchPayload(
             commit=Commit(oid=oid, message=message),

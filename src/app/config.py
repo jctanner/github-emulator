@@ -29,7 +29,7 @@ class Settings(BaseSettings):
     # used all 15 and every other request queued for one.
     SQLITE_POOL_SIZE: int = 20
     SQLITE_MAX_OVERFLOW: int = 40
-    SQLITE_WRITE_RETRY_ATTEMPTS: int = 2
+    SQLITE_WRITE_RETRY_ATTEMPTS: int = 5
     # Requests per token (or client address) per hour that the rate-limit
     # headers and GET /rate_limit report, as github.com does. Nothing is
     # refused at zero, but a client that paces itself on the headers waits
