@@ -7,6 +7,7 @@ from sqlalchemy import select
 
 from app.api.deps import AuthUser, CurrentUser, DbSession, get_repo_or_404
 from app.config import settings
+from app.middleware.error_handler import GitHubError
 from app.models.comment import PRReviewComment
 from app.models.review import Review
 from app.models.pull_request import PullRequest
@@ -37,6 +38,20 @@ def _review_json(review: Review, owner: str, repo_name: str, pr_number: int, bas
             "pull_request": {"href": f"{api}/repos/{owner}/{repo_name}/pulls/{pr_number}"},
         },
     }
+
+
+# GitHub refuses these two events from the pull request's author with a
+# plain-string error; a COMMENT review by the author is allowed.
+_OWN_PULL_REQUEST_REFUSALS = {
+    "APPROVE": "Review Can not approve your own pull request",
+    "REQUEST_CHANGES": "Review Can not request changes on your own pull request",
+}
+
+
+def _refuse_own_pull_request(pr: PullRequest, user, event: str) -> None:
+    message = _OWN_PULL_REQUEST_REFUSALS.get(event)
+    if message and pr.issue is not None and pr.issue.user_id == user.id:
+        raise GitHubError(message="Unprocessable Entity", status_code=422, errors=[message])
 
 
 async def _get_pr(owner: str, repo: str, pull_number: int, db):
@@ -73,7 +88,7 @@ async def list_reviews(
     return [_review_json(r, owner, repo, pull_number, BASE) for r in reviews]
 
 
-@router.post("/repos/{owner}/{repo}/pulls/{pull_number}/reviews", status_code=201)
+@router.post("/repos/{owner}/{repo}/pulls/{pull_number}/reviews")
 async def create_review(
     owner: str, repo: str, pull_number: int, body: dict, user: AuthUser, db: DbSession,
 ):
@@ -144,6 +159,7 @@ async def create_review(
     }.get(event.upper() if event else "PENDING")
     if state is None:
         raise HTTPException(status_code=422, detail="Invalid event")
+    _refuse_own_pull_request(pr, user, event.upper() if event else "PENDING")
 
     review = Review(
         pull_request_id=pr.id,
@@ -223,6 +239,7 @@ async def get_review(
     return _review_json(review, owner, repo, pull_number, BASE)
 
 
+@router.post("/repos/{owner}/{repo}/pulls/{pull_number}/reviews/{review_id}/events")
 @router.put("/repos/{owner}/{repo}/pulls/{pull_number}/reviews/{review_id}/events")
 async def submit_review(
     owner: str, repo: str, pull_number: int, review_id: int,
@@ -240,6 +257,7 @@ async def submit_review(
     event = body.get("event", "").upper()
     if event not in ("APPROVE", "REQUEST_CHANGES", "COMMENT"):
         raise HTTPException(status_code=422, detail="Invalid event")
+    _refuse_own_pull_request(pr, user, event)
 
     state_map = {"APPROVE": "APPROVED", "REQUEST_CHANGES": "CHANGES_REQUESTED", "COMMENT": "COMMENTED"}
     review.state = state_map[event]

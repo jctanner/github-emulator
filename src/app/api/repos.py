@@ -261,6 +261,12 @@ async def update_repo(
     for key in updatable:
         if key in body:
             setattr(repository, key, body[key])
+    # GitHub keeps the two in step: visibility "private" or "internal" is a
+    # private repository, and private false is a public one.
+    if "visibility" in body:
+        repository.private = body["visibility"] != "public"
+    elif "private" in body:
+        repository.visibility = "private" if body["private"] else "public"
 
     # Handle name change
     if "name" in body and body["name"] != repository.name:

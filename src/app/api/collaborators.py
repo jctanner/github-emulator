@@ -166,6 +166,15 @@ def _permission_json(user_obj: User, permission: str) -> dict:
     }
 
 
+def _no_permission_json(user_obj: User) -> dict:
+    user_json = SimpleUser.from_db(user_obj, BASE).model_dump()
+    user_json["permissions"] = {
+        "admin": False, "maintain": False, "push": False, "triage": False, "pull": False,
+    }
+    user_json["role_name"] = ""
+    return {"permission": "none", "role_name": "", "user": user_json}
+
+
 @router.get("/repos/{owner}/{repo}/collaborators/{username}/permission")
 async def get_collaborator_permission(
     owner: str, repo: str, username: str, db: DbSession, user: AuthUser,
@@ -176,10 +185,15 @@ async def get_collaborator_permission(
     owner of a user-owned repository, a collaborator, or a member of the
     owning organization through an organization role (or as an owner).
     A GitHub App's bot is not a collaborator, and GitHub does not report its
-    installation's access here (Fullsend's CLI says so and works around it):
-    a bot without a collaborator row is 404, like anyone else without
-    access. Its git push and contents writes still follow its installation
+    installation's access here: a bot without a collaborator row is 200
+    ``none`` with an empty role_name, on public repositories too, even when
+    its App is installed on the repository with write access. Its git push
+    and contents writes still follow its installation
     (``repository_access.installation_role``).
+
+    A person with none of those is not 404 on GitHub either: they read a
+    public repository like anyone else, and have ``none`` on a private one.
+    Only a login that names no user is 404.
     """
     from app.services.repository_access import repository_permission
 
@@ -190,5 +204,9 @@ async def get_collaborator_permission(
 
     permission = await repository_permission(db, repository, target)
     if permission is None:
-        raise HTTPException(status_code=404, detail="Not Found")
+        if getattr(target, "type", "User") == "Bot":
+            return _no_permission_json(target)
+        if repository.private or (repository.visibility or "public") != "public":
+            return _no_permission_json(target)
+        permission = "pull"
     return _permission_json(target, permission)

@@ -8,6 +8,7 @@ from app.models.actions import WorkflowJob, WorkflowRun
 from app.models.repository import Repository
 from app.services import workflow_service
 from tests.conftest import API, auth_headers
+from tests.test_org_memberships_api import _make_user
 
 
 def test_activity_trigger_matching_forms():
@@ -322,9 +323,11 @@ async def test_pull_request_review_and_push_sync_events(
     assert created.status_code == 201
     review = await client.post(
         f"{API}/repos/testuser/init-repo/pulls/1/reviews",
-        json={"body": "looks good", "event": "APPROVE"}, headers=headers,
+        json={"body": "looks good", "event": "APPROVE"},
+        # The author cannot approve their own pull request.
+        headers=auth_headers(await _make_user(db_session, "reviewer")),
     )
-    assert review.status_code == 201
+    assert review.status_code == 200
 
     repo = (await db_session.execute(
         select(Repository).where(Repository.full_name == "testuser/init-repo")

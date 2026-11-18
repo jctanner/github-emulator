@@ -57,19 +57,27 @@ async def test_an_all_repositories_installation_covers_the_accounts_repositories
 
 async def test_the_permission_endpoint_does_not_report_an_installations_grant(client, admin_token, test_repo_with_init, test_token):
     """GitHub's collaborator permission endpoint does not report what an
-    installation grants its bot (Fullsend's CLI relies on that). Reporting
-    it made an App's bot an authorized actor in Fullsend's dispatch."""
+    installation grants its bot: it answers 200 ``none`` with an empty
+    role_name, as for an installed App's bot on a public repository on
+    GitHub. Reporting the grant made an App's bot an authorized actor in
+    Fullsend's dispatch."""
     owner, repo, _ = test_repo_with_init
     await _app(client, admin_token, "2002", "writer", {"contents": "write"}, [])
     resp = await client.get(f"{API}/repos/{owner}/{repo}/collaborators/writer[bot]/permission", headers=auth_headers(test_token))
-    assert resp.status_code == 404, resp.text
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["permission"] == "none"
+    assert body["role_name"] == ""
+    assert body["user"]["type"] == "Bot"
+    assert not any(body["user"]["permissions"].values())
 
 
 async def test_a_read_only_installation_reports_read_and_cannot_push(client, admin_token, db_session, test_repo_with_init, test_token):
     owner, repo, _ = test_repo_with_init
     await _app(client, admin_token, "2003", "reader", {"contents": "read"}, [f"{owner}/{repo}"])
     resp = await client.get(f"{API}/repos/{owner}/{repo}/collaborators/reader[bot]/permission", headers=auth_headers(test_token))
-    assert resp.status_code == 404
+    assert resp.status_code == 200
+    assert resp.json()["permission"] == "none"
 
     from app.models.repository import Repository
     repository = (await db_session.execute(select(Repository).where(Repository.full_name == f"{owner}/{repo}"))).scalar_one()
@@ -95,7 +103,8 @@ async def test_an_installation_elsewhere_grants_nothing_here(client, admin_token
     assert other.status_code == 201
     await _app(client, admin_token, "2005", "narrow", {"contents": "write"}, [f"{owner}/other"])
     resp = await client.get(f"{API}/repos/{owner}/{repo}/collaborators/narrow[bot]/permission", headers=auth_headers(test_token))
-    assert resp.status_code == 404
+    assert resp.status_code == 200
+    assert resp.json()["permission"] == "none"
 
 
 async def test_a_taken_app_id_is_a_conflict_not_a_server_error(client, admin_token):

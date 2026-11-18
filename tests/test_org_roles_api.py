@@ -57,6 +57,14 @@ async def _permission(client, repo, login, token):
     return await client.get(f"{API}/repos/{repo}/collaborators/{login}/permission", headers=auth_headers(token))
 
 
+async def _role(client, repo, login, token):
+    """The role a member holds; with no role it is read, because these
+    repositories are public and anyone can read them."""
+    resp = await _permission(client, repo, login, token)
+    assert resp.status_code == 200, resp.text
+    return resp.json()["role_name"]
+
+
 async def _write_file(client, repo, path, token):
     return await client.put(
         f"{API}/repos/{repo}/contents/{path}",
@@ -136,7 +144,7 @@ async def test_a_role_covers_repositories_created_after_it(client, org, test_tok
 async def test_a_member_without_a_role_has_no_repository_permission(client, org, test_token, writer):
     await _join(client, org, "writer", test_token)
     repo = await _new_repo(client, org, "no-role", test_token)
-    assert (await _permission(client, repo, "writer", test_token)).status_code == 404
+    assert await _role(client, repo, "writer", test_token) == "read"
     assert (await _write_file(client, repo, "x.txt", writer)).status_code == 403
 
 
@@ -161,17 +169,17 @@ async def test_removing_a_role_or_the_membership_takes_the_access_away(client, o
     resp = await client.delete(f"{API}/orgs/{org}/organization-roles/users/writer/{WRITE}",
                                headers=auth_headers(test_token))
     assert resp.status_code == 204
-    assert (await _permission(client, repo, "writer", test_token)).status_code == 404
+    assert await _role(client, repo, "writer", test_token) == "read"
 
     await _assign(client, org, "writer", WRITE, test_token)
     resp = await client.delete(f"{API}/orgs/{org}/memberships/writer", headers=auth_headers(test_token))
     assert resp.status_code == 204
-    assert (await _permission(client, repo, "writer", test_token)).status_code == 404
+    assert await _role(client, repo, "writer", test_token) == "read"
     holders = await client.get(f"{API}/orgs/{org}/organization-roles/{WRITE}/users", headers=auth_headers(test_token))
     assert holders.json() == []
     # Rejoining does not bring the role back.
     await _join(client, org, "writer", test_token)
-    assert (await _permission(client, repo, "writer", test_token)).status_code == 404
+    assert await _role(client, repo, "writer", test_token) == "read"
 
 
 @pytest.mark.asyncio

@@ -214,7 +214,7 @@ async def test_reviews_and_status_checks_drive_merge_state_and_rest_merge(
         json={"event": "APPROVE", "body": "ready"},
         headers=auth_headers(reviewer_token),
     )
-    assert review.status_code == 201
+    assert review.status_code == 200
     readiness = await _readiness(client, test_token)
     assert readiness["mergeStateStatus"] == "CLEAN"
     assert readiness["reviewDecision"] == "APPROVED"
@@ -417,7 +417,7 @@ async def test_admin_enforcement_last_push_approval_and_linear_history(
         json={"event": "APPROVE"},
         headers=auth_headers(reviewer_token),
     )
-    assert approved.status_code == 201
+    assert approved.status_code == 200
 
     merge_commit = await client.put(
         f"{API}/repos/testuser/protected-repo/pulls/1/merge",

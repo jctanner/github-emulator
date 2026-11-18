@@ -114,6 +114,10 @@ Actions visibility and runner evaluation.
 - `docs/bugs/fixed/gh-in-upstream-runner-steps-calls-github-com.md`
 - `docs/bugs/fixed/upstream-runner-logs-land-on-the-wrong-job.md`
 - `docs/bugs/fixed/upstream-runner-job-outputs-are-empty.md`
+- `docs/bugs/fixed/repository-private-and-visibility-drift.md`
+- `docs/bugs/fixed/author-can-approve-their-own-pull-request.md`
+- `docs/bugs/fixed/app-bot-permission-is-not-found.md`
+- `docs/bugs/fixed/collaborator-permission-of-a-user-without-access-is-404.md`
 - `docs/bugs/fixed/compare-returns-an-empty-merge-base.md`
 - `docs/bugs/fixed/contents-update-ignores-the-sha-precondition.md`
 - `docs/bugs/fixed/issue-create-drops-unknown-labels.md`
