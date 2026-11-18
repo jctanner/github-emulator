@@ -366,3 +366,28 @@ async def test_issue_lists_a_cross_repository_closing_pull_request(client, test_
     assert [n["url"].rsplit("/", 3)[-3:] for n in refs["nodes"]] == [
         ["closed-by-source", "pull", "1"]
     ]
+
+
+@pytest.mark.asyncio
+async def test_a_zero_padded_reference_links_both_ways(client, test_token):
+    """The parser reads "Fixes #01" as issue 1, so the reverse lookup must too;
+    "Fixes #10" names another issue."""
+    headers = auth_headers(test_token)
+    await client.post(f"{API}/user/repos", json={"name": "closed-by-padded"}, headers=headers)
+    await client.post(f"{API}/repos/testuser/closed-by-padded/issues", json={"title": "One"}, headers=headers)
+    padded = await client.post(
+        f"{API}/repos/testuser/closed-by-padded/pulls",
+        json={"title": "Fix one", "body": "Fixes #01", "head": "padded", "base": "main"},
+        headers=headers,
+    )
+    assert padded.status_code == 201, padded.text
+    other = await client.post(
+        f"{API}/repos/testuser/closed-by-padded/pulls",
+        json={"title": "Fix ten", "body": "Fixes #10", "head": "ten", "base": "main"},
+        headers=headers,
+    )
+    assert other.status_code == 201, other.text
+
+    refs = await _closed_by(client, test_token, "closed-by-padded", 1)
+
+    assert [node["number"] for node in refs["nodes"]] == [padded.json()["number"]]
