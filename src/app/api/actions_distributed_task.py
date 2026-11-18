@@ -8,6 +8,7 @@ agent protocol that the runner binary expects.
 import asyncio
 import base64
 import json
+import logging
 import os
 import secrets
 import uuid
@@ -41,6 +42,7 @@ from app.services.job_token_service import issue_job_token, validate_job_token
 from app.services.workflow_service import check_run_completion, dispatch_ready_jobs
 
 router = APIRouter(tags=["actions-distributed-task"])
+logger = logging.getLogger(__name__)
 
 
 def _job_log_path(job_id: int) -> str:
@@ -991,40 +993,94 @@ def _complete_queued_steps(job: WorkflowJob, result_str: str | int) -> None:
 # ignores a cancellation for a job it no longer runs.
 _cancellations_sent: set[int] = set()
 
+# The job each runner was last handed: runner id -> (job id, job guid). Kept
+# apart from the job row, because deleting a repository deletes its runs and
+# jobs while runners may still be executing them.
+_holding: dict[int, tuple[int, str]] = {}
+
+# How long after handing out a job a runner's "Online" is not believed.
+_IDLE_GRACE = timedelta(minutes=2)
+
 
 async def _pending_cancellation(runner: Runner, db) -> dict | None:
     """A JobCancellation message for the job this runner holds, once the job
     was cancelled while it ran (a newer job superseding it under
-    ``concurrency: cancel-in-progress``, or a run cancelled through the API).
+    ``concurrency: cancel-in-progress``, or a run cancelled through the API),
+    or no longer exists (its repository was deleted, as GitHub cancels a
+    deleted repository's running jobs).
 
     Without it the runner never heard: the job was cancelled in the database
-    and ran to its end anyway, so a superseded stage ran twice.
+    and ran to its end anyway, so a superseded stage ran twice; or the job
+    vanished and the runner stayed busy for good.
     """
     if not (runner.busy or runner.status == "busy"):
         return None
-    job = (await db.execute(
-        select(WorkflowJob)
-        .where(WorkflowJob.runner_id == runner.id)
-        .order_by(WorkflowJob.started_at.desc(), WorkflowJob.id.desc())
-        .limit(1)
-    )).scalar_one_or_none()
-    if job is None or job.conclusion != "cancelled" or job.id in _cancellations_sent:
+    held = _holding.get(runner.id)
+    if held is not None:
+        job_id, job_guid = held
+        job = (await db.execute(
+            select(WorkflowJob).where(WorkflowJob.id == job_id)
+        )).scalar_one_or_none()
+        if job is not None and job.conclusion != "cancelled":
+            return None
+    else:
+        # After a restart nothing is held in memory; ask the database.
+        job = (await db.execute(
+            select(WorkflowJob)
+            .where(WorkflowJob.runner_id == runner.id)
+            .order_by(WorkflowJob.started_at.desc(), WorkflowJob.id.desc())
+            .limit(1)
+        )).scalar_one_or_none()
+        if job is None or job.conclusion != "cancelled":
+            return None
+        job_id, job_guid = job.id, _workflow_guid("job", job.id)
+    if job_id in _cancellations_sent:
         return None
-    _cancellations_sent.add(job.id)
+    _cancellations_sent.add(job_id)
     # The shape the runner's JobCancelMessage reads; the timeout is how long
     # its steps get to stop before they are killed.
-    body = json.dumps(
-        {"jobId": _workflow_guid("job", job.id), "timeout": "00:05:00"},
-        separators=(",", ":"),
-    )
+    body = json.dumps({"jobId": job_guid, "timeout": "00:05:00"}, separators=(",", ":"))
     return {
-        "messageId": job.id,
+        "messageId": job_id,
         "messageType": "JobCancellation",
         "body": body,
-        "MessageId": job.id,
+        "MessageId": job_id,
         "MessageType": "JobCancellation",
         "Body": body,
     }
+
+
+async def _settle_idle_runner(runner: Runner, status: str, db) -> None:
+    """Believe a runner that says it is idle.
+
+    The runner reports its own state on every message poll (status=Online or
+    status=Busy). A runner we still hold busy but which says Online has
+    finished or lost its job without a report reaching us (its job was
+    deleted, or the report failed); left busy, it was never given another
+    job. Free it, and fail a job it held that is still in progress, so the
+    run is not left waiting for good.
+    """
+    if status.strip().lower() != "online" or not (runner.busy or runner.status == "busy"):
+        return
+    held = _holding.pop(runner.id, None)
+    if held is not None:
+        job = (await db.execute(
+            select(WorkflowJob).where(WorkflowJob.id == held[0])
+        )).scalar_one_or_none()
+        if job is not None and job.status == "in_progress" and job.runner_id == runner.id:
+            started = job.started_at
+            if started is not None and started.tzinfo is None:
+                started = started.replace(tzinfo=timezone.utc)
+            if started is not None and datetime.now(timezone.utc) - started < _IDLE_GRACE:
+                # The runner can poll once more as Online right after it took
+                # the job, before its dispatcher marks it Busy.
+                _holding[runner.id] = held
+                return
+            logger.warning("Runner %s reports idle while holding job %s; failing the job", runner.name, job.id)
+            await _complete_job(job, runner, "Failed", db)
+    runner.busy = False
+    runner.status = "online"
+    await db.commit()
 
 
 async def _complete_job(job: WorkflowJob, runner: Runner, result_str: str, db) -> None:
@@ -1095,6 +1151,8 @@ async def dt_get_messages(
     runner.last_heartbeat = session.last_seen
     await db.commit()
 
+    await _settle_idle_runner(runner, request.query_params.get("status", ""), db)
+
     deadline = asyncio.get_event_loop().time() + 30
     while asyncio.get_event_loop().time() < deadline:
         cancellation = await _pending_cancellation(runner, db)
@@ -1102,6 +1160,8 @@ async def dt_get_messages(
             return cancellation
         message = await _claim_next_job(runner, db, _request_base(request))
         if not isinstance(message, Response):
+            body = json.loads(message["body"])
+            _holding[runner.id] = (int(body["requestId"]), str(body["jobId"]))
             return message
 
         await asyncio.sleep(2)

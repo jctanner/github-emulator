@@ -144,6 +144,7 @@ Actions visibility and runner evaluation.
 - `docs/bugs/fixed/upload-artifact-v4-has-no-results-service.md`
 - `docs/bugs/fixed/two-runners-claim-the-same-job.md`
 - `docs/bugs/fixed/upstream-runner-keeps-running-a-cancelled-job.md`
+- `docs/bugs/fixed/runner-stays-busy-after-its-job-is-deleted.md`
 
 ## Decisions
 

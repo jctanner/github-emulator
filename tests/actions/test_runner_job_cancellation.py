@@ -17,6 +17,16 @@ from app.models.actions import Runner, WorkflowJob
 from tests.actions.test_uses_steps import _claim_job, uses_workflow  # noqa: F401
 
 
+@pytest.fixture(autouse=True)
+def _fresh_runner_state():
+    # Module state keyed by ids; each test's database starts ids at 1.
+    dt._holding.clear()
+    dt._cancellations_sent.clear()
+    yield
+    dt._holding.clear()
+    dt._cancellations_sent.clear()
+
+
 async def _job_and_runner(db_session):
     db_session.expire_all()
     job = (await db_session.execute(select(WorkflowJob))).scalars().first()
