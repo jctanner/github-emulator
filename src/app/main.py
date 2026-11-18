@@ -303,8 +303,10 @@ def create_app() -> FastAPI:
     # -- GHES-internal Actions endpoints (root-level, not under /api/v3/) -----
     from app.api.actions_pipelines import router as pipelines_router
     from app.api.actions_distributed_task import router as dt_router
+    from app.api.actions_results import router as results_router
     app.include_router(pipelines_router)
     app.include_router(dt_router)
+    app.include_router(results_router)
 
     # -- Raw file content, as an enterprise host serves it ---------------------
     # Registered before the git transport because both claim /{owner}/{repo}/*

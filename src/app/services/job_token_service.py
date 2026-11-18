@@ -36,6 +36,10 @@ def issue_job_token(job: WorkflowJob) -> str:
         "iat": now,
         "exp": now + 3600,
         "orch_id": str(job.run_id),
+        # The runner exports this token as ACTIONS_RUNTIME_TOKEN, and
+        # @actions/artifact reads the run and job it uploads for from the
+        # Actions.Results scope: "Actions.Results:<run>:<job>".
+        "scp": f"Actions.Results:{job.run_id}:{job.id}",
     })
     signing_input = f"{header}.{payload}"
     digest = hmac.digest(

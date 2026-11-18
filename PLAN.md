@@ -136,12 +136,14 @@ Actions visibility and runner evaluation.
 - `docs/bugs/fixed/raw-githubusercontent-requests-are-not-served.md`
 - `docs/bugs/fixed/contents-reads-run-several-git-processes.md`
 - `docs/bugs/fixed/contents-ignore-the-raw-media-type-and-the-1-mib-limit.md`
+- `docs/bugs/fixed/upload-artifact-v4-has-no-results-service.md`
 
 ## Decisions
 
 - `docs/decisions/ADR-0001-actions-runner-strategy.md`
 - `docs/decisions/ADR-0002-artifact-storage-on-disk.md`
 - `docs/decisions/ADR-0003-org-memberships-are-active-on-add.md`
+- `docs/decisions/ADR-0004-actions-results-service-for-artifacts.md`
 
 ## CC-43
 
