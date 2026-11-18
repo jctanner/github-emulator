@@ -18,20 +18,79 @@ def _runs_after_unsuccessful_needs(job: WorkflowJob) -> bool:
     return uses_status_function(pending.get("if"))
 
 
+def _called_jobs(job: WorkflowJob) -> dict[str, str]:
+    """The jobs a need on a reusable-workflow caller became, each mapped to
+    that caller's key."""
+    aliases = (job.pending_render or {}).get("_needs_aliases") or {}
+    called: dict[str, str] = {}
+    for caller, alias in aliases.items():
+        for outer in alias.get("jobs", {}).values():
+            called.setdefault(outer, caller)
+    return called
+
+
 def _ancestors(job: WorkflowJob, all_jobs) -> list[str]:
     """Every job ``job`` depends on, directly or through others: the jobs
     ``success()`` and ``failure()`` answer for, as on GitHub, so a cleanup
-    job behind a skipped one still sees the failure that skipped it."""
+    job behind a skipped one still sees the failure that skipped it.
+
+    A called job of a caller ``job`` needs is listed as that caller, whose
+    ``needs`` entry carries the call's result: a called job skipped by its
+    own condition does not make ``success()`` false when the call succeeded.
+    """
     needs_by_key = {(j.job_key or j.name): list(j.needs or []) for j in all_jobs}
+    called = _called_jobs(job)
     seen: list[str] = []
+    visited: set[str] = set()
     pending = list(job.needs or [])
     while pending:
         key = pending.pop()
-        if key in seen:
+        if key in visited:
             continue
-        seen.append(key)
+        visited.add(key)
+        name = called.get(key, key)
+        if name not in seen:
+            seen.append(name)
         pending.extend(needs_by_key.get(key, []))
     return seen
+
+
+def _needs_state(
+    job: WorkflowJob, completed_keys: set, unsuccessful_keys: set, key_results: dict,
+) -> tuple[bool, bool]:
+    """Whether every need of ``job`` has finished, and whether one did not
+    succeed.
+
+    A plain need is unsuccessful when any of its rows did not succeed. The
+    jobs a need on a reusable-workflow caller became are judged together, by
+    the call's result (``alias_result``): the call is finished when all of
+    them are, and unsuccessful when that result is not ``success``. On
+    GitHub a call with one job skipped by its own condition and none failed
+    or cancelled succeeds.
+    """
+    from app.services.workflow_service import alias_result
+
+    needs = list(job.needs or [])
+    aliases = (job.pending_render or {}).get("_needs_aliases") or {}
+    finished, unsuccessful = True, False
+    covered: set[str] = set()
+    for alias in aliases.values():
+        keys = [key for key in alias.get("jobs", {}).values() if key in needs]
+        if not keys:
+            continue
+        covered.update(keys)
+        if not all(key in key_results for key in keys):
+            finished = False
+        elif alias_result({"jobs": {key: key for key in keys}}, key_results) != "success":
+            unsuccessful = True
+    for need in needs:
+        if need in covered:
+            continue
+        if need in unsuccessful_keys:
+            unsuccessful = True
+        elif need not in completed_keys:
+            finished = False
+    return finished, unsuccessful
 
 
 async def dispatch_ready_jobs(db: AsyncSession, run_id: int) -> list[WorkflowJob]:
@@ -42,6 +101,7 @@ async def dispatch_ready_jobs(db: AsyncSession, run_id: int) -> list[WorkflowJob
     ``needs.<job>.outputs.*``, which only exist once those jobs have finished.
     """
     from app.services.workflow_service import (
+        _combined_result,
         build_needs_context,
         build_run_expression_context,
         build_steps_data,
@@ -78,6 +138,15 @@ async def dispatch_ready_jobs(db: AsyncSession, run_id: int) -> list[WorkflowJob
             completed_keys.add(key)
         else:
             unsuccessful_keys.add(key)
+    # Each finished key's result, worst of its rows, for judging the jobs a
+    # need on a reusable-workflow caller became by the call's result.
+    key_results: dict[str, str] = {}
+    for key, rows in rows_by_key.items():
+        if all(row.status == "completed" for row in rows):
+            key_result = ""
+            for row in rows:
+                key_result = _combined_result(key_result, row.conclusion or "")
+            key_results[key] = key_result
 
     promoted = []
     ready = []
@@ -91,10 +160,13 @@ async def dispatch_ready_jobs(db: AsyncSession, run_id: int) -> list[WorkflowJob
         for job in all_jobs:
             if job.status != "waiting" or job in ready:
                 continue
-            needs = job.needs or []
-            if any(n in unsuccessful_keys for n in needs) and not _runs_after_unsuccessful_needs(job):
+            finished, unsuccessful = _needs_state(
+                job, completed_keys, unsuccessful_keys, key_results,
+            )
+            if unsuccessful and not _runs_after_unsuccessful_needs(job):
                 job.status = "completed"
                 job.conclusion = "skipped"
+                key_results[job.job_key or job.name] = "skipped"
                 job.completed_at = datetime.now(timezone.utc)
                 job.steps = [
                     {**step, "status": "completed", "conclusion": "skipped"}
@@ -102,7 +174,7 @@ async def dispatch_ready_jobs(db: AsyncSession, run_id: int) -> list[WorkflowJob
                 ]
                 unsuccessful_keys.add(job.job_key or job.name)
                 changed = True
-            elif all(n in completed_keys or n in unsuccessful_keys for n in needs):
+            elif finished:
                 # Every need has finished. Either all succeeded, or the job's
                 # condition names a status function and decides for itself.
                 ready.append(job)

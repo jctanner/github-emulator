@@ -541,23 +541,58 @@ def needs_alias_entries(aliases: dict, needs_context: dict) -> dict:
 
     The result is the worst of the called jobs' results, as for a matrix;
     outputs are the call's workflow_call outputs, evaluated with a ``jobs``
-    context holding the called jobs by their own keys.
+    context holding the called jobs by their own keys. A caller inside the
+    called workflow (``callers``) is in that context under its own key, its
+    entry built the same way, so an output can read ``jobs.<caller>.outputs``.
     """
-    entries = {}
-    for caller, alias in (aliases or {}).items():
-        jobs_context = {
-            inner: needs_context.get(outer) or {"outputs": {}, "result": ""}
+    return {
+        caller: _alias_entry(alias, needs_context)
+        for caller, alias in (aliases or {}).items()
+    }
+
+
+def alias_result(alias: dict, results: dict) -> str:
+    """The result of a call from its called jobs' results, by the rule
+    ``needs_alias_entries`` uses: ``failure`` or ``cancelled`` if a job had
+    it, else ``success`` if one succeeded; ``skipped`` only when all were."""
+    result = ""
+    for outer in alias.get("jobs", {}).values():
+        result = _combined_result(result, results.get(outer) or "")
+    return result
+
+
+def _alias_entry(alias: dict, needs_context: dict) -> dict:
+    jobs_context = {
+        inner: needs_context.get(outer) or {"outputs": {}, "result": ""}
+        for inner, outer in alias.get("jobs", {}).items()
+    }
+    result = alias_result(alias, {
+        outer: (needs_context.get(outer) or {}).get("result") or ""
+        for outer in alias.get("jobs", {}).values()
+    })
+    for name, nested in (alias.get("callers") or {}).items():
+        jobs_context[name] = _alias_entry(nested, needs_context)
+    outputs = {
+        name: str(render_expressions(expression, {"jobs": jobs_context}) or "")
+        for name, expression in (alias.get("outputs") or {}).items()
+    }
+    return {"result": result, "outputs": outputs}
+
+
+def _prefix_alias(alias: dict, prefix: str, keys: set) -> dict:
+    """An alias from a called workflow with its job keys as this level names
+    them, its own nested callers included."""
+    return {
+        **alias,
+        "jobs": {
+            inner: f"{prefix}{outer}" if outer in keys else outer
             for inner, outer in alias.get("jobs", {}).items()
-        }
-        result = ""
-        for entry in jobs_context.values():
-            result = _combined_result(result, entry.get("result") or "")
-        outputs = {
-            name: str(render_expressions(expression, {"jobs": jobs_context}) or "")
-            for name, expression in (alias.get("outputs") or {}).items()
-        }
-        entries[caller] = {"result": result, "outputs": outputs}
-    return entries
+        },
+        "callers": {
+            name: _prefix_alias(nested, prefix, keys)
+            for name, nested in (alias.get("callers") or {}).items()
+        },
+    }
 
 
 def _declared_call_inputs(called: dict) -> dict:
@@ -741,20 +776,25 @@ async def _materialize_reusable_jobs(
         called_jobs = materialized.get("jobs", {})
         called_keys = set(called_jobs)
         prefix = f"{key} / "
+        # The called workflow's own callers stay in this caller's alias, so
+        # its outputs can read jobs.<nested caller>.outputs.
+        nested_callers = materialized.pop("_callers", None) or {}
         callers[key] = {
             "jobs": {called_key: f"{prefix}{called_key}" for called_key in called_jobs},
             "outputs": _declared_call_outputs(called),
+            "callers": {
+                name: _prefix_alias(nested, prefix, called_keys)
+                for name, nested in nested_callers.items()
+            },
         }
         for called_key, called_config in called_jobs.items():
             child = copy.deepcopy(called_config)
             child["name"] = child.get("name", f"{key} / {called_key}")
             # Aliases a nested level gave this job name its jobs by their keys
             # there; this level prefixes those keys, so prefix them here too.
-            for alias in (child.get("_needs_aliases") or {}).values():
-                alias["jobs"] = {
-                    inner: f"{prefix}{outer}" if outer in called_keys else outer
-                    for inner, outer in alias["jobs"].items()
-                }
+            aliases = child.get("_needs_aliases") or {}
+            for name, alias in aliases.items():
+                aliases[name] = _prefix_alias(alias, prefix, called_keys)
             caller_condition = config.get("if")
             child_condition = child.get("if")
             if caller_condition is not None:
@@ -836,6 +876,8 @@ async def _materialize_reusable_jobs(
         job["needs"] = list(dict.fromkeys(remapped))
 
     result["jobs"] = expanded
+    # For the calling level, which keeps them in its own caller's alias.
+    result["_callers"] = callers
     return result
 
 
@@ -857,7 +899,7 @@ async def materialize_reusable_workflows(
     those lexical contexts and remaps dependencies so nested calls behave like
     their GitHub counterparts.
     """
-    return await _materialize_reusable_jobs(
+    materialized = await _materialize_reusable_jobs(
         workflow_yaml,
         repo_disk_path,
         ref,
@@ -867,6 +909,8 @@ async def materialize_reusable_workflows(
         depth=0,
         ancestry=(),
     )
+    materialized.pop("_callers", None)
+    return materialized
 
 
 def _instance_strategy(job_config: dict, context: dict) -> dict:

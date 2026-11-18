@@ -22,7 +22,21 @@ the run. A job with `needs: <caller>`:
   `needs.<caller>` from them: the result is the worst of the called jobs'
   results, and the outputs are evaluated with a `jobs` context of the called
   jobs.
+- The dependent waits for every called job, but its implicit `success()`,
+  and `success()`/`failure()` in its `if:`, read the call's result, not each
+  called job's. On GitHub a call whose jobs succeeded except one skipped by
+  its own `if:` succeeds, and a `needs: <caller>` dependent with no `if:`
+  runs. Before, the scheduler saw the skipped called job as an unsuccessful
+  need and skipped the dependent. A call with a failed or cancelled job is
+  still unsuccessful, so its dependent is still skipped. Plain needs are
+  judged as before.
 - Nested calls re-prefix those keys at each level.
+- A caller inside a called workflow keeps its own alias inside the outer
+  caller's alias (`callers`). The outer call's outputs can then read
+  `jobs.<nested caller>.outputs`: that entry is built the same way, from the
+  nested caller's called jobs and its own `on.workflow_call.outputs`. Before,
+  the outer `jobs` context held only the flattened called jobs
+  (`<nested caller> / <job>`), so such an output rendered as `""`.
 - A skipped caller is one skipped job under its own key
   (`skipped-reusable-workflow-caller-lists-the-called-jobs.md`), so a need on
   it points at that job. Its `needs.<caller>` is then that job's own entry
