@@ -146,6 +146,7 @@ Actions visibility and runner evaluation.
 - `docs/bugs/fixed/upstream-runner-keeps-running-a-cancelled-job.md`
 - `docs/bugs/fixed/runner-stays-busy-after-its-job-is-deleted.md`
 - `docs/bugs/fixed/cancellation-never-reaches-a-runner-that-moved-on.md`
+- `docs/bugs/fixed/job-handed-to-an-abandoned-runner-poll.md`
 
 ## Decisions
 

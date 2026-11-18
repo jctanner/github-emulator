@@ -60,7 +60,7 @@ async def test_a_runner_that_says_online_is_freed_and_its_lost_job_fails(
     job_id, runner_id = job.id, runner.id
     job.started_at = datetime.now(UTC) - timedelta(minutes=5)
     await db_session.commit()
-    await dt._settle_idle_runner(runner, "Online", db_session)
+    await dt._settle_idle_runner(runner, "Online", str(job_id), db_session)
 
     db_session.expire_all()
     job = (await db_session.execute(select(WorkflowJob).where(WorkflowJob.id == job_id))).scalar_one()
@@ -75,7 +75,7 @@ async def test_a_runner_that_says_busy_is_left_alone(
 ):
     _body, _job, runner = await _claimed(client, db_session, test_token)
     runner_id = runner.id
-    await dt._settle_idle_runner(runner, "Busy", db_session)
+    await dt._settle_idle_runner(runner, "Busy", "", db_session)
     db_session.expire_all()
     runner = (await db_session.execute(select(Runner).where(Runner.id == runner_id))).scalar_one()
     assert runner.busy
@@ -88,7 +88,7 @@ async def test_a_runner_that_says_online_just_after_taking_a_job_keeps_it(
     # The real runner can poll once more as Online before it marks itself Busy.
     _body, job, runner = await _claimed(client, db_session, test_token)
     job_id, runner_id = job.id, runner.id
-    await dt._settle_idle_runner(runner, "Online", db_session)
+    await dt._settle_idle_runner(runner, "Online", str(job_id), db_session)
     db_session.expire_all()
     job = (await db_session.execute(select(WorkflowJob).where(WorkflowJob.id == job_id))).scalar_one()
     runner = (await db_session.execute(select(Runner).where(Runner.id == runner_id))).scalar_one()

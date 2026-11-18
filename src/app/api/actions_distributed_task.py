@@ -17,7 +17,7 @@ from urllib.parse import parse_qs, urlsplit, urlunsplit
 
 from fastapi import APIRouter, HTTPException, Query, Request
 from fastapi.responses import FileResponse, JSONResponse, Response
-from sqlalchemy import and_, select
+from sqlalchemy import and_, select, update
 from sqlalchemy.orm.attributes import flag_modified
 
 from app.api.deps import DbSession
@@ -42,7 +42,9 @@ from app.services.job_token_service import issue_job_token, validate_job_token
 from app.services.workflow_service import check_run_completion, dispatch_ready_jobs
 
 router = APIRouter(tags=["actions-distributed-task"])
-logger = logging.getLogger(__name__)
+# Under github_emulator, which app.main sends to the server log: job
+# hand-outs, requeues, completions and cancellations can be traced there.
+logger = logging.getLogger("github_emulator.runner_broker")
 
 
 def _job_log_path(job_id: int) -> str:
@@ -1001,6 +1003,39 @@ _holding: dict[int, tuple[int, str]] = {}
 # How long after handing out a job a runner's "Online" is not believed.
 _IDLE_GRACE = timedelta(minutes=2)
 
+# The real runner abandons its message poll whenever its status changes and
+# opens a new one at once; the server keeps running the abandoned request. A
+# job that request claimed was answered to nobody, and sat in progress on a
+# runner that never saw it. So only a runner's newest poll may hand out a
+# job, and hand-outs and the settling of a runner's state are serialised per
+# runner.
+_poll_generation: dict[int, int] = {}
+# Job messages a runner acknowledged (DELETE of the message, which the runner
+# sends once it has dispatched the job, before its next poll). A job in here
+# was received for certain, whatever lastMessageId a late poll carries. Kept
+# for good (job ids are never reused): dropping an id when its report arrived
+# opened a gap, before that report committed, in which the job looked
+# unreceived and was requeued after it had run.
+_acknowledged: set[int] = set()
+_runner_locks: dict[tuple[int, int], asyncio.Lock] = {}
+
+# How long a handed-out job may stay unacknowledged before a poll that does
+# not name it counts as proof the runner never received it.
+_ACK_WINDOW = timedelta(seconds=5)
+
+# Long-poll pacing; tests shorten them.
+_POLL_SECONDS = 30.0
+_POLL_INTERVAL_SECONDS = 2.0
+
+
+def _runner_lock(runner_id: int) -> asyncio.Lock:
+    # Keyed by event loop too: a lock is bound to the loop it first waits on.
+    key = (id(asyncio.get_running_loop()), runner_id)
+    lock = _runner_locks.get(key)
+    if lock is None:
+        lock = _runner_locks[key] = asyncio.Lock()
+    return lock
+
 
 async def _pending_cancellation(runner: Runner, db) -> dict | None:
     """A JobCancellation message for the job this runner holds, once the job
@@ -1060,34 +1095,85 @@ async def _pending_cancellation(runner: Runner, db) -> dict | None:
     }
 
 
-async def _settle_idle_runner(runner: Runner, status: str, db) -> None:
+def _job_started(job: WorkflowJob) -> bool:
+    """Whether the runner reported any step of ``job`` (timeline updates)."""
+    return any((step or {}).get("status") not in (None, "queued") for step in (job.steps or []))
+
+
+async def _settle_idle_runner(runner: Runner, status: str, last_message_id: str, db) -> None:
     """Believe a runner that says it is idle.
 
-    The runner reports its own state on every message poll (status=Online or
-    status=Busy). A runner we still hold busy but which says Online has
-    finished or lost its job without a report reaching us (its job was
-    deleted, or the report failed); left busy, it was never given another
-    job. Free it, and fail a job it held that is still in progress, so the
-    run is not left waiting for good.
+    The runner reports its state (status=Online or Busy) and the id of the
+    last message it received (lastMessageId) on every poll. A runner we hold
+    busy that says Online either never received the job we handed it (the
+    poll that carried it was abandoned, see ``_poll_generation``), or
+    finished or lost it without a report reaching us (its job was deleted,
+    or the report failed). Left busy, it was never given another job.
+
+    A job it never received goes back to the queue. One it received and
+    still holds after the grace period fails, so the run is not left waiting
+    for good. Either way the runner is freed.
     """
-    if status.strip().lower() != "online" or not (runner.busy or runner.status == "busy"):
+    if status.strip().lower() != "online":
         return
-    held = _holding.pop(runner.id, None)
-    if held is not None:
-        job = (await db.execute(
-            select(WorkflowJob).where(WorkflowJob.id == held[0])
-        )).scalar_one_or_none()
-        if job is not None and job.status == "in_progress" and job.runner_id == runner.id:
-            started = job.started_at
-            if started is not None and started.tzinfo is None:
-                started = started.replace(tzinfo=timezone.utc)
-            if started is not None and datetime.now(timezone.utc) - started < _IDLE_GRACE:
-                # The runner can poll once more as Online right after it took
-                # the job, before its dispatcher marks it Busy.
-                _holding[runner.id] = held
+    await db.refresh(runner, attribute_names=["busy", "status"])
+    if not (runner.busy or runner.status == "busy"):
+        return
+    jobs = (await db.execute(
+        select(WorkflowJob)
+        .where(WorkflowJob.runner_id == runner.id, WorkflowJob.status == "in_progress")
+        .execution_options(populate_existing=True)
+    )).scalars().all()
+    now = datetime.now(timezone.utc)
+    for job in jobs:
+        started = job.started_at
+        if started is not None and started.tzinfo is None:
+            started = started.replace(tzinfo=timezone.utc)
+        age = now - started if started is not None else _IDLE_GRACE
+        # Never received: the runner names another message as its last, or
+        # (a runner that has had no message since it connected) names none
+        # and the job never started a step. A poll the runner gave up on
+        # before the hand-out came back looks like that; failing the job
+        # then lost a run the runner never saw (bt-f2, run 43740835949).
+        # A runner restarted mid-job also sends no last message, but its
+        # job has started steps, so it still fails below.
+        never_received = (
+            (last_message_id and last_message_id != str(job.id))
+            or (not last_message_id and not _job_started(job))
+        )
+        if never_received and job.id not in _acknowledged:
+            if age < _ACK_WINDOW:
+                # A request the runner sent before it got the job can still
+                # reach us after the hand-out; the acknowledgement follows
+                # within milliseconds. Decide on a later pass.
+                await db.commit()
                 return
-            logger.warning("Runner %s reports idle while holding job %s; failing the job", runner.name, job.id)
-            await _complete_job(job, runner, "Failed", db)
+            # Conditional: a report of this job committed meanwhile wins.
+            requeued = await db.execute(
+                update(WorkflowJob)
+                .where(
+                    WorkflowJob.id == job.id,
+                    WorkflowJob.status == "in_progress",
+                    WorkflowJob.runner_id == runner.id,
+                )
+                .values(status="queued", runner_id=None, runner_name=None, started_at=None)
+                .execution_options(synchronize_session=False)
+            )
+            if requeued.rowcount == 1:
+                logger.info(
+                    "Runner %s never received job %s (its last message is %s); job requeued",
+                    runner.name, job.id, last_message_id or "none",
+                )
+            continue
+        if age < _IDLE_GRACE:
+            # The runner can poll once more as Online right after it took
+            # the job, before its dispatcher marks it Busy.
+            await db.commit()
+            return
+        logger.warning("Runner %s reports idle while holding job %s; failing the job", runner.name, job.id)
+        _holding[runner.id] = (job.id, _workflow_guid("job", job.id))
+        await _complete_job(job, runner, "Failed", db)
+    _holding.pop(runner.id, None)
     runner.busy = False
     runner.status = "online"
     await db.commit()
@@ -1129,6 +1215,7 @@ async def _complete_job(job: WorkflowJob, runner: Runner, result_str: str, db) -
             del _holding[runner.id]
         runner.busy = False
         runner.status = "online"
+    logger.info("Runner %s reported job %s: %s (%s)", runner.name, job.id, result_str, job.conclusion)
     await db.flush()
 
     await dispatch_ready_jobs(db, job.run_id)
@@ -1185,24 +1272,42 @@ async def dt_get_messages(
     runner.last_heartbeat = session.last_seen
     await db.commit()
 
-    await _settle_idle_runner(runner, request.query_params.get("status", ""), db)
+    runner_id = runner.id
+    generation = _poll_generation.get(runner_id, 0) + 1
+    _poll_generation[runner_id] = generation
+    lock = _runner_lock(runner_id)
+    status = request.query_params.get("status", "")
+    last_message_id = request.query_params.get("lastMessageId", "")
 
-    deadline = asyncio.get_event_loop().time() + 30
+    deadline = asyncio.get_event_loop().time() + _POLL_SECONDS
     while asyncio.get_event_loop().time() < deadline:
-        cancellation = await _pending_cancellation(runner, db)
-        if cancellation is not None:
-            return cancellation
-        message = await _claim_next_job(runner, db, _request_base(request))
-        if not isinstance(message, Response):
-            body = json.loads(message["body"])
-            _holding[runner.id] = (int(body["requestId"]), str(body["jobId"]))
-            return message
+        async with lock:
+            if _poll_generation.get(runner_id) != generation or await request.is_disconnected():
+                # A newer poll from this runner replaced this one.
+                return Response(status_code=204)
+            # Every pass, not only the first: a lost hand-out is decided once
+            # its acknowledgement window has passed.
+            await _settle_idle_runner(runner, status, last_message_id, db)
+            # End the read transaction: under WAL a write in a transaction
+            # that began by reading fails at once when another writer
+            # committed meanwhile, without waiting on busy_timeout.
+            await db.commit()
+            cancellation = await _pending_cancellation(runner, db)
+            if cancellation is not None:
+                logger.info("Runner %s sent cancellation of job %s", runner.name, cancellation["messageId"])
+                return cancellation
+            message = await _claim_next_job(runner, db, _request_base(request))
+            if not isinstance(message, Response):
+                body = json.loads(message["body"])
+                _holding[runner_id] = (int(body["requestId"]), str(body["jobId"]))
+                logger.info("Runner %s acquired job %s", runner.name, body["requestId"])
+                return message
 
         # End the read transaction: under SQLite WAL it pins the snapshot it
         # started with, and the next pass must see a cancellation or a newly
         # queued job committed meanwhile.
         await db.commit()
-        await asyncio.sleep(2)
+        await asyncio.sleep(_POLL_INTERVAL_SECONDS)
 
     return Response(status_code=204)
 
@@ -1322,7 +1427,10 @@ async def dt_delete_pool_message(
     sessionId: str | None = None,
 ):
     """Acknowledge removal of a delivered message from the queue."""
-    await _get_runner_from_token(request, db)
+    runner = await _get_runner_from_token(request, db)
+    if _holding.get(runner.id, (None,))[0] == message_id:
+        _acknowledged.add(message_id)
+        logger.info("Runner %s acknowledged job %s", runner.name, message_id)
     return {"messageId": message_id, "status": "deleted"}
 
 
