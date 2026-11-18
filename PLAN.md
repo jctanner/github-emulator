@@ -114,6 +114,7 @@ Actions visibility and runner evaluation.
 - `docs/bugs/fixed/gh-in-upstream-runner-steps-calls-github-com.md`
 - `docs/bugs/fixed/upstream-runner-logs-land-on-the-wrong-job.md`
 - `docs/bugs/fixed/upstream-runner-job-outputs-are-empty.md`
+- `docs/bugs/fixed/compare-returns-an-empty-merge-base.md`
 - `docs/bugs/fixed/contents-update-ignores-the-sha-precondition.md`
 - `docs/bugs/fixed/issue-create-drops-unknown-labels.md`
 - `docs/bugs/fixed/duplicate-creates-do-not-report-already-exists.md`

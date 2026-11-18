@@ -814,6 +814,45 @@ async def get_compare_commit_count(
         return 0
 
 
+async def get_merge_base(disk_path: str, base_ref: str, head_ref: str) -> str | None:
+    """Return the best common ancestor of two commits, or None when they
+    share no history or a ref does not resolve."""
+    env = os.environ.copy()
+    env["GIT_DIR"] = disk_path
+    proc = await asyncio.create_subprocess_exec(
+        "git", "merge-base", base_ref, head_ref,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+        env=env,
+    )
+    stdout, _ = await proc.communicate()
+    if proc.returncode != 0:
+        return None
+    return stdout.decode().strip() or None
+
+
+async def get_ahead_behind(
+    disk_path: str, base_ref: str, head_ref: str
+) -> tuple[int, int]:
+    """Return (ahead, behind): commits only on head, and only on base."""
+    env = os.environ.copy()
+    env["GIT_DIR"] = disk_path
+    proc = await asyncio.create_subprocess_exec(
+        "git", "rev-list", "--left-right", "--count", f"{base_ref}...{head_ref}",
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+        env=env,
+    )
+    stdout, _ = await proc.communicate()
+    if proc.returncode != 0:
+        return 0, 0
+    try:
+        behind, ahead = (int(n) for n in stdout.decode().split())
+    except ValueError:
+        return 0, 0
+    return ahead, behind
+
+
 async def get_compare_stats(
     disk_path: str, base_ref: str, head_ref: str
 ) -> tuple[int, int, int]:
