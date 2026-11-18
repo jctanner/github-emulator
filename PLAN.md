@@ -163,6 +163,8 @@ Actions visibility and runner evaluation.
 - `docs/bugs/fixed/runner-self-delete-leaves-jobs-pointing-at-it.md`
 - `docs/bugs/fixed/app-logs-silenced-after-the-startup-migration.md`
 - `docs/bugs/fixed/runners-registering-together-lose-their-tokens.md`
+- `docs/bugs/fixed/github-context-identity-values-are-empty.md`
+- `docs/bugs/fixed/rendered-github-context-differs-from-github.md`
 
 ## Decisions
 
