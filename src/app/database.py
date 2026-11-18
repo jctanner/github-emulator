@@ -3,6 +3,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_asyn
 from sqlalchemy.orm import DeclarativeBase
 
 from app.config import settings
+from app.database_diag import instrument_sqlite_engine
 
 
 class Base(DeclarativeBase):
@@ -57,7 +58,6 @@ def _configure_sqlite_connection(dbapi_connection, connection_record):
     finally:
         cursor.close()
 
-from app.database_diag import instrument_sqlite_engine  # noqa: E402
 
 instrument_sqlite_engine(engine)
 
