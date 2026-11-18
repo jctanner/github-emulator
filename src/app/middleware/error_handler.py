@@ -183,6 +183,23 @@ async def generic_error_handler(request: Request, exc: Exception) -> JSONRespons
     return _build_error_response(500, "Internal Server Error")
 
 
+async def stale_row_handler(request: Request, exc: Exception) -> JSONResponse:
+    """Answer an update of a row another request deleted with 404.
+
+    SQLAlchemy raises StaleDataError when an UPDATE matches no row: the
+    repository (and its runs, jobs and issues) was deleted while this
+    request held the object, e.g. a test deleting its repository while a
+    runner reports the end of a job there. The resource is gone, so 404,
+    not 500.
+    """
+    import logging
+
+    logging.getLogger("github_emulator").info(
+        "%s %s updated a row another request deleted: %s", request.method, request.url.path, exc
+    )
+    return _build_error_response(404, "Not Found")
+
+
 def register_error_handlers(app: FastAPI) -> None:
     """Register all error handlers with a FastAPI application.
 
@@ -210,3 +227,7 @@ def register_error_handlers(app: FastAPI) -> None:
     from sqlalchemy.exc import OperationalError
 
     app.add_exception_handler(OperationalError, generic_error_handler)
+
+    from sqlalchemy.orm.exc import StaleDataError
+
+    app.add_exception_handler(StaleDataError, stale_row_handler)

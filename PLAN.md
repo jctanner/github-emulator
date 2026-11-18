@@ -180,6 +180,9 @@ Actions visibility and runner evaluation.
 - `docs/bugs/fixed/concurrent-repository-create-returns-500.md`
 - `docs/bugs/fixed/concurrent-issues-get-the-same-number.md`
 - `docs/bugs/fixed/concurrent-label-create-returns-500.md`
+- `docs/bugs/fixed/update-of-deleted-row-answers-500.md`
+- `docs/bugs/fixed/comment-on-deleted-issue-500.md`
+- `docs/bugs/fixed/failed-post-push-step-drops-the-push-event.md`
 
 ## Decisions
 

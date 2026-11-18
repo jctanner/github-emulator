@@ -12,6 +12,7 @@ Reference: https://git-scm.com/docs/http-protocol
 
 import asyncio
 import contextlib
+import logging
 import os
 import tempfile
 import zlib
@@ -22,13 +23,13 @@ from fastapi.responses import Response, StreamingResponse
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.services.cross_repo_pulls import same_repository_head
-from app.database import get_db
-from app.models.branch import Branch
-from app.models.repository import Collaborator, Repository
-from app.models.user import User
 from app.api.deps import get_current_user
+from app.database import get_db
 from app.git.bare_repo import get_branches as get_disk_branches
+from app.models.branch import Branch
+from app.models.repository import Repository
+from app.models.user import User
+from app.services.cross_repo_pulls import same_repository_head
 
 router = APIRouter()
 
@@ -272,6 +273,27 @@ async def _run_git_command_from_file(
     return exit_code, stdout, stderr
 
 
+logger = logging.getLogger(__name__)
+
+
+async def _recover_after_failed_step(db, step: str, repo_id: int, repository, user) -> None:
+    """Log a failed post-push step and leave the session usable for the next.
+
+    Each step used to swallow its error with no rollback and no log. On
+    PostgreSQL a failed statement aborts the transaction, so every later step
+    failed too ("current transaction is aborted"), and the push never raised
+    its pull request's synchronize event or the workflows it starts. On any
+    database, a failed flush leaves the session refusing work until it is
+    rolled back.
+    """
+    logger.exception("Post-push step %r failed for repository %s", step, repo_id)
+    await db.rollback()
+    # The rollback expired them; reload before the next step reads them.
+    await db.refresh(repository)
+    if user is not None:
+        await db.refresh(user)
+
+
 async def _post_receive_pack_tasks(repo_id: int, user_id: int | None) -> None:
     """Run expensive post-push side effects outside the Git HTTP response path."""
     from sqlalchemy import select
@@ -317,19 +339,19 @@ async def _post_receive_pack_tasks(repo_id: int, user_id: int | None) -> None:
                     changed_deleted = before is not None and after is None
                     break
         except Exception:
-            pass
+            logger.warning("Reading branches from disk failed for repository %s", repo_id, exc_info=True)
 
         try:
             await _sync_branches_to_db(db, repository)
         except Exception:
-            pass
+            await _recover_after_failed_step(db, "sync branches", repo_id, repository, user)
 
         try:
             from app.services.index_service import index_repository
 
             await index_repository(db, repository)
         except Exception:
-            pass
+            await _recover_after_failed_step(db, "index repository", repo_id, repository, user)
 
         # Push activity first: process_push_event moves each open pull
         # request's head and raises its synchronize activity only while the
@@ -349,7 +371,7 @@ async def _post_receive_pack_tasks(repo_id: int, user_id: int | None) -> None:
                 deleted=changed_deleted,
             )
         except Exception:
-            pass
+            await _recover_after_failed_step(db, "push event", repo_id, repository, user)
         try:
             from app.models.issue import Issue
             from app.models.pull_request import PullRequest
@@ -375,7 +397,7 @@ async def _post_receive_pack_tasks(repo_id: int, user_id: int | None) -> None:
                     await db.commit()
             await reevaluate_auto_merges(db, repository.id)
         except Exception:
-            pass
+            await _recover_after_failed_step(db, "pull request heads and auto-merge", repo_id, repository, user)
 
 
 @router.get("/{owner}/{repo_name}/info/refs")

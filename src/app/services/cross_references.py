@@ -93,7 +93,11 @@ def _record_references(session: Session, flush_context) -> None:
                 source_id = obj.issue_id
                 repo_id = session.execute(
                     select(Issue.repo_id).where(Issue.id == source_id)
-                ).scalar_one()
+                ).scalar_one_or_none()
+                if repo_id is None:
+                    # The issue was deleted (with its repository) while the
+                    # comment was being written; there is nothing to reference.
+                    continue
             for target_id in _targets(session, repo_id, source_id, obj.body):
                 session.add(
                     IssueEvent(
