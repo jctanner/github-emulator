@@ -582,6 +582,8 @@ async def test_pool_distributed_task_protocol_flow(
     message = message_resp.json()
     assert message["messageType"] == "PipelineAgentJobRequest"
     body = json.loads(message["body"])
+    # Without it the runner leaves `::notice::` raw instead of `##[notice]`.
+    assert body["variables"]["DistributedTask.EnhancedAnnotations"]["Value"] == "true"
     assert body["steps"][0]["type"] == "Action"
     assert body["steps"][0]["reference"]["type"] == "Script"
     assert body["steps"][0]["inputs"]["map"][0]["Value"] == "printf 'hello from runner\\n'"

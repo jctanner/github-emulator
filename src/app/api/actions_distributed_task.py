@@ -624,6 +624,13 @@ def _job_request_message(
             "system.github.ref": _variable(ref),
             "system.github.sha": _variable(sha),
             "system.github.workflow": _variable(workflow_name),
+            # actions/runner processes `::notice::` only when the server
+            # turns this on (ActionCommandManager: "Enhanced Annotations not
+            # enabled on the server: 'notice' command will not be
+            # processed"); without it the line stays raw in the log. GitHub
+            # documents notice as a workflow command beside warning and
+            # error, rendered as `##[notice]` in the job log.
+            "DistributedTask.EnhancedAnnotations": _variable("true"),
         },
         "contextData": {
             # The runner expands an expression only when every context the
