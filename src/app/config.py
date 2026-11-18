@@ -36,6 +36,9 @@ class Settings(BaseSettings):
     # request for a repository the emulator does not have is fetched from
     # there, so a job that downloads a public file keeps working.
     RAW_CONTENT_UPSTREAM_ADDR: str = ""
+    # The largest body taken from that upstream fetch; a larger one is
+    # answered with 502 instead of being held in memory.
+    RAW_CONTENT_UPSTREAM_MAX_BYTES: int = 100 * 1024 * 1024
 
     # Where the upstream runner's `uses:` actions are resolved and fetched
     # from. The emulator does both on the runner's behalf: it resolves the
