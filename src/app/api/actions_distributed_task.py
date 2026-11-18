@@ -1517,11 +1517,16 @@ def _job_request_not_found(request_id: int) -> JSONResponse:
     TaskAgentJobNotFoundException. A bare 404 is retried, so a runner that
     lost the job would keep renewing instead of polling for another one.
     """
-    return _wrapped_exception(
+    response = _wrapped_exception(
         404,
         "TaskAgentJobNotFoundException",
         f"Job request {request_id} was not found or is assigned to another runner.",
     )
+    # Kept from the earlier plain 404 for clients that read it; the runner
+    # reads typeKey and ignores it.
+    body = json.loads(response.body)
+    body["detail"] = "Job request not found"
+    return JSONResponse(status_code=404, content=body)
 
 
 @router.post("/_apis/distributedtask/pools/{pool_id}/jobrequests/{request_id}")

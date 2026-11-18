@@ -218,6 +218,8 @@ async def test_renewing_a_job_request_another_runner_holds_is_job_not_found(
     assert stolen.status_code == 404
     error = stolen.json()
     assert error["typeKey"] == "TaskAgentJobNotFoundException"
+    # The plain 404's field stays for clients that read it.
+    assert error["detail"] == "Job request not found"
     assert error["typeName"].startswith(
         "GitHub.DistributedTask.WebApi.TaskAgentJobNotFoundException,"
     )
