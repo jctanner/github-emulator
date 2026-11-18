@@ -336,3 +336,141 @@ def test_a_nested_callers_entry_is_built_from_its_own_alias():
     }
     entry = needs_alias_entries(aliases, needs)["outer"]
     assert entry == {"result": "success", "outputs": {"v": "deep/success"}}
+
+
+VERSIONED = {
+    "on": {"workflow_call": {
+        "inputs": {
+            "version": {"type": "string", "required": False},
+            "channel": {"type": "string", "default": "stable"},
+        },
+        "outputs": {
+            "version": {"value": "${{ inputs.version }}"},
+            "channel": {"value": "${{ inputs.channel }}"},
+            "event": {"value": "${{ inputs.version }}-${{ github.event_name }}"},
+        },
+    }},
+    "jobs": {"build": {"runs-on": ["self-hosted"], "steps": [{"run": "echo"}]}},
+}
+
+
+async def _promote_after(db_session, run, done_keys, after_key="after"):
+    rows = await _rows(db_session, run)
+    for key in done_keys:
+        rows[key].status = "completed"
+        rows[key].conclusion = "success"
+    await db_session.commit()
+    await dispatch_ready_jobs(db_session, run.id)
+    await db_session.commit()
+    return (await _rows(db_session, run))[after_key]
+
+
+@pytest.mark.asyncio
+async def test_a_call_output_reads_the_inputs_the_caller_passed(
+    monkeypatch, executable_workflow, db_session, test_user,  # noqa: F811
+):
+    """``on.workflow_call.outputs.<id>.value`` may read ``inputs`` and
+    ``github``; with only ``jobs`` there, ``inputs.version`` came out empty."""
+    caller = {
+        "name": "caller",
+        "jobs": {
+            "call": {"uses": "./.github/workflows/called.yml", "with": {"version": "1.2"}},
+            "after": {
+                "needs": ["call"],
+                "runs-on": ["self-hosted"],
+                "steps": [{"run": "echo ${{ needs.call.outputs.version }} ${{ needs.call.outputs.event }}"}],
+            },
+        },
+    }
+    _repo, workflow, _ = executable_workflow
+    run = await _run(monkeypatch, db_session, workflow, test_user, caller, {"called.yml": VERSIONED})
+    after = await _promote_after(db_session, run, ["call / build"])
+    assert after.status == "queued"
+    assert after.steps[0]["run"] == "echo 1.2 1.2-push"
+
+
+@pytest.mark.asyncio
+async def test_a_call_output_reads_a_defaulted_input_the_caller_omitted(
+    monkeypatch, executable_workflow, db_session, test_user,  # noqa: F811
+):
+    caller = {
+        "name": "caller",
+        "jobs": {
+            "call": {"uses": "./.github/workflows/called.yml", "with": {"version": "1.2"}},
+            "after": {
+                "needs": ["call"],
+                "runs-on": ["self-hosted"],
+                "steps": [{"run": "echo ${{ needs.call.outputs.channel }}"}],
+            },
+        },
+    }
+    _repo, workflow, _ = executable_workflow
+    run = await _run(monkeypatch, db_session, workflow, test_user, caller, {"called.yml": VERSIONED})
+    after = await _promote_after(db_session, run, ["call / build"])
+    assert after.status == "queued"
+    assert after.steps[0]["run"] == "echo stable"
+
+
+@pytest.mark.asyncio
+async def test_a_nested_calls_output_from_its_inputs_is_forwarded_by_the_outer_call(
+    monkeypatch, executable_workflow, db_session, test_user,  # noqa: F811
+):
+    """inner.yml's output reads its own ``inputs.tag``, passed by outer.yml
+    from outer's ``inputs.release``; outer.yml forwards it as its output."""
+    called = {
+        "outer.yml": {
+            "on": {"workflow_call": {
+                "inputs": {"release": {"type": "string"}},
+                "outputs": {"tag": {"value": "${{ jobs.inner.outputs.tag }}"}},
+            }},
+            "jobs": {"inner": {
+                "uses": "./.github/workflows/inner.yml",
+                "with": {"tag": "v${{ inputs.release }}"},
+            }},
+        },
+        "inner.yml": {
+            "on": {"workflow_call": {
+                "inputs": {"tag": {"type": "string"}},
+                "outputs": {"tag": {"value": "${{ inputs.tag }}"}},
+            }},
+            "jobs": {"leaf": {"runs-on": ["self-hosted"], "steps": [{"run": "echo"}]}},
+        },
+    }
+    caller = {
+        "name": "caller",
+        "jobs": {
+            "outer": {"uses": "./.github/workflows/outer.yml", "with": {"release": "3.4"}},
+            "after": {
+                "needs": ["outer"],
+                "runs-on": ["self-hosted"],
+                "steps": [{"run": "echo ${{ needs.outer.outputs.tag }}"}],
+            },
+        },
+    }
+    _repo, workflow, _ = executable_workflow
+    run = await _run(monkeypatch, db_session, workflow, test_user, caller, called)
+    after = await _promote_after(db_session, run, ["outer / inner / leaf"])
+    assert after.status == "queued"
+    assert after.steps[0]["run"] == "echo v3.4"
+
+
+def test_a_call_output_reads_the_runs_github_and_vars_contexts():
+    aliases = {"call": {
+        "jobs": {"a": "call / a"},
+        "inputs": {"ref": "${{ github.ref_name }}"},
+        "outputs": {"v": "${{ inputs.ref }}/${{ github.event_name }}/${{ vars.REGION }}"},
+    }}
+    needs = {"call / a": {"result": "success", "outputs": {}}}
+    run_context = {
+        "github": {"ref_name": "main", "event_name": "push"},
+        "vars": {"REGION": "eu"},
+        "secrets": {"TOKEN": "not-exposed"},
+    }
+    entry = needs_alias_entries(aliases, needs, run_context)["call"]
+    assert entry["outputs"] == {"v": "main/push/eu"}
+
+
+def test_a_call_output_cannot_read_secrets():
+    aliases = {"call": {"jobs": {}, "outputs": {"v": "${{ secrets.TOKEN }}"}}}
+    entry = needs_alias_entries(aliases, {}, {"secrets": {"TOKEN": "hidden"}})["call"]
+    assert entry["outputs"] == {"v": ""}

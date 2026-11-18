@@ -536,17 +536,20 @@ def _declared_call_outputs(called: dict) -> dict[str, str]:
     }
 
 
-def needs_alias_entries(aliases: dict, needs_context: dict) -> dict:
+def needs_alias_entries(aliases: dict, needs_context: dict, run_context: dict | None = None) -> dict:
     """needs.<caller> for each reusable-workflow caller a job needs.
 
     The result is the worst of the called jobs' results, as for a matrix;
-    outputs are the call's workflow_call outputs, evaluated with a ``jobs``
-    context holding the called jobs by their own keys. A caller inside the
-    called workflow (``callers``) is in that context under its own key, its
-    entry built the same way, so an output can read ``jobs.<caller>.outputs``.
+    outputs are the call's workflow_call outputs, evaluated with the contexts
+    GitHub allows there: ``jobs`` (the called jobs by their own keys),
+    ``inputs`` (the call's resolved inputs), and the run's ``github`` and
+    ``vars`` from ``run_context``. A caller inside the called workflow
+    (``callers``) is in ``jobs`` under its own key, its entry built the same
+    way, so an output can read ``jobs.<caller>.outputs``.
     """
+    run_context = run_context or {}
     return {
-        caller: _alias_entry(alias, needs_context)
+        caller: _alias_entry(alias, needs_context, run_context, {})
         for caller, alias in (aliases or {}).items()
     }
 
@@ -561,7 +564,19 @@ def alias_result(alias: dict, results: dict) -> str:
     return result
 
 
-def _alias_entry(alias: dict, needs_context: dict) -> dict:
+def _alias_entry(alias: dict, needs_context: dict, run_context: dict, parent_inputs: dict) -> dict:
+    # The call's ``with:`` values may still hold expressions in the calling
+    # workflow's terms (``${{ github.ref_name }}``, ``${{ needs.x.outputs.y }}``,
+    # or a compound one on the caller's own inputs), rendered here as
+    # ``_job_context`` renders them for the called jobs.
+    inputs = render_expressions(alias.get("inputs") or {}, {
+        "github": run_context.get("github") or {},
+        "vars": run_context.get("vars") or {},
+        "needs": needs_context,
+        "inputs": parent_inputs,
+    })
+    if not isinstance(inputs, dict):
+        inputs = {}
     jobs_context = {
         inner: needs_context.get(outer) or {"outputs": {}, "result": ""}
         for inner, outer in alias.get("jobs", {}).items()
@@ -571,9 +586,15 @@ def _alias_entry(alias: dict, needs_context: dict) -> dict:
         for outer in alias.get("jobs", {}).values()
     })
     for name, nested in (alias.get("callers") or {}).items():
-        jobs_context[name] = _alias_entry(nested, needs_context)
+        jobs_context[name] = _alias_entry(nested, needs_context, run_context, inputs)
+    output_context = {
+        "jobs": jobs_context,
+        "inputs": inputs,
+        "github": run_context.get("github") or {},
+        "vars": run_context.get("vars") or {},
+    }
     outputs = {
-        name: str(render_expressions(expression, {"jobs": jobs_context}) or "")
+        name: str(render_expressions(expression, output_context) or "")
         for name, expression in (alias.get("outputs") or {}).items()
     }
     return {"result": result, "outputs": outputs}
@@ -700,7 +721,7 @@ async def _materialize_reusable_jobs(
     result = copy.deepcopy(workflow_yaml)
     expanded: dict[str, dict] = {}
     # Each inlined caller at this level: its called jobs by their own key and
-    # by the key they get here, and its ``on.workflow_call.outputs``.
+    # by the key they get here, its ``on.workflow_call.outputs`` and its inputs.
     callers: dict[str, dict] = {}
     for key, config in jobs.items():
         if not isinstance(config, dict) or not config.get("uses"):
@@ -782,6 +803,9 @@ async def _materialize_reusable_jobs(
         callers[key] = {
             "jobs": {called_key: f"{prefix}{called_key}" for called_key in called_jobs},
             "outputs": _declared_call_outputs(called),
+            # The call's inputs, declared defaults included, which its outputs
+            # may read as ``inputs.<name>``.
+            "inputs": copy.deepcopy(call_inputs),
             "callers": {
                 name: _prefix_alias(nested, prefix, called_keys)
                 for name, nested in nested_callers.items()

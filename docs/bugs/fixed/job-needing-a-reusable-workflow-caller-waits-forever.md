@@ -46,6 +46,18 @@ the run. A job with `needs: <caller>`:
   caller's job (`_caller_needs`). A caller in a called workflow can share a
   top-level caller's key; a need on it used to be pointed at the skipped
   top-level job instead.
+- A call's outputs are evaluated with the contexts GitHub allows in
+  `on.workflow_call.outputs.<output_id>.value`: `github`, `jobs`, `vars` and
+  `inputs` ([contexts reference, context availability][contexts]). The alias
+  carries the call's resolved inputs (the caller's `with:` plus the callee's
+  declared defaults), nested callers' aliases included, and the scheduler
+  passes the run's `github` and `vars`. Before, only `jobs` was there, so
+  `${{ inputs.version }}` rendered as `""` even when the caller passed it or
+  it had a default. `with:` values still holding an expression are rendered
+  at promotion against `github`, `vars`, `needs` and the calling workflow's
+  inputs. `secrets` is not in that context, as on GitHub.
+
+[contexts]: https://docs.github.com/en/actions/reference/workflows-and-actions/contexts#context-availability
 
 Tests: `tests/actions/test_reusable_caller_needs.py`,
 `tests/actions/test_skipped_reusable_caller.py`.

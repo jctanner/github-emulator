@@ -201,7 +201,9 @@ async def dispatch_ready_jobs(db: AsyncSession, run_id: int) -> list[WorkflowJob
                     # in the run; answer needs.<caller> from its called jobs.
                     "needs": {
                         **needs_context,
-                        **needs_alias_entries(pending.get("_needs_aliases"), needs_context),
+                        **needs_alias_entries(
+                            pending.get("_needs_aliases"), needs_context, base_context,
+                        ),
                     },
                     JOB_NEEDS_KEY: _ancestors(job, all_jobs),
                     RUN_CANCELLED_KEY: bool(base_context.get(RUN_CANCELLED_KEY)),
