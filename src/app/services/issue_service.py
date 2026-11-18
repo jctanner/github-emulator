@@ -21,8 +21,8 @@ async def create_issue(
 ) -> Issue:
     """Create a new issue in a repository.
 
-    Automatically assigns the next issue number from repo.next_issue_number
-    and increments it.
+    Takes the repository's next issue number atomically
+    (``allocate_issue_number``).
 
     Args:
         db: Async database session.
@@ -37,10 +37,9 @@ async def create_issue(
     Returns:
         The newly created Issue.
     """
-    # Assign the next issue number and increment
-    number = repo.next_issue_number
-    repo.next_issue_number = number + 1
-    repo.open_issues_count = repo.open_issues_count + 1
+    from app.services.issue_number import allocate_issue_number
+
+    number = await allocate_issue_number(db, repo)
 
     issue = Issue(
         repo_id=repo.id,

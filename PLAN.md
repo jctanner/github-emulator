@@ -177,6 +177,9 @@ Actions visibility and runner evaluation.
 - `docs/bugs/fixed/connection-pool-caps-concurrent-runners.md`
 - `docs/bugs/fixed/writes-fail-after-a-5s-lock-wait.md`
 - `docs/bugs/fixed/api-commit-answers-503-after-the-branch-moved.md`
+- `docs/bugs/fixed/concurrent-repository-create-returns-500.md`
+- `docs/bugs/fixed/concurrent-issues-get-the-same-number.md`
+- `docs/bugs/fixed/concurrent-label-create-returns-500.md`
 
 ## Decisions
 

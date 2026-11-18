@@ -752,8 +752,10 @@ class Mutation:
             raise ValueError(f"Repository with id {repo_id} not found")
 
         # Assign next issue number
-        issue_number = repo.next_issue_number
-        repo.next_issue_number += 1
+        from app.services.issue_number import allocate_issue_number
+
+        # Atomic, and counted as open as REST does.
+        issue_number = await allocate_issue_number(db, repo)
 
         new_issue = IssueModel(
             repo_id=repo.id,
@@ -779,9 +781,6 @@ class Mutation:
         if input.assignee_ids:
             for assignee_id in input.assignee_ids:
                 db.add(IssueAssignee(issue_id=new_issue.id, user_id=_decode_node_id(assignee_id)))
-
-        # Increment open issues count
-        repo.open_issues_count += 1
 
         await db.commit()
         await db.refresh(new_issue)
@@ -1062,8 +1061,10 @@ class Mutation:
         base_sha = base_branch.sha if base_branch else "0" * 40
 
         # Allocate issue number
-        issue_number = repo.next_issue_number
-        repo.next_issue_number += 1
+        from app.services.issue_number import allocate_issue_number
+
+        # Atomic, and counted as open as REST does.
+        issue_number = await allocate_issue_number(db, repo)
 
         # Create the backing issue
         new_issue = IssueModel(
@@ -1091,8 +1092,6 @@ class Mutation:
             last_push_by_id=current_user.id,
         )
         db.add(new_pr)
-
-        repo.open_issues_count += 1
 
         if head_repo.id != repo.id:
             # The base repository carries the fork's head as

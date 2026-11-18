@@ -5,6 +5,7 @@ import os
 from fastapi import APIRouter, HTTPException, Query, Request, Response
 from sqlalchemy import func as sa_func
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 
 from app.api.deps import (
     AuthUser,
@@ -206,7 +207,12 @@ async def create_repo_for_user(body: dict, user: AuthUser, db: DbSession):
     )
 
     db.add(repo)
-    await db.commit()
+    try:
+        await db.commit()
+    except IntegrityError as exc:
+        # A concurrent create of the same name won the unique index.
+        await db.rollback()
+        raise HTTPException(status_code=422, detail="Repository already exists") from exc
     await db.refresh(repo)
 
     await repo_service.initialize_repository(db, repo, user, body.get("auto_init", False))

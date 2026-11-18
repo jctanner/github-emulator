@@ -39,9 +39,9 @@ async def create_pr(
         Tuple of (Issue, PullRequest).
     """
     # Assign next issue number (PRs share issue numbering)
-    number = repo.next_issue_number
-    repo.next_issue_number = number + 1
-    repo.open_issues_count = repo.open_issues_count + 1
+    from app.services.issue_number import allocate_issue_number
+
+    number = await allocate_issue_number(db, repo)
 
     # Create the Issue entry
     issue = Issue(
