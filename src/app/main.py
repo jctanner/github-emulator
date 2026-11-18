@@ -159,6 +159,10 @@ def create_app() -> FastAPI:
     if settings.MEMORY_WATCH:
         from app.middleware.memory_watch import MemoryWatchMiddleware
         app.add_middleware(MemoryWatchMiddleware)
+    # Outermost of all: a raw.githubusercontent.com path is rewritten before
+    # anything else reads it.
+    from app.middleware.raw_host import RawHostMiddleware
+    app.add_middleware(RawHostMiddleware)
     register_error_handlers(app)
 
     # -- REST API routers -----------------------------------------------------
