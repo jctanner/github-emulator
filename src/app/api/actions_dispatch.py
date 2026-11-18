@@ -98,6 +98,9 @@ async def _create_runner_from_registration(
     registration = reg or enterprise_reg
     if _is_expired(registration.expires_at):
         raise HTTPException(status_code=401, detail="Registration token expired")
+    if enterprise_reg is not None and enterprise_reg.for_remove and body.get("runner_event") != "remove":
+        # A remove token serves config.sh remove only; it registers no runner.
+        raise HTTPException(status_code=401, detail="Invalid registration token")
 
     labels = body.get("labels", ["self-hosted", "linux"])
     if isinstance(labels, list):

@@ -109,3 +109,70 @@ async def test_a_repository_token_registers_several_runners_on_every_route(clien
             json={"token": reg_token, "name": f"pipelines-{i}"},
         )
         assert pipelines.status_code == 200, pipelines.text
+
+
+async def _remove_token(client, token):
+    resp = await client.post(f"{API}/enterprises/breadboard/actions/runners/remove-token", headers=auth_headers(token))
+    assert resp.status_code in (200, 201), resp.text
+    return resp.json()["token"]
+
+
+@pytest.mark.asyncio
+async def test_a_remove_token_serves_remove_and_registers_no_runner(client, admin_token):
+    remove_token = await _remove_token(client, admin_token)
+    for body in ({"url": "http://test/x", "runner_event": "register"}, {"url": "http://test/x"}):
+        refused = await client.post(
+            f"{API}/actions/runner-registration", json=body,
+            headers={"Authorization": f"RemoteAuth {remove_token}"},
+        )
+        assert refused.status_code == 401, refused.text
+    for path in ("/_apis/distributedtask/pools/1/agents",
+                 "/_services/pipelines/enterprises/breadboard/_apis/pipelines/runs/register"):
+        refused = await client.post(path, json={"token": remove_token, "name": "nope"})
+        assert refused.status_code == 401, refused.text
+    remove = await client.post(
+        f"{API}/actions/runner-registration", json={"url": "http://test/x", "runner_event": "remove"},
+        headers={"Authorization": f"RemoteAuth {remove_token}"},
+    )
+    assert remove.status_code == 200, remove.text
+
+
+@pytest.mark.asyncio
+async def test_config_sh_remove_leaves_no_runner_behind(client, admin_token):
+    """config.sh remove: runner-registration with the remove token, then delete the agent."""
+    listed = f"{API}/enterprises/breadboard/actions/runners"
+    before = (await client.get(listed, headers=auth_headers(admin_token))).json()["total_count"]
+    reg_token = await _registration_token(client, "/enterprises/breadboard", admin_token)
+    for i in range(2):
+        _, agent_id = await _config_sh_register(client, reg_token, f"short-lived-{i}")
+        remove = await client.post(
+            f"{API}/actions/runner-registration", json={"url": "http://test/x", "runner_event": "remove"},
+            headers={"Authorization": f"RemoteAuth {await _remove_token(client, admin_token)}"},
+        )
+        assert remove.status_code == 200, remove.text
+        deleted = await client.delete(
+            f"/_apis/distributedtask/pools/1/agents/{agent_id}",
+            headers={"Authorization": f"Bearer {remove.json()['token']}"},
+        )
+        assert deleted.status_code == 200, deleted.text
+    after = (await client.get(listed, headers=auth_headers(admin_token))).json()["total_count"]
+    assert after == before
+
+
+@pytest.mark.asyncio
+async def test_expired_registration_tokens_are_pruned(client, db_session, admin_token):
+    from datetime import datetime, timedelta
+
+    from sqlalchemy import select
+
+    from app.models.actions import EnterpriseRunnerRegistrationToken
+
+    db_session.add(EnterpriseRunnerRegistrationToken(
+        token="AAAAAAexpired", enterprise_slug="breadboard",
+        expires_at=datetime.utcnow() - timedelta(minutes=1),
+    ))
+    await db_session.commit()
+    live = await _registration_token(client, "/enterprises/breadboard", admin_token)
+    tokens = (await db_session.execute(select(EnterpriseRunnerRegistrationToken.token))).scalars().all()
+    assert "AAAAAAexpired" not in tokens
+    assert live in tokens

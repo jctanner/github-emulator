@@ -424,6 +424,8 @@ async def dt_register_pool_agent(
             )
         )
         enterprise_reg = result.scalar_one_or_none()
+    if enterprise_reg is not None and enterprise_reg.for_remove:
+        enterprise_reg = None  # a remove token registers no runner
     if reg is None and enterprise_reg is None:
         raise HTTPException(status_code=401, detail="Invalid registration token")
     registration = reg or enterprise_reg
@@ -540,13 +542,18 @@ async def dt_delete_pool_agent(
     pool_id: int, agent_id: int, request: Request, db: DbSession,
 ):
     """Remove a pool-scoped agent."""
-    caller = await _get_runner_from_token(request, db)
+    authenticated_runner = await _get_runner_from_token(request, db)
     result = await db.execute(select(Runner).where(
-        Runner.id == agent_id, _same_scope_as(caller),
+        Runner.id == agent_id, _same_scope_as(authenticated_runner),
     ))
     runner = result.scalar_one_or_none()
     if runner is None:
         raise HTTPException(status_code=404, detail="Agent not found")
+    if authenticated_runner.id != runner.id and authenticated_runner.name == "unnamed-runner":
+        # config.sh remove authenticates with a broker identity from its own
+        # unnamed runner-registration call; like --replace's, it is not a
+        # runner, so it goes with the agent it removed.
+        await db.delete(authenticated_runner)
     # Detach the jobs that ran on it (PostgreSQL enforces the foreign key);
     # a job it still runs fails, as the runner will not finish it.
     await _delete_runner_and_detach_history(db, runner, fail_live_jobs=True)

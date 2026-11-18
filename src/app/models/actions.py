@@ -62,6 +62,9 @@ class EnterpriseRunnerRegistrationToken(Base):
     token: Mapped[str] = mapped_column(String, nullable=False, unique=True)
     enterprise_slug: Mapped[str] = mapped_column(String, nullable=False)
     expires_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)
+    # Made by the remove-token route: it serves config.sh remove and never
+    # registers a runner. NULL is a registration token.
+    for_remove: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime, server_default=func.now()
     )
