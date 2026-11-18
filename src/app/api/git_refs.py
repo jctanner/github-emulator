@@ -209,8 +209,19 @@ async def create_ref(
     if not ref or not sha:
         raise HTTPException(status_code=422, detail="ref and sha are required")
 
+    # `git update-ref` moves a ref that is already there, so creating an
+    # existing branch answered 201 and silently repointed it. GitHub refuses
+    # with 422 "Reference already exists" and leaves the ref alone. The empty
+    # old value makes git itself refuse if the ref appears in between.
     try:
-        await _git(repository.disk_path, "update-ref", ref, sha)
+        await _git(repository.disk_path, "rev-parse", "--verify", "--quiet", ref)
+    except RuntimeError:
+        pass
+    else:
+        raise ValidationError(message="Reference already exists")
+
+    try:
+        await _git(repository.disk_path, "update-ref", ref, sha, "")
     except RuntimeError as e:
         raise HTTPException(status_code=422, detail=str(e))
 

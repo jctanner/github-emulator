@@ -5,10 +5,11 @@ from urllib.parse import parse_qs
 
 from fastapi import APIRouter, HTTPException, Query, Request
 from fastapi.responses import JSONResponse
-from sqlalchemy import select, delete as sa_delete
+from sqlalchemy import func as sa_func, select, delete as sa_delete
 
 from app.api.deps import AuthUser, CurrentUser, DbSession, get_repo_or_404
 from app.config import settings
+from app.middleware.error_handler import ValidationError
 from app.models.label import Label
 from app.models.issue import Issue, IssueLabel
 from app.schemas.label import LabelCreate, LabelResponse, LabelUpdate
@@ -55,10 +56,22 @@ async def _read_label_names(request: Request) -> list[str]:
     return fields.get("labels[]", []) + fields.get("labels", [])
 
 
+def _name_is(name: str):
+    """Match a label name the way GitHub does: case-insensitively."""
+    return sa_func.lower(Label.name) == name.lower()
+
+
+def _label_already_exists() -> ValidationError:
+    """GitHub's 422 for a label name that is taken; clients key on the code."""
+    return ValidationError(
+        errors=[{"resource": "Label", "code": "already_exists", "field": "name"}]
+    )
+
+
 async def _get_or_create_label(db, repository_id: int, name: str) -> Label:
     """Resolve a repository label, creating it like GitHub's issue API does."""
     result = await db.execute(
-        select(Label).where(Label.repo_id == repository_id, Label.name == name)
+        select(Label).where(Label.repo_id == repository_id, _name_is(name))
     )
     label = result.scalar_one_or_none()
     if label is not None:
@@ -128,11 +141,11 @@ async def create_label(
 
     existing = await db.execute(
         select(Label).where(
-            Label.repo_id == repository.id, Label.name == body.name
+            Label.repo_id == repository.id, _name_is(body.name)
         )
     )
     if existing.scalar_one_or_none() is not None:
-        raise HTTPException(status_code=422, detail="Label already exists")
+        raise _label_already_exists()
 
     label = Label(
         repo_id=repository.id,
@@ -158,7 +171,7 @@ async def get_label(
 
     result = await db.execute(
         select(Label).where(
-            Label.repo_id == repository.id, Label.name == name
+            Label.repo_id == repository.id, _name_is(name)
         )
     )
     label = result.scalar_one_or_none()
@@ -178,7 +191,7 @@ async def update_label(
 
     result = await db.execute(
         select(Label).where(
-            Label.repo_id == repository.id, Label.name == name
+            Label.repo_id == repository.id, _name_is(name)
         )
     )
     label = result.scalar_one_or_none()
@@ -186,6 +199,15 @@ async def update_label(
         raise HTTPException(status_code=404, detail="Not Found")
 
     if body.new_name is not None:
+        clash = await db.execute(
+            select(Label).where(
+                Label.repo_id == repository.id,
+                Label.id != label.id,
+                _name_is(body.new_name),
+            )
+        )
+        if clash.scalar_one_or_none() is not None:
+            raise _label_already_exists()
         label.name = body.new_name
     if body.color is not None:
         label.color = body.color.lstrip("#")
@@ -206,7 +228,7 @@ async def delete_label(
 
     result = await db.execute(
         select(Label).where(
-            Label.repo_id == repository.id, Label.name == name
+            Label.repo_id == repository.id, _name_is(name)
         )
     )
     label = result.scalar_one_or_none()
@@ -335,10 +357,10 @@ async def set_issue_labels(
     label_names = await _read_label_names(request)
     labels_by_name: dict[str, Label] = {}
     for lname in dict.fromkeys(label_names):
-        if not isinstance(lname, str) or not lname:
+        if not isinstance(lname, str) or not lname or lname.lower() in labels_by_name:
             continue
         label = labels_by_name.setdefault(
-            lname, await _get_or_create_label(db, repository.id, lname)
+            lname.lower(), await _get_or_create_label(db, repository.id, lname)
         )
         db.add(IssueLabel(issue_id=issue.id, label_id=label.id))
 
@@ -394,7 +416,7 @@ async def remove_issue_label(
 
     lbl_result = await db.execute(
         select(Label).where(
-            Label.repo_id == repository.id, Label.name == name
+            Label.repo_id == repository.id, _name_is(name)
         )
     )
     label = lbl_result.scalar_one_or_none()

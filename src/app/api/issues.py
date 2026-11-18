@@ -8,6 +8,7 @@ from fastapi.responses import JSONResponse
 from sqlalchemy import select, func as sa_func
 
 from app.api.deps import AuthUser, CurrentUser, DbSession, get_repo_or_404
+from app.api.labels import _get_or_create_label
 from app.api.pagination import pagination_links
 from app.config import settings
 from app.models.issue import Issue, IssueLabel, IssueAssignee
@@ -208,6 +209,23 @@ async def list_issues(
     )
 
 
+async def _resolve_labels(db, repository_id: int, values) -> list[Label]:
+    """Resolve an issue's ``labels`` field, creating any that do not exist.
+
+    GitHub creates a missing label (color ``ededed``) and applies it, as
+    ``POST /issues/{n}/labels`` does. Entries may be names or objects with a
+    ``name``; repeats are applied once.
+    """
+    labels: dict[int, Label] = {}
+    for value in values or []:
+        name = value.get("name") if isinstance(value, dict) else value
+        if not isinstance(name, str) or not name:
+            continue
+        label = await _get_or_create_label(db, repository_id, name)
+        labels.setdefault(label.id, label)
+    return list(labels.values())
+
+
 @router.post(
     "/repos/{owner}/{repo}/issues",
     status_code=201,
@@ -241,17 +259,8 @@ async def create_issue(
     await db.flush()
 
     # Labels
-    label_names = body.get("labels", [])
-    if label_names:
-        for lname in label_names:
-            result = await db.execute(
-                select(Label).where(
-                    Label.repo_id == repository.id, Label.name == lname
-                )
-            )
-            label = result.scalar_one_or_none()
-            if label:
-                db.add(IssueLabel(issue_id=issue.id, label_id=label.id))
+    for label in await _resolve_labels(db, repository.id, body.get("labels")):
+        db.add(IssueLabel(issue_id=issue.id, label_id=label.id))
 
     # Assignees
     assignee_logins = body.get("assignees", [])
@@ -387,16 +396,9 @@ async def update_issue(
         await db.execute(
             delete(IssueLabel).where(IssueLabel.issue_id == issue.id)
         )
-        for lname in body["labels"]:
-            lbl_result = await db.execute(
-                select(Label).where(
-                    Label.repo_id == repository.id, Label.name == lname
-                )
-            )
-            label = lbl_result.scalar_one_or_none()
-            if label:
-                replacement_labels[label.name] = label
-                db.add(IssueLabel(issue_id=issue.id, label_id=label.id))
+        for label in await _resolve_labels(db, repository.id, body["labels"]):
+            replacement_labels[label.name] = label
+            db.add(IssueLabel(issue_id=issue.id, label_id=label.id))
 
     # Assignees
     if "assignees" in body:

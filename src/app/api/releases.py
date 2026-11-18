@@ -17,6 +17,7 @@ from sqlalchemy import select
 from app.api.deps import AuthUser, CurrentUser, DbSession, get_repo_or_404
 from app.api.git_refs import _git
 from app.config import settings
+from app.middleware.error_handler import ValidationError
 from app.models.release import Release, ReleaseAsset
 from app.schemas.user import SimpleUser, _fmt_dt, _make_node_id
 
@@ -316,12 +317,9 @@ async def upload_release_asset(
         raise HTTPException(status_code=422, detail="name is required")
     if any(a.name == name for a in release.assets or []):
         # GitHub's shape for a duplicate: 422 with an already_exists error.
-        raise HTTPException(
-            status_code=422,
-            detail={"message": "Validation Failed", "errors": [
-                {"resource": "ReleaseAsset", "code": "already_exists", "field": "name"},
-            ]},
-        )
+        raise ValidationError(errors=[
+            {"resource": "ReleaseAsset", "code": "already_exists", "field": "name"},
+        ])
     content = await request.body()
     content_type = request.headers.get("content-type") or "application/octet-stream"
     asset = ReleaseAsset(
