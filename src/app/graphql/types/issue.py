@@ -233,14 +233,47 @@ class Issue:
         )
 
     @strawberry.field
-    def closed_by_pull_requests_references(
+    async def closed_by_pull_requests_references(
         self,
+        info: Info,
         first: Optional[int] = 10,
         after: Optional[str] = None,
         last: Optional[int] = None,
         before: Optional[str] = None,
+        include_closed_prs: Optional[bool] = False,
+        order_by_state: Optional[bool] = False,
+        user_linked_only: Optional[bool] = False,
     ) -> Connection[Annotated["PullRequest", strawberry.lazy("app.graphql.types.pull_request")]]:
-        return empty_connection()
+        """Pull requests whose description closes this issue. Pull requests
+        closed without merging are left out unless ``includeClosedPrs``.
+        Links made by hand in the web UI are not emulated, so
+        ``userLinkedOnly`` finds none."""
+        if user_linked_only:
+            return empty_connection()
+        from app.graphql.authz import visible
+        from app.graphql.types.pull_request import pull_request_from_model
+        from app.models.issue import Issue as IssueModel
+        from app.services.closing_issue_service import resolve_closing_pull_requests
+
+        db = info.context["db"]
+        issue = (
+            await db.execute(select(IssueModel).where(IssueModel.id == self.database_id))
+        ).scalar_one_or_none()
+        if issue is None:
+            return empty_connection()
+        pulls = [
+            pull
+            for pull in await resolve_closing_pull_requests(db, issue)
+            if (include_closed_prs or pull.merged or pull.issue.state == "open")
+            and await visible(info, pull.repository)
+        ]
+        if order_by_state:
+            # Open first, then merged, then closed; oldest first within each.
+            pulls.sort(key=lambda pull: 0 if pull.issue.state == "open" else 1 if pull.merged else 2)
+        return build_connection(
+            pulls, pull_request_from_model, len(pulls),
+            first=first, after=after, last=last, before=before,
+        )
 
     @strawberry.field
     def project_cards(self) -> Connection[ProjectCardStub]:
