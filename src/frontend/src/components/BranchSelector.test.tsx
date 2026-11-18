@@ -35,4 +35,42 @@ describe("BranchSelector", () => {
     expect(screen.queryByRole("link", {name: "feature/one"})).toBeNull();
     expect(screen.getByRole("link", {name: "release/two"})).toBeVisible();
   });
+
+  it("loads every page so filtering finds branches past the first 100", async () => {
+    const names = Array.from(
+      {length: 150},
+      (_, index) => `branch-${String(index).padStart(3, "0")}`,
+    );
+    const fetchMock = vi.fn((request: Request) => {
+      const url = new URL(request.url);
+      const page = Number(url.searchParams.get("page"));
+      const perPage = Number(url.searchParams.get("per_page"));
+      const batch = names.slice((page - 1) * perPage, page * perPage);
+      return Promise.resolve(
+        Response.json(batch.map((name) => ({name, commit: {sha: "a"}}))),
+      );
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    render(
+      <MemoryRouter>
+        <BranchSelector owner="octo" repo="demo" currentRef="branch-000" />
+      </MemoryRouter>,
+    );
+
+    fireEvent.click(screen.getByLabelText("Switch branches"));
+    expect(await screen.findByRole("link", {name: "branch-149"})).toBeVisible();
+    fireEvent.change(screen.getByRole("searchbox", {name: "Filter branches"}), {
+      target: {value: "branch-120"},
+    });
+
+    expect(screen.getByRole("link", {name: "branch-120"})).toHaveAttribute(
+      "href",
+      "/octo/demo/tree/branch-120",
+    );
+    expect(screen.queryByText("No branches found")).toBeNull();
+    const pages = fetchMock.mock.calls.map(([request]) =>
+      new URL(request.url).searchParams.get("page"),
+    );
+    expect(pages).toEqual(["1", "2"]);
+  });
 });

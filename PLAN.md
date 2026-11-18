@@ -119,6 +119,7 @@ Actions visibility and runner evaluation.
 - `docs/bugs/fixed/issue-comment-web-route-does-not-dispatch-actions.md`
 - `docs/bugs/fixed/fullsend-installation-token-attribution-and-review-loop.md`
 - `docs/bugs/fixed/cancelled-run-leaves-active-runner-job.md`
+- `docs/bugs/fixed/branch-selector-lists-only-the-first-100-branches.md`
 
 ## Decisions
 

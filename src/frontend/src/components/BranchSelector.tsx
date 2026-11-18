@@ -1,12 +1,9 @@
 import {useEffect, useRef, useState} from "react";
 import {Link} from "react-router-dom";
 
-import {api} from "../api/client";
-import type {components} from "../api/schema";
-import {requireApiData, useApiData} from "../hooks/useApiData";
+import {type Branch, loadAllBranches} from "../api/branches";
+import {useApiData} from "../hooks/useApiData";
 import {Octicon} from "./Octicon";
-
-type Branch = components["schemas"]["BranchResponse"];
 
 export function BranchSelector({
   owner,
@@ -22,13 +19,7 @@ export function BranchSelector({
   const filterInput = useRef<HTMLInputElement>(null);
   const branches = useApiData<Branch[]>(
     `branch-selector:${owner}/${repo}`,
-    async () => {
-      const {data, response} = await api.GET(
-        "/api/v3/repos/{owner}/{repo}/branches",
-        {params: {path: {owner, repo}, query: {per_page: 100}}},
-      );
-      return requireApiData(data, response, "Could not load branches.");
-    },
+    () => loadAllBranches(owner, repo),
   );
   const normalizedQuery = query.trim().toLocaleLowerCase();
   const visibleBranches = branches.data?.filter((branch) =>
