@@ -26,6 +26,9 @@ def _pool_args(url: str) -> dict:
 engine = create_async_engine(
     settings.DATABASE_URL,
     echo=False,
+    # Errors and logs leave out bound values: a rendered job step can hold
+    # a secret, and a failed statement's error is logged.
+    hide_parameters=True,
     connect_args={
         "check_same_thread": False,
         "timeout": settings.SQLITE_BUSY_TIMEOUT_MS / 1000,

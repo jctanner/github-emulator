@@ -143,7 +143,9 @@ class RequestContextMiddleware:
         if scope["type"] != "http":
             await self.app(scope, receive, send)
             return
-        token = current_request.set(f"{scope['method']} {scope['path']}")
+        # repr-style escaping: a path's CR, LF or ESC can't start a new log line.
+        path = scope["path"].encode("unicode_escape").decode("ascii")
+        token = current_request.set(f"{scope['method']} {path}")
         try:
             await self.app(scope, receive, send)
         finally:

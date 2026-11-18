@@ -34,8 +34,10 @@ same file, used by the git/refs routes, both:
 
 1. Replay the database write on a lock (`SQLITE_WRITE_RETRY_ATTEMPTS` is
    now 5). `record_moved_branch` first ends the read transaction and writes
-   through `commit_with_sqlite_retry`; `replay_ref_record` rolls back and
-   runs the route's write again. Auto-merge re-evaluation runs after the
+   through `commit_with_sqlite_retry`; `replay_ref_record` stages the
+   route's write uncommitted and commits it through the same helper, which
+   stages it again after a rollback. Retries stop once a busy timeout's
+   worth of time has passed. Auto-merge re-evaluation runs after the
    git/refs write is committed, outside the replay.
 2. If the lock persists, move the ref back before answering 503, so a
    retry finds the repository as it was. This happens only while the ref

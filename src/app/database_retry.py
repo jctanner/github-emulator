@@ -2,6 +2,7 @@
 
 import asyncio
 import logging
+import time
 from typing import Any, Awaitable, Callable
 
 from sqlalchemy.exc import OperationalError
@@ -39,9 +40,16 @@ async def commit_with_sqlite_retry(
     Callers that mutate ORM state must provide ``before_retry`` to replay that
     mutation after rollback. Non-replayable transactions intentionally surface
     a retryable error instead of treating a second empty commit as success.
+
+    Each commit can itself wait the busy timeout for the lock, so retries stop
+    once that much time has passed: a lock that stays held answers 503 after
+    about one to two busy timeouts, not one per attempt. Lock errors that come
+    back at once (a snapshot conflict) still get every attempt.
     """
     attempts = max(1, settings.SQLITE_WRITE_RETRY_ATTEMPTS)
     delay = max(0, settings.SQLITE_WRITE_RETRY_DELAY_MS) / 1000
+    budget = max(0, settings.SQLITE_BUSY_TIMEOUT_MS) / 1000
+    started = time.monotonic()
 
     for attempt in range(1, attempts + 1):
         try:
@@ -51,10 +59,10 @@ async def commit_with_sqlite_retry(
             if not is_sqlite_database_locked(exc):
                 raise
             await db.rollback()
-            if attempt >= attempts:
+            if attempt >= attempts or time.monotonic() - started >= budget:
                 logger.warning(
                     "SQLite write lock persisted after %d attempts during %s",
-                    attempts,
+                    attempt,
                     label,
                 )
                 raise RetryableDatabaseError() from exc

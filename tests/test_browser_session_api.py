@@ -7,7 +7,6 @@ from sqlalchemy import event
 
 from app.services.auth_service import hash_password
 
-
 UI_API = "/api/_ui"
 
 
@@ -139,4 +138,27 @@ async def test_browser_session_lookup_does_not_load_user_relationships(
         event.remove(db_engine.sync_engine, "before_cursor_execute", record_statement)
 
     assert response.status_code == 200
-    assert len(statements) == 1, statements
+    # The user row, and one count of their public repositories.
+    assert len(statements) == 2, statements
+    assert "FROM repositories" in statements[1]
+
+
+@pytest.mark.asyncio
+async def test_browser_session_counts_the_users_public_repositories(
+    client, test_user, test_token, db_session
+):
+    from tests.conftest import API, auth_headers
+
+    test_user.hashed_password = hash_password("session-pw")
+    await db_session.commit()
+    for name, private in (("open-one", False), ("open-two", False), ("closed", True)):
+        created = await client.post(
+            f"{API}/user/repos", json={"name": name, "private": private}, headers=auth_headers(test_token)
+        )
+        assert created.status_code == 201, created.text
+
+    login = await client.post(f"{UI_API}/session", json={"username": "testuser", "password": "session-pw"})
+    assert login.status_code == 200, login.text
+    assert login.json()["user"]["public_repos"] == 2
+    current = await client.get(f"{UI_API}/session")
+    assert current.json()["user"]["public_repos"] == 2

@@ -102,3 +102,10 @@ async def test_a_blocked_event_loop_is_reported(caplog, monkeypatch):
     await asyncio.sleep(0.1)
     task.cancel()
     assert "event loop ran" in caplog.text
+
+
+def test_the_app_engine_leaves_bound_values_out_of_errors_and_logs():
+    """A rendered job step can hold a secret, and a failed statement is logged."""
+    from app.database import engine
+
+    assert engine.sync_engine.hide_parameters

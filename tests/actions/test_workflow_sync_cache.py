@@ -9,6 +9,7 @@ re-synchronized only when the default branch's ``.github/workflows`` tree,
 or the default branch itself, changed since the last sync.
 """
 
+import asyncio
 import base64
 
 import pytest
@@ -170,3 +171,50 @@ async def test_a_branch_push_resyncs_the_next_lookup(client, test_token):
     response = await client.get(f"{base}/actions/workflows/feature.yml", headers=headers)
     assert response.status_code == 200, response.text
     assert response.json()["state"] == "disabled_manually"
+
+
+async def test_overlapping_lookups_sync_once_and_keep_the_cache(client, test_token, monkeypatch):
+    base = await _repo(client, test_token, "overlap-repo", actions_enabled=False)
+    await _put_file(client, test_token, base, ".github/workflows/ci.yml", _workflow("ci"))
+    workflow_service._synced_workflows.clear()
+    calls = _count_detections(monkeypatch)
+    headers = auth_headers(test_token)
+
+    responses = await asyncio.gather(*[
+        client.get(f"{base}/actions/workflows/ci.yml/runs", headers=headers) for _ in range(4)
+    ])
+    assert all(r.status_code == 200 for r in responses), [r.text for r in responses]
+    assert len(calls) == 1
+    assert (await client.get(f"{base}/actions/workflows", headers=headers)).status_code == 200
+    assert len(calls) == 1
+
+
+async def test_a_sync_that_ends_after_a_lookup_clears_the_cache(client, test_token, db_session, monkeypatch):
+    base = await _repo(client, test_token, "late-sync-repo", actions_enabled=False)
+    await _put_file(client, test_token, base, ".github/workflows/ci.yml", _workflow("ci"))
+    workflow_service._synced_workflows.clear()
+    repository = (await db_session.execute(select(Repository).where(Repository.name == "late-sync-repo"))).scalar_one()
+
+    # A sync of another ref starts first and pauses while it reads the files.
+    started, release = asyncio.Event(), asyncio.Event()
+    detect = workflow_service.detect_workflows
+
+    async def paused(repo_disk_path, ref="HEAD"):
+        if ref == "refs/heads/other":
+            started.set()
+            await release.wait()
+        return await detect(repo_disk_path, ref)
+
+    monkeypatch.setattr(workflow_service, "detect_workflows", paused)
+    late = asyncio.create_task(workflow_service.sync_workflows_to_db(db_session, repository, "refs/heads/other"))
+    await started.wait()
+
+    # A lookup syncs the default branch and caches it meanwhile.
+    response = await client.get(f"{base}/actions/workflows", headers=auth_headers(test_token))
+    assert response.status_code == 200, response.text
+    assert repository.id in workflow_service._synced_workflows
+
+    # The earlier sync finishing after it drops the entry again.
+    release.set()
+    await late
+    assert repository.id not in workflow_service._synced_workflows

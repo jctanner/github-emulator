@@ -8,14 +8,13 @@ from app.api.deps import AuthUser, DbSession
 from app.config import settings
 from app.db_loaders import scalar_only_options
 from app.models.user import User
-from app.schemas.user import UserResponse
+from app.schemas.user import UserResponse, public_repo_counts
 from app.services.auth_service import verify_password
 from app.services.browser_session_service import (
     COOKIE_NAME,
     csrf_token_for,
     sign_browser_session,
 )
-
 
 router = APIRouter(prefix="/api/_ui", tags=["ui-session"])
 
@@ -30,9 +29,10 @@ class BrowserSessionResponse(BaseModel):
     csrf_token: str
 
 
-def _session_response(user: User, token: str) -> BrowserSessionResponse:
+async def _session_response(db, user: User, token: str) -> BrowserSessionResponse:
+    counts = await public_repo_counts(db, [user.id])
     return BrowserSessionResponse(
-        user=UserResponse.from_db(user, settings.BASE_URL),
+        user=UserResponse.from_db(user, settings.BASE_URL, counts.get(user.id, 0)),
         csrf_token=csrf_token_for(token),
     )
 
@@ -60,15 +60,15 @@ async def create_browser_session(
         httponly=True,
         samesite="lax",
     )
-    return _session_response(user, token)
+    return await _session_response(db, user, token)
 
 
 @router.get("/session", response_model=BrowserSessionResponse)
-async def get_browser_session(request: Request, user: AuthUser):
+async def get_browser_session(request: Request, user: AuthUser, db: DbSession):
     token = request.cookies.get(COOKIE_NAME)
     if not token:
         raise HTTPException(status_code=401, detail="Browser session required")
-    return _session_response(user, token)
+    return await _session_response(db, user, token)
 
 
 @router.delete("/session", status_code=204)

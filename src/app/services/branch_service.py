@@ -88,39 +88,33 @@ async def replay_ref_record(
     ref: str,
     before: str | None,
     after: str,
-    write,
+    stage,
     *,
     refresh: tuple = (),
 ) -> None:
-    """Run ``write`` (which records a moved ref and commits) through the lock.
+    """Commit a moved ref's database record through SQLite's writer lock.
 
     For a route that has already moved ``ref`` on disk from ``before`` to
-    ``after``: a "database is locked" failure is rolled back and ``write``
-    run again, with ``refresh`` reloaded; if the lock persists, the ref is
+    ``after``. ``stage`` makes the database changes without committing;
+    ``commit_with_sqlite_retry`` commits them, and on a lock rolls back,
+    reloads ``refresh`` and stages again. If the lock persists, the ref is
     put back (only while still at ``after``) before the 503, so the
     client's retry finds the repository as it was.
     """
-    import asyncio
-
-    from app.config import settings
-    from app.database_retry import is_sqlite_database_locked
+    from app.database_retry import commit_with_sqlite_retry
     from app.middleware.error_handler import RetryableDatabaseError
 
-    attempts = max(1, settings.SQLITE_WRITE_RETRY_ATTEMPTS)
-    for attempt in range(1, attempts + 1):
-        try:
-            await write()
-            return
-        except Exception as exc:
-            if not (is_sqlite_database_locked(exc) or isinstance(exc, RetryableDatabaseError)):
-                raise
-            await db.rollback()
-            if attempt == attempts:
-                await _move_ref_back(disk_path, ref, before, after)
-                raise RetryableDatabaseError() from exc
-            await asyncio.sleep(max(0, settings.SQLITE_WRITE_RETRY_DELAY_MS) / 1000)
-            for obj in refresh:
-                await db.refresh(obj)
+    async def restage() -> None:
+        for obj in refresh:
+            await db.refresh(obj)
+        await stage()
+
+    await stage()
+    try:
+        await commit_with_sqlite_retry(db, label=f"record {ref}", before_retry=restage)
+    except RetryableDatabaseError:
+        await _move_ref_back(disk_path, ref, before, after)
+        raise
 
 
 async def _move_ref_back(disk_path: str, branch: str, before: str | None, after: str) -> None:
@@ -129,11 +123,18 @@ async def _move_ref_back(disk_path: str, branch: str, before: str | None, after:
     ``branch`` is a branch name or a full ``refs/...`` name.
     """
     import asyncio
+    import logging
 
     ref = branch if branch.startswith("refs/") else f"refs/heads/{branch}"
     args = ["update-ref", ref, before, after] if before else ["update-ref", "-d", ref, after]
     proc = await asyncio.create_subprocess_exec(
         "git", *args, cwd=disk_path,
-        stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.DEVNULL,
+        stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.PIPE,
     )
-    await proc.wait()
+    _, stderr = await proc.communicate()
+    if proc.returncode != 0:
+        # Usually another writer moved the ref since; the change stays.
+        logging.getLogger("github_emulator.database").warning(
+            "Could not move %s back from %s to %s: %s",
+            ref, after, before or "(deleted)", stderr.decode(errors="replace").strip(),
+        )
