@@ -31,6 +31,9 @@ services:
       dockerfile: Dockerfile
     environment:
       - GITHUB_EMULATOR_URL=https://github-emulator
+      # Caddy's internal CA signs this name, and the runner image does not
+      # trust it; mount the CA and set SSL_CERT_FILE instead to verify.
+      - RUNNER_TLS_VERIFY=${RUNNER_TLS_VERIFY:-false}
       - GITHUB_EMULATOR_TOKEN=${GITHUB_EMULATOR_RUNNER_TOKEN:-}
       - RUNNER_SCOPE=${RUNNER_SCOPE:-repository}
       - RUNNER_REPO=${RUNNER_REPO:-admin/test-repo}
