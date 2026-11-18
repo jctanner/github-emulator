@@ -8,18 +8,18 @@ from enum import Enum
 from typing import Annotated, Optional, Union
 
 import strawberry
-from strawberry.types import Info
-from sqlalchemy import select
-
-from app.services.cross_repo_pulls import same_repository_head
-from app.graphql.types.user import GitHubUser, user_from_model
-from app.graphql.types.repository import Repository, repository_from_model
-from app.graphql.types.issue import Issue, issue_from_model, IssueComment, comment_from_model
-from app.graphql.types.pull_request import Commit, PullRequest, pull_request_from_model
-from app.graphql.types.enums import IssueClosedStateReason
-from app.graphql.types.minimizable import Minimizable
-from app.graphql.types.review_thread import MINIMIZED_REASONS, PullRequestReviewThread
 from graphql import GraphQLError
+from sqlalchemy import select
+from strawberry.types import Info
+
+from app.graphql.types.enums import IssueClosedStateReason
+from app.graphql.types.issue import Issue, IssueComment, comment_from_model, issue_from_model
+from app.graphql.types.minimizable import Minimizable
+from app.graphql.types.pull_request import Commit, PullRequest, pull_request_from_model
+from app.graphql.types.repository import Repository, repository_from_model
+from app.graphql.types.review_thread import MINIMIZED_REASONS, PullRequestReviewThread
+from app.graphql.types.user import GitHubUser, user_from_model
+from app.services.cross_repo_pulls import same_repository_head
 
 logger = logging.getLogger("github_emulator.graphql.mutations")
 
@@ -37,7 +37,7 @@ def _decode_node_id(node_id: str) -> int:
         _, _, id_str = decoded.partition(":")
         return int(id_str)
     except Exception:
-        raise ValueError(f"Invalid node ID: {node_id}")
+        raise ValueError(f"Invalid node ID: {node_id}") from None
 
 
 # ---------------------------------------------------------------------------
@@ -53,6 +53,14 @@ class CreateIssueInput:
     label_ids: Optional[list[strawberry.ID]] = None
     milestone_id: Optional[strawberry.ID] = None
     client_mutation_id: Optional[str] = None
+    # GitHub's input also has these, and `gh issue create` sends projectIds
+    # even when empty. Accepted so such requests validate; projects, issue
+    # templates, issue types and sub-issues are not modelled, so ignored.
+    project_ids: Optional[list[strawberry.ID]] = None
+    project_v2_ids: Optional[list[strawberry.ID]] = None
+    issue_template: Optional[str] = None
+    issue_type_id: Optional[strawberry.ID] = None
+    parent_issue_id: Optional[strawberry.ID] = None
 
 
 @strawberry.input
@@ -430,6 +438,24 @@ def _decode_typed_node_id(node_id: str) -> tuple[str, int] | None:
         return None
 
 
+async def _issue_id_for_subject(db, node_id: str) -> int:
+    """The issue row behind a comment or reaction subject.
+
+    GitHub accepts an Issue or a PullRequest node id as the subject of
+    ``addComment`` and ``addReaction``. A pull request's conversation lives
+    on its backing issue here, so a PullRequest id resolves to that issue.
+    """
+    from app.models.pull_request import PullRequest as PRModel
+
+    decoded = _decode_typed_node_id(node_id)
+    if decoded and decoded[0] == "PullRequest":
+        issue_id = (
+            await db.execute(select(PRModel.issue_id).where(PRModel.id == decoded[1]))
+        ).scalar_one_or_none()
+        return issue_id if issue_id is not None else -1
+    return _decode_node_id(node_id)
+
+
 async def _review_thread_root(info: Info, thread_id: str, mutation: str):
     """The root comment of a thread the caller may resolve."""
     from app.graphql.authz import is_integration, may_read, may_write
@@ -630,7 +656,7 @@ class Mutation:
         self, info: Info, input: AddLabelsToLabelableInput
     ) -> AddLabelsToLabelablePayload:
         """Add labels using GitHub's labelable mutation used by ``gh pr edit``."""
-        from app.models.issue import Issue as IssueModel, IssueLabel
+        from app.models.issue import Issue as IssueModel
         from app.models.label import Label as LabelModel
         from app.models.pull_request import PullRequest as PRModel
 
@@ -694,7 +720,8 @@ class Mutation:
     @strawberry.mutation
     async def create_issue(self, info: Info, input: CreateIssueInput) -> CreateIssuePayload:
         """Create a new issue on a repository."""
-        from app.models.issue import Issue as IssueModel, IssueLabel, IssueAssignee
+        from app.models.issue import Issue as IssueModel
+        from app.models.issue import IssueAssignee, IssueLabel
         from app.models.label import Label as LabelModel
         from app.models.milestone import Milestone as MilestoneModel
         from app.models.repository import Repository as RepoModel
@@ -754,7 +781,8 @@ class Mutation:
     @strawberry.mutation
     async def update_issue(self, info: Info, input: UpdateIssueInput) -> UpdateIssuePayload:
         """Update an existing issue."""
-        from app.models.issue import Issue as IssueModel, IssueLabel, IssueAssignee
+        from app.models.issue import Issue as IssueModel
+        from app.models.issue import IssueAssignee, IssueLabel
 
         _require_auth(info)
         db = info.context["db"]
@@ -922,7 +950,7 @@ class Mutation:
         current_user = _require_auth(info)
         db = info.context["db"]
 
-        subject_id = _decode_node_id(input.subject_id)
+        subject_id = await _issue_id_for_subject(db, input.subject_id)
 
         # Verify the issue exists
         result = await db.execute(
@@ -953,10 +981,10 @@ class Mutation:
         self, info: Info, input: CreatePullRequestInput
     ) -> CreatePullRequestPayload:
         """Create a new pull request."""
+        from app.models.branch import Branch
         from app.models.issue import Issue as IssueModel
         from app.models.pull_request import PullRequest as PRModel
         from app.models.repository import Repository as RepoModel
-        from app.models.branch import Branch
 
         current_user = _require_auth(info)
         db = info.context["db"]
@@ -1098,8 +1126,8 @@ class Mutation:
         self, info: Info, input: MergePullRequestInput
     ) -> MergePullRequestPayload:
         """Merge a pull request."""
-        from app.models.pull_request import PullRequest as PRModel
         from app.models.issue import Issue as IssueModel
+        from app.models.pull_request import PullRequest as PRModel
         from app.models.repository import Repository as RepoModel
 
         current_user = _require_auth(info)
@@ -1284,7 +1312,7 @@ class Mutation:
         current_user = _require_auth(info)
         db = info.context["db"]
 
-        subject_id = _decode_node_id(input.subject_id)
+        subject_id = await _issue_id_for_subject(db, input.subject_id)
         from app.models.issue import Issue as IssueModel
 
         # Reactions here are on issues. A missing subject and one in a hidden
@@ -1382,6 +1410,7 @@ class Mutation:
         is_private = input.visibility.lower() == "private"
 
         import os
+
         from app.config import settings
 
         owner_login = current_user.login
@@ -1426,8 +1455,8 @@ class Mutation:
         self, info: Info, input: ClosePullRequestInput
     ) -> ClosePullRequestPayload:
         """Close a pull request."""
-        from app.models.pull_request import PullRequest as PRModel
         from app.models.issue import Issue as IssueModel
+        from app.models.pull_request import PullRequest as PRModel
         from app.models.repository import Repository as RepoModel
 
         current_user = _require_auth(info)
@@ -1479,8 +1508,8 @@ class Mutation:
         self, info: Info, input: ReopenPullRequestInput
     ) -> ReopenPullRequestPayload:
         """Reopen a closed pull request."""
-        from app.models.pull_request import PullRequest as PRModel
         from app.models.issue import Issue as IssueModel
+        from app.models.pull_request import PullRequest as PRModel
         from app.models.repository import Repository as RepoModel
 
         _require_auth(info)
@@ -1536,8 +1565,8 @@ class Mutation:
         self, info: Info, input: UpdatePullRequestInput
     ) -> UpdatePullRequestPayload:
         """Update a pull request's title, body, or base branch."""
-        from app.models.pull_request import PullRequest as PRModel
         from app.models.issue import Issue as IssueModel
+        from app.models.pull_request import PullRequest as PRModel
 
         _require_auth(info)
         db = info.context["db"]
