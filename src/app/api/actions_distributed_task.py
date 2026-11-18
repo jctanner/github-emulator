@@ -16,7 +16,7 @@ from urllib.parse import parse_qs, urlsplit, urlunsplit
 
 from fastapi import APIRouter, HTTPException, Query, Request
 from fastapi.responses import FileResponse, JSONResponse, Response
-from sqlalchemy import select
+from sqlalchemy import and_, select
 from sqlalchemy.orm.attributes import flag_modified
 
 from app.api.deps import DbSession
@@ -321,6 +321,22 @@ async def _get_runner_from_token(request: Request, db) -> Runner:
     return runner
 
 
+def _same_scope_as(runner: Runner):
+    """Runners registered where ``runner`` was: the same repo, org or enterprise.
+
+    On GitHub a runner belongs to the repository, organization or enterprise
+    it registered with, and a runner credential sees only the agents there.
+    """
+    def eq(column, value):
+        return column.is_(None) if value is None else column == value
+
+    return and_(
+        eq(Runner.repo_id, runner.repo_id),
+        eq(Runner.org_id, runner.org_id),
+        eq(Runner.enterprise_slug, runner.enterprise_slug),
+    )
+
+
 async def _get_job_from_job_token(request: Request, db) -> WorkflowJob:
     """Authenticate job-server calls that use the per-job endpoint token."""
     auth = request.headers.get("Authorization", "")
@@ -437,8 +453,8 @@ async def dt_list_pool_agents(
     agentName: str | None = Query(None),
 ):
     """List registered pool agents."""
-    await _get_runner_from_token(request, db)
-    query = select(Runner).order_by(Runner.id)
+    caller = await _get_runner_from_token(request, db)
+    query = select(Runner).where(_same_scope_as(caller)).order_by(Runner.id)
     if agentName:
         query = query.where(Runner.name == agentName)
     result = await db.execute(query)
@@ -457,7 +473,9 @@ async def dt_update_pool_agent(
     """Update an existing pool-scoped agent during runner replacement."""
     authenticated_runner = await _get_runner_from_token(request, db)
     body = await request.json()
-    result = await db.execute(select(Runner).where(Runner.id == agent_id))
+    result = await db.execute(select(Runner).where(
+        Runner.id == agent_id, _same_scope_as(authenticated_runner),
+    ))
     runner = result.scalar_one_or_none()
     if runner is None:
         raise HTTPException(status_code=404, detail="Agent not found")
@@ -512,8 +530,10 @@ async def dt_delete_pool_agent(
     pool_id: int, agent_id: int, request: Request, db: DbSession,
 ):
     """Remove a pool-scoped agent."""
-    await _get_runner_from_token(request, db)
-    result = await db.execute(select(Runner).where(Runner.id == agent_id))
+    caller = await _get_runner_from_token(request, db)
+    result = await db.execute(select(Runner).where(
+        Runner.id == agent_id, _same_scope_as(caller),
+    ))
     runner = result.scalar_one_or_none()
     if runner is None:
         raise HTTPException(status_code=404, detail="Agent not found")

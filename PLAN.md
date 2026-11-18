@@ -105,6 +105,7 @@ Actions visibility and runner evaluation.
 - `docs/bugs/fixed/graphql-app-authors-are-typed-as-users.md`
 - `docs/bugs/fixed/close-issue-ignores-the-state-reason.md`
 - `docs/bugs/fixed/issue-closed-by-pull-requests-references-is-empty.md`
+- `docs/bugs/fixed/runner-agent-routes-are-not-scoped-to-the-runner.md`
 - `docs/bugs/fixed/actions-write-routes-do-not-check-the-repository-role.md`
 - `docs/bugs/fixed/job-server-routes-do-not-validate-the-job-token.md`
 - `docs/bugs/fixed/graphql-repository-visibility.md`
