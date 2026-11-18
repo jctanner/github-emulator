@@ -11,6 +11,7 @@ from strawberry.types import Info
 from app.graphql.connections import Connection, build_connection
 from app.graphql.types.enums import IssueState, IssueStateReason
 from app.graphql.types.minimizable import Minimizable
+from app.graphql.types.node import Node
 from app.graphql.types.repository import (
     Label,
     MilestoneType,
@@ -83,7 +84,7 @@ def comment_from_model(comment) -> IssueComment:
 
 
 @strawberry.type
-class Issue:
+class Issue(Node):
     """A GitHub issue."""
     database_id: int
     number: int

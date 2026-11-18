@@ -20,5 +20,10 @@ request as written by a person named `<slug>[bot]`.
 - Issue, pull request, review and review comment authors resolve to a
   `Bot` for an account whose type is Bot.
 - REST is unchanged.
+- A Bot's `id` resolves through `node(id:)`.
+
+Compatibility: `author` now returns `Actor`, which has `login`, `avatarUrl`
+and `url`. A query that selects a User-only field there (`id`, `name`,
+`databaseId`, `email`) needs `... on User { }`, as on GitHub.
 
 Tests: `tests/test_graphql_bot_author.py`.

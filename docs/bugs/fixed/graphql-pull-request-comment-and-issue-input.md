@@ -21,6 +21,13 @@ Status: fixed 2026-11-15.
 
 - `addComment` and `addReaction` resolve a PullRequest node id to the pull
   request's backing issue, where its conversation lives.
+- `AddCommentPayload.subject` is GitHub's `Node` interface, and returns the
+  subject the caller named: the PullRequest for a PullRequest id. `Node` is
+  now an interface that Issue, PullRequest, Repository, User and Bot
+  implement, as on GitHub, so `subject { id }` and `node(id:) { id }` work
+  without a fragment. It was a union before.
+- A missing subject and one in a repository the caller cannot see fail with
+  the same error, which names the id the caller gave.
 - `CreateIssueInput` accepts the five fields. Projects, issue templates,
   issue types and sub-issues are not modelled, so their values are ignored.
 

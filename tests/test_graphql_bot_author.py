@@ -72,3 +72,36 @@ async def test_an_app_bot_author_is_a_bot_with_the_bare_slug(client, db_session,
     )
     assert rest.json()["user"]["login"] == "fullsend-test-coder[bot]"
     assert rest.json()["user"]["type"] == "Bot"
+
+
+@pytest.mark.asyncio
+async def test_a_bot_authors_id_resolves_through_node(client, db_session, test_user, test_token):
+    await client.post(f"{API}/user/repos", json={"name": "bot-authors"}, headers=auth_headers(test_token))
+    by_bot = await client.post(
+        f"{API}/repos/testuser/bot-authors/issues", json={"title": "by an app"}, headers=auth_headers(test_token),
+    )
+    bot = User(login="fullsend-test-coder[bot]", type="Bot", hashed_password="!")
+    db_session.add(bot)
+    await db_session.flush()
+    issue = (await db_session.execute(select(Issue).where(Issue.number == by_bot.json()["number"]))).scalar_one()
+    issue.user_id = bot.id
+    await db_session.commit()
+
+    query = """query($owner: String!, $repo: String!, $number: Int!) {
+      repository(owner: $owner, name: $repo) { issue(number: $number) { author { ... on Bot { id } } } }
+    }"""
+    resp = await client.post(
+        "/graphql",
+        json={"query": query, "variables": {"owner": "testuser", "repo": "bot-authors", "number": by_bot.json()["number"]}},
+        headers=auth_headers(test_token),
+    )
+    bot_id = resp.json()["data"]["repository"]["issue"]["author"]["id"]
+
+    node = await client.post(
+        "/graphql",
+        json={"query": "query($id: ID!) { node(id: $id) { __typename id ... on Bot { login } } }", "variables": {"id": bot_id}},
+        headers=auth_headers(test_token),
+    )
+    body = node.json()
+    assert "errors" not in body, body
+    assert body["data"]["node"] == {"__typename": "Bot", "id": bot_id, "login": "fullsend-test-coder"}

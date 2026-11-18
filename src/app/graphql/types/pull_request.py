@@ -12,6 +12,7 @@ from app.graphql.connections import Connection, build_connection
 from app.graphql.types.enums import IssueState
 from app.graphql.types.issue import IssueComment, comment_from_model, issue_from_model
 from app.graphql.types.minimizable import Minimizable
+from app.graphql.types.node import Node
 from app.graphql.types.repository import Label, MilestoneType, label_from_model, milestone_from_model
 from app.graphql.types.stubs import (
     STANDARD_REACTION_GROUPS,
@@ -92,7 +93,7 @@ class PullRequestCommit:
 
 
 @strawberry.type
-class PullRequest:
+class PullRequest(Node):
     """A GitHub pull request."""
     database_id: int
     number: int

@@ -15,6 +15,7 @@ from strawberry.types import Info
 from app.graphql.types.enums import IssueClosedStateReason
 from app.graphql.types.issue import Issue, IssueComment, comment_from_model, issue_from_model
 from app.graphql.types.minimizable import Minimizable
+from app.graphql.types.node import Node
 from app.graphql.types.pull_request import Commit, PullRequest, pull_request_from_model
 from app.graphql.types.repository import Repository, repository_from_model
 from app.graphql.types.review_thread import MINIMIZED_REASONS, PullRequestReviewThread
@@ -277,7 +278,8 @@ class AddCommentEdge:
 @strawberry.type
 class AddCommentPayload:
     comment_edge: Optional[AddCommentEdge] = None
-    subject: Optional[Issue] = None
+    # GitHub's subject is a Node: the Issue or PullRequest the comment is on.
+    subject: Optional[Node] = None
     client_mutation_id: Optional[str] = None
 
 
@@ -438,22 +440,33 @@ def _decode_typed_node_id(node_id: str) -> tuple[str, int] | None:
         return None
 
 
-async def _issue_id_for_subject(db, node_id: str) -> int:
-    """The issue row behind a comment or reaction subject.
+async def _subject_issue(db, node_id: str):
+    """The issue row behind a comment or reaction subject, and the pull
+    request when the subject is one; ``(None, None)`` when there is none.
 
     GitHub accepts an Issue or a PullRequest node id as the subject of
     ``addComment`` and ``addReaction``. A pull request's conversation lives
     on its backing issue here, so a PullRequest id resolves to that issue.
+    The caller reports a missing subject with the id it was given, so a
+    missing and a hidden subject fail the same way.
     """
+    from app.models.issue import Issue as IssueModel
     from app.models.pull_request import PullRequest as PRModel
 
     decoded = _decode_typed_node_id(node_id)
+    pr = None
     if decoded and decoded[0] == "PullRequest":
-        issue_id = (
-            await db.execute(select(PRModel.issue_id).where(PRModel.id == decoded[1]))
-        ).scalar_one_or_none()
-        return issue_id if issue_id is not None else -1
-    return _decode_node_id(node_id)
+        pr = (await db.execute(select(PRModel).where(PRModel.id == decoded[1]))).scalar_one_or_none()
+        if pr is None:
+            return None, None
+        issue_id = pr.issue_id
+    else:
+        try:
+            issue_id = _decode_node_id(node_id)
+        except Exception:
+            return None, None
+    issue = (await db.execute(select(IssueModel).where(IssueModel.id == issue_id))).scalar_one_or_none()
+    return issue, pr
 
 
 async def _review_thread_root(info: Info, thread_id: str, mutation: str):
@@ -951,21 +964,14 @@ class Mutation:
     async def add_comment(self, info: Info, input: AddCommentInput) -> AddCommentPayload:
         """Add a comment to an issue or pull request."""
         from app.models.comment import IssueComment as IssueCommentModel
-        from app.models.issue import Issue as IssueModel
 
         current_user = _require_auth(info)
         db = info.context["db"]
 
-        subject_id = await _issue_id_for_subject(db, input.subject_id)
-
-        # Verify the issue exists
-        result = await db.execute(
-            select(IssueModel).where(IssueModel.id == subject_id)
-        )
-        issue = result.scalar_one_or_none()
+        issue, pull = await _subject_issue(db, input.subject_id)
         issue = await _writable_or_none(info, issue, issue.repo_id if issue else None, _issue_scopes(issue))
         if not issue:
-            raise ValueError(f"Subject with id {subject_id} not found")
+            raise ValueError(f"Subject with id {input.subject_id} not found")
 
         new_comment = IssueCommentModel(
             issue_id=issue.id,
@@ -978,7 +984,8 @@ class Mutation:
 
         return AddCommentPayload(
             comment_edge=AddCommentEdge(node=comment_from_model(new_comment)),
-            subject=issue_from_model(issue),
+            # The subject the caller named: the pull request for a PullRequest id.
+            subject=pull_request_from_model(pull) if pull is not None else issue_from_model(issue),
             client_mutation_id=input.client_mutation_id,
         )
 
@@ -1318,14 +1325,13 @@ class Mutation:
         current_user = _require_auth(info)
         db = info.context["db"]
 
-        subject_id = await _issue_id_for_subject(db, input.subject_id)
-        from app.models.issue import Issue as IssueModel
-
         # Reactions here are on issues. A missing subject and one in a hidden
-        # repository fail alike, so neither reveals which hidden issues exist.
-        subject = (await db.execute(select(IssueModel).where(IssueModel.id == subject_id))).scalar_one_or_none()
+        # repository fail alike, with the id the caller gave, so neither
+        # reveals which hidden issues exist.
+        subject, _pull = await _subject_issue(db, input.subject_id)
         if await _writable_or_none(info, subject, subject.repo_id if subject else None, _issue_scopes(subject)) is None:
-            raise ValueError(f"Subject with id {subject_id} not found")
+            raise ValueError(f"Subject with id {input.subject_id} not found")
+        subject_id = subject.id
 
         # Determine reactable type by trying to look up the subject
         # Default to "issue" as the most common case

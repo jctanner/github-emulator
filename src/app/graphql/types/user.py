@@ -16,6 +16,7 @@ from app.graphql.types.enums import (
     RepositoryOrderField,
     RepositoryPrivacy,
 )
+from app.graphql.types.node import Node
 
 
 def _node_id(type_name: str, db_id: int) -> strawberry.ID:
@@ -32,7 +33,7 @@ class Actor:
 
 
 @strawberry.type(name="Bot")
-class Bot(Actor):
+class Bot(Actor, Node):
     """A GitHub App acting on its own. Its login is the App slug, without the
     "[bot]" suffix REST shows; gh tells a bot by the missing User fields and
     prints it as "app/<login>"."""
@@ -44,7 +45,7 @@ class Bot(Actor):
 
 
 @strawberry.type(name="User")
-class GitHubUser(Actor):
+class GitHubUser(Actor, Node):
     """A GitHub user account."""
     database_id: int
     name: Optional[str] = None

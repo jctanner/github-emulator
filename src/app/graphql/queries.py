@@ -19,6 +19,7 @@ from app.graphql.types.user import GitHubUser, user_from_model, _node_id
 from app.graphql.types.repository import Repository, repository_from_model
 from app.graphql.types.issue import Issue, issue_from_model
 from app.graphql.types.pull_request import PullRequest, pull_request_from_model
+from app.graphql.types.node import Node
 
 
 @strawberry.enum
@@ -199,12 +200,6 @@ def _encode_node_id(type_name: str, db_id: int) -> str:
     return base64.b64encode(raw.encode("utf-8")).decode("utf-8")
 
 
-# Union type for the node query
-Node = Annotated[
-    Union[Repository, Issue, PullRequest, GitHubUser],
-    strawberry.union("Node"),
-]
-
 
 @strawberry.type
 class Query:
@@ -334,14 +329,18 @@ class Query:
             if pr and await visible(info, await repository_of_issue(db, pr.issue)):
                 return pull_request_from_model(pr)
 
-        elif type_name == "User":
+        elif type_name in ("User", "Bot"):
+            from app.graphql.types.user import actor_from_model
             from app.models.user import User
             result = await db.execute(
                 select(User).where(User.id == db_id)
             )
             user = result.scalar_one_or_none()
-            if user:
+            if user and type_name == "User":
                 return user_from_model(user)
+            # A Bot id, from an author typed as Bot, names an App's bot account.
+            if user and getattr(user, "type", "User") == "Bot":
+                return actor_from_model(user)
 
         return None
 
