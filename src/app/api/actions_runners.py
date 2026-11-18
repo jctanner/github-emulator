@@ -149,7 +149,7 @@ async def list_enterprise_runners(
 ):
     _require_enterprise(enterprise, user)
     result = await db.execute(
-        select(Runner).where(Runner.enterprise_slug == enterprise)
+        select(Runner).where(Runner.enterprise_slug == enterprise, Runner.remove_only.is_not(True))
     )
     runners = result.scalars().all()
     return {
@@ -307,7 +307,7 @@ async def list_runners(
     """List self-hosted runners for a repository."""
     repository = await get_repo_or_404(owner, repo, db)
     result = await db.execute(
-        select(Runner).where(Runner.repo_id == repository.id)
+        select(Runner).where(Runner.repo_id == repository.id, Runner.remove_only.is_not(True))
     )
     runners = result.scalars().all()
     items = [_runner_payload(r) for r in runners]

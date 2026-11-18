@@ -42,9 +42,12 @@ single token the second and third registrations get 401.
   runner on any route (migration `0018_enterprise_remove_tokens` adds
   `for_remove` to tell it apart).
 - Issuing a registration or remove token drops the tokens past their expiry.
-- `config.sh remove` deletes the target agent with the credential from its own
-  unnamed `runner-registration` call; that broker row is deleted with the agent,
-  as `--replace` already did, so removals leave no `unnamed-runner` rows.
+- A `runner-registration` call with `runner_event` `remove` (what
+  `config.sh remove` sends) returns a remove-only credential (`remove_only`,
+  same migration). It can delete an agent and nothing else: it registers,
+  renames or re-keys no runner, takes no jobs, and is not listed as a runner.
+  It is deleted with the agent it removes, so removals leave no
+  `unnamed-runner` rows.
 
 Tests: `tests/actions/test_unnamed_runner_registration.py`
 (`test_unnamed_registrations_keep_their_own_tokens`,
@@ -53,4 +56,5 @@ Tests: `tests/actions/test_unnamed_runner_registration.py`
 `test_a_repository_token_registers_several_runners_on_every_route`,
 `test_a_remove_token_serves_remove_and_registers_no_runner`,
 `test_config_sh_remove_leaves_no_runner_behind`,
-`test_expired_registration_tokens_are_pruned`).
+`test_expired_registration_tokens_are_pruned`,
+`test_a_remove_exchange_gives_a_credential_that_only_removes`).

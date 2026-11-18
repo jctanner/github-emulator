@@ -30,7 +30,7 @@ def _is_expired(value: datetime) -> bool:
 
 
 async def _get_runner_from_token(request: Request, db) -> Runner:
-    """Authenticate a runner by its bearer token."""
+    """Authenticate a runner by its bearer token (not a remove-only credential)."""
     auth = request.headers.get("Authorization", "")
     if not auth.startswith("Bearer "):
         raise HTTPException(status_code=401, detail="Runner token required")
@@ -40,7 +40,7 @@ async def _get_runner_from_token(request: Request, db) -> Runner:
         select(Runner).where(Runner.token_hash == token_hash)
     )
     runner = result.scalar_one_or_none()
-    if runner is None:
+    if runner is None or runner.remove_only:
         raise HTTPException(status_code=401, detail="Invalid runner token")
     return runner
 
@@ -101,6 +101,27 @@ async def _create_runner_from_registration(
     if enterprise_reg is not None and enterprise_reg.for_remove and body.get("runner_event") != "remove":
         # A remove token serves config.sh remove only; it registers no runner.
         raise HTTPException(status_code=401, detail="Invalid registration token")
+
+    if body.get("runner_event") == "remove":
+        # config.sh remove: a credential that may only delete an agent. It
+        # is no runner, takes no jobs, and never reuses or re-keys one.
+        remove_token = f"ghp_runner_{secrets.token_urlsafe(32)}"
+        broker = Runner(
+            name="unnamed-runner",
+            status="offline",
+            labels=[],
+            busy=False,
+            token_hash=hash_token(remove_token),
+            repo_id=reg.repo_id if reg is not None else None,
+            enterprise_slug=(
+                enterprise_reg.enterprise_slug if enterprise_reg is not None else None
+            ),
+            remove_only=True,
+        )
+        db.add(broker)
+        await db.commit()
+        await db.refresh(broker)
+        return broker, remove_token
 
     labels = body.get("labels", ["self-hosted", "linux"])
     if isinstance(labels, list):

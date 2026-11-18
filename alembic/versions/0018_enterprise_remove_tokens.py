@@ -1,9 +1,13 @@
-"""Tell an enterprise remove token from a registration token.
+"""Keep config.sh remove's tokens and credentials to removing a runner.
 
-Both live in ``enterprise_runner_registration_tokens``. A registration token
-now stays valid until it expires, so a remove token must not register
-runners: ``for_remove`` marks the tokens made by the remove-token route.
-NULL means a registration token, so existing rows keep their behaviour.
+- ``enterprise_runner_registration_tokens.for_remove``: both kinds of token
+  live in that table, and a registration token now stays valid until it
+  expires, so a remove token must not register runners. NULL is a
+  registration token.
+- ``runners.remove_only``: the credential a remove exchange returns may only
+  delete an agent. NULL is an ordinary runner.
+
+Existing rows keep their behaviour.
 
 Revision ID: 0018_enterprise_remove_tokens
 Revises: 0017_org_role_assignments
@@ -19,24 +23,30 @@ down_revision = "0017_org_role_assignments"
 branch_labels = None
 depends_on = None
 
-_TABLE = "enterprise_runner_registration_tokens"
-_COLUMN = "for_remove"
+_COLUMNS = (
+    ("enterprise_runner_registration_tokens", "for_remove"),
+    ("runners", "remove_only"),
+)
 
 
 def upgrade() -> None:
     inspector = inspect(op.get_bind())
-    if _TABLE not in inspector.get_table_names():
-        return
-    if _COLUMN in {column["name"] for column in inspector.get_columns(_TABLE)}:
-        return
-    op.add_column(_TABLE, sa.Column(_COLUMN, sa.Boolean(), nullable=True))
+    tables = set(inspector.get_table_names())
+    for table, column in _COLUMNS:
+        if table not in tables:
+            continue
+        if column in {c["name"] for c in inspector.get_columns(table)}:
+            continue
+        op.add_column(table, sa.Column(column, sa.Boolean(), nullable=True))
 
 
 def downgrade() -> None:
     inspector = inspect(op.get_bind())
-    if _TABLE not in inspector.get_table_names():
-        return
-    if _COLUMN not in {column["name"] for column in inspector.get_columns(_TABLE)}:
-        return
-    with op.batch_alter_table(_TABLE) as batch:
-        batch.drop_column(_COLUMN)
+    tables = set(inspector.get_table_names())
+    for table, column in _COLUMNS:
+        if table not in tables:
+            continue
+        if column not in {c["name"] for c in inspector.get_columns(table)}:
+            continue
+        with op.batch_alter_table(table) as batch:
+            batch.drop_column(column)

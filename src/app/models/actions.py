@@ -21,6 +21,9 @@ class Runner(Base):
     repo_id: Mapped[int | None] = mapped_column(Integer, ForeignKey("repositories.id"), nullable=True)
     org_id: Mapped[int | None] = mapped_column(Integer, ForeignKey("organizations.id"), nullable=True)
     enterprise_slug: Mapped[str | None] = mapped_column(String, nullable=True)
+    # The credential config.sh remove gets from runner-registration: it may
+    # only delete an agent, and is not a runner. NULL is an ordinary runner.
+    remove_only: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
 
     created_at: Mapped[datetime] = mapped_column(
         DateTime, server_default=func.now()

@@ -176,3 +176,32 @@ async def test_expired_registration_tokens_are_pruned(client, db_session, admin_
     tokens = (await db_session.execute(select(EnterpriseRunnerRegistrationToken.token))).scalars().all()
     assert "AAAAAAexpired" not in tokens
     assert live in tokens
+
+
+@pytest.mark.asyncio
+async def test_a_remove_exchange_gives_a_credential_that_only_removes(client, admin_token):
+    reg_token = await _registration_token(client, "/enterprises/breadboard", admin_token)
+    kept_credential, kept_id = await _config_sh_register(client, reg_token, "kept")
+    for remove_with in (await _remove_token(client, admin_token), reg_token):
+        remove = await client.post(
+            f"{API}/actions/runner-registration",
+            json={"url": "http://test/x", "runner_event": "remove", "name": "kept"},
+            headers={"Authorization": f"RemoteAuth {remove_with}"},
+        )
+        assert remove.status_code == 200, remove.text
+        bearer = {"Authorization": f"Bearer {remove.json()['token']}"}
+        # Not a runner: it can neither add or rename an agent nor use the pool.
+        added = await client.post("/_apis/distributedtask/pools/1/agents", json={"name": "sneaky"}, headers=bearer)
+        assert added.status_code == 401, added.text
+        pools = await client.get("/enterprises/breadboard/_apis/distributedtask/pools", headers=bearer)
+        assert pools.status_code == 401, pools.text
+    # The named runner was neither re-keyed nor renamed.
+    still = await client.get(
+        "/enterprises/breadboard/_apis/distributedtask/pools",
+        headers={"Authorization": f"Bearer {kept_credential}"},
+    )
+    assert still.status_code == 200, still.text
+    runners = (await client.get(
+        f"{API}/enterprises/breadboard/actions/runners", headers=auth_headers(admin_token))).json()["runners"]
+    assert [r["name"] for r in runners if r["id"] == kept_id] == ["kept"]
+    assert "unnamed-runner" not in {r["name"] for r in runners}
