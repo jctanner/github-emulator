@@ -37,7 +37,7 @@ from app.services.action_download_service import (
     resolve_action_sha,
 )
 from app.services.auth_service import hash_token
-from app.services.job_token_service import issue_job_token
+from app.services.job_token_service import issue_job_token, validate_job_token
 from app.services.workflow_service import check_run_completion, dispatch_ready_jobs
 
 router = APIRouter(tags=["actions-distributed-task"])
@@ -356,25 +356,12 @@ async def _get_job_from_download_credential(request: Request, db) -> WorkflowJob
 
 
 async def _job_from_token_value(token: str, db, challenge: dict) -> WorkflowJob:
-    try:
-        payload_part = token.split(".")[1]
-        payload_part += "=" * (-len(payload_part) % 4)
-        payload = json.loads(base64.urlsafe_b64decode(payload_part.encode("ascii")))
-    except (IndexError, ValueError, json.JSONDecodeError):
-        raise HTTPException(status_code=401, detail="Invalid job token", headers=challenge) from None
-
-    subject = str(payload.get("sub", ""))
-    if not subject.startswith("job:"):
+    # Verify the signature, issuer and lifetime the token was issued with;
+    # its claims are only as trustworthy as that check.
+    validated = await validate_job_token(db, token)
+    if validated is None:
         raise HTTPException(status_code=401, detail="Invalid job token", headers=challenge)
-    try:
-        job_id = int(subject.split(":", 1)[1])
-    except ValueError:
-        raise HTTPException(status_code=401, detail="Invalid job token", headers=challenge) from None
-
-    result = await db.execute(select(WorkflowJob).where(WorkflowJob.id == job_id))
-    job = result.scalar_one_or_none()
-    if job is None:
-        raise HTTPException(status_code=401, detail="Job token target not found", headers=challenge)
+    job, _run = validated
     return job
 
 
