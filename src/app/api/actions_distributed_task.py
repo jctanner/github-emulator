@@ -545,8 +545,9 @@ async def dt_delete_pool_agent(
     runner = result.scalar_one_or_none()
     if runner is None:
         raise HTTPException(status_code=404, detail="Agent not found")
-    # Detach the jobs that ran on it: PostgreSQL enforces the foreign key.
-    await _delete_runner_and_detach_history(db, runner)
+    # Detach the jobs that ran on it (PostgreSQL enforces the foreign key);
+    # a job it still runs fails, as the runner will not finish it.
+    await _delete_runner_and_detach_history(db, runner, fail_live_jobs=True)
     return {"status": "removed"}
 
 

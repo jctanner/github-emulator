@@ -20,9 +20,13 @@ Two runner bugs that a PostgreSQL run surfaced. Both also hold on SQLite.
 - Every runner delete uses the admin route's helper,
   `_delete_runner_and_detach_history`. It detaches the jobs (their
   `runner_name` stays) and removes the runner's sessions.
+- A runner removing itself while it holds a job is removed, and the job
+  fails: the runner will not finish it. The admin route still refuses to
+  delete a runner that is running a job.
 - The pool long-poll commits before each wait, as the distributedtask poll
   does.
 
 Tests: `tests/actions/test_execution.py::test_pool_distributed_task_protocol_flow`
 now checks that no job points at the runner after the agent delete. It
-fails on the old code.
+fails on the old code. `tests/actions/test_runner_self_delete.py` covers a
+runner removing itself mid-job.
