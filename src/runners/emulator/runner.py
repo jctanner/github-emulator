@@ -637,9 +637,13 @@ class _StepIfParser:
 
         kind, token = self._take()
         if kind == "string":
-            # Actions doubles a quote inside a string (``'it''s'``); the
-            # backslash form is kept for older step records.
-            return token[1:-1].replace("''", "'").replace("\\'", "'").replace('\\"', '"')
+            # Actions doubles a quote inside a '...' string and has no
+            # backslash escapes, so bound JSON keeps its own. Double-quoted
+            # strings, from older step records, keep the backslash form.
+            body = token[1:-1]
+            if token[0] == "'":
+                return body.replace("''", "'")
+            return body.replace('\\"', '"').replace("\\'", "'")
         if kind == "number":
             return float(token) if "." in token else int(token)
         if kind != "name":

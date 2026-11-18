@@ -45,12 +45,15 @@ Two authentication answers differed as well:
   no job context for them.
 - A server value bound into an expression left for the runner quotes a quote
   the Actions way (`''`), not with a backslash, which the runner rejects. An
-  object or array passed as a function argument is bound whole
-  (`fromJSON('...')`). A bound string that holds a brace is bound as JSON
+  object or array is bound whole (`fromJSON('...')`), so a function or
+  `a && b` gets the value; the runner applies truthiness itself. A bound string that holds a brace is bound as JSON
   too, with its braces escaped, so event data such as an issue title can
   never end the expression it is bound into.
 - `working-directory` and `shell` are left for the runner the same way as
   `run`.
+- Index notation (`github['workspace']`) is recognised like dot notation.
+- A `'...'` literal's only escape is a doubled quote, as in Actions; a
+  backslash is an ordinary character, so bound JSON keeps its escapes.
 - The emulator's own runner finishes what the server leaves: it reads `''`
   inside a string, writes a false result as `false`, knows `job.status`, has
   `fromJSON` and `toJSON`, and gives `github.env`, `github.output`,

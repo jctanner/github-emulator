@@ -161,11 +161,16 @@ _RUNNER_CONTEXT_RE = re.compile(r"(?<![\w.])runner\.")
 # Context values only the runner knows: where it checked out, which action is
 # running, its file commands, and the job's own status. Rendered here they came
 # out empty; the runner fills them in when they are left for it.
+_RUNNER_GITHUB = (
+    r"(?:token|workspace|action|action_path|action_ref|action_repository|action_status"
+    r"|event_path|path|env|output|state|step_summary|job)"
+)
+# job.workflow_* are the server's (the runner gets no job context for them).
+_RUNNER_JOB = r"(?:status|container|services|check_run_id)"
+# Dot or index notation: github.workspace or github['workspace'].
 _RUNNER_FILLED = (
-    r"github\.(?:token|workspace|action|action_path|action_ref|action_repository|action_status"
-    r"|event_path|path|env|output|state|step_summary|job)(?![\w])"
-    # job.workflow_* are the server's (the runner gets no job context for them).
-    r"|job\.(?:status|container|services|check_run_id)(?![\w])"
+    rf"github(?:\.{_RUNNER_GITHUB}(?![\w])|\[\s*'{_RUNNER_GITHUB}'\s*\])"
+    rf"|job(?:\.{_RUNNER_JOB}(?![\w])|\[\s*'{_RUNNER_JOB}'\s*\])"
 )
 _RUNNER_FILLED_RE = re.compile(r"(?<![\w.])(?:" + _RUNNER_FILLED + ")")
 _RUNNER_FILLED_PATH_RE = re.compile(r"^(?:" + _RUNNER_FILLED + ")")
@@ -513,7 +518,7 @@ class _IfExpressionParser:
 
         kind, token = self._take()
         if kind == "string":
-            return token[1:-1].replace("''", "'").replace("\\'", "'").replace('\\"', '"')
+            return _string_literal(token)
         if kind == "number":
             return float(token) if "." in token else int(token)
         if kind != "name":
@@ -613,6 +618,18 @@ class _IfExpressionParser:
 # Context roots the server can resolve. ``steps`` is deliberately absent: only
 # the runner knows step outputs.
 _SERVER_CONTEXT_ROOTS = ("github", "inputs", "needs", "vars", "secrets", "matrix", "strategy", "job")
+
+
+def _string_literal(token: str) -> str:
+    """The value of a quoted literal. Actions quotes with ``'`` and escapes a
+    quote by doubling it; a backslash is an ordinary character, so bound
+    JSON such as ``fromJSON('{"t":"a \\"b\\""}')`` keeps its escapes.
+    Double-quoted literals, which only older step records carry, keep the
+    backslash form."""
+    body = token[1:-1]
+    if token[0] == "'":
+        return body.replace("''", "'")
+    return body.replace('\\"', '"').replace("\\'", "'")
 
 
 def _as_literal(value: object) -> str:
@@ -749,6 +766,9 @@ def bind_server_context(expression: str, context: dict) -> str:
         last = _accessor_chain_end(tokens, index)
         if last > index:
             span = expression[start:tokens[last][3]]
+            if _RUNNER_FILLED_PATH_RE.match(span):
+                skip_until = last
+                continue
             try:
                 value = _IfExpressionParser(span, context).evaluate()
             except _ExpressionError:
@@ -762,11 +782,11 @@ def bind_server_context(expression: str, context: dict) -> str:
                 skip_until = last
                 continue
         value = _lookup_context_value(context, text)
-        # As a function argument (``toJSON(github.event)``) an object or array
-        # is passed whole; elsewhere it is a truthiness test.
-        is_argument = expression[:start].rstrip().endswith(("(", ","))
+        # An object or array is bound whole: a function may take it, and
+        # ``a && b`` yields an operand, not a boolean. The runner applies
+        # truthiness itself.
         out.append((start, end, (
-            _json_literal(value) if is_argument and isinstance(value, (dict, list)) else _as_literal(value)
+            _json_literal(value) if isinstance(value, (dict, list)) else _as_literal(value)
         )))
 
     if not out:

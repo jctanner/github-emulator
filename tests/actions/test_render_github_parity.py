@@ -168,3 +168,33 @@ def test_the_emulator_runner_knows_the_step_file_paths():
     assert output.endswith("/.runner-state/output-3")
     assert env.endswith("/.runner-state/env-3")
     assert event.endswith("/.runner-state/event.json")
+
+
+def test_index_notation_is_left_for_the_runner_too():
+    steps = build_steps_data(
+        [{"run": "cd ${{ github['workspace'] }} && echo ${{ job['status'] }}"}], {}, CONTEXT,
+    )
+    assert steps[0]["run"] == "cd ${{ github['workspace'] }} && echo ${{ job['status'] }}"
+
+
+def test_an_object_chosen_by_a_logical_operator_stays_an_object():
+    import json
+
+    steps = build_steps_data([{"run": "echo ${{ toJSON(github.workspace && github.event) }}"}], {}, CONTEXT)
+    rendered = _emulator_runner()._render_local_action(steps[0]["run"], {}, {})
+    assert json.loads(rendered.removeprefix("echo ")) == CONTEXT["github"]["event"]
+
+
+def test_quotes_and_backslashes_in_event_data_round_trip():
+    import json
+
+    event = {"issue": {"title": 'a "quoted" title, it\'s C:\\path {x}'}}
+    context = {**CONTEXT, "github": {**CONTEXT["github"], "event": event}}
+    steps = build_steps_data(
+        [{"run": "echo ${{ format('{0}|{1}', toJSON(github.event), github.workspace) }}",
+          "env": {"T": "${{ github.workspace && github.event.issue.title }}"}}], {}, context,
+    )
+    runner = _emulator_runner()
+    event_json, _, _ = runner._render_local_action(steps[0]["run"], {}, {}).removeprefix("echo ").rpartition("|")
+    assert json.loads(event_json) == event
+    assert runner._render_local_action(steps[0]["env"]["T"], {}, {}) == event["issue"]["title"]

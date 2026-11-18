@@ -507,7 +507,8 @@ def test_mixed_step_conditions_bind_server_context_before_deferring():
     }
     bound_comment = _resolve_step_condition(condition, comment)
     assert "'issue_comment' == 'issue_comment'" in bound_comment
-    assert bound_comment.rstrip().endswith("true")
+    # The object is bound whole; the runner applies truthiness to it.
+    assert bound_comment.rstrip().endswith("fromJSON('{\"url\":\"u\"}')")
 
 
 def test_bound_conditions_are_evaluable_by_the_runner():
