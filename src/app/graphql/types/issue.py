@@ -10,7 +10,7 @@ from sqlalchemy import select, func as sa_func
 from app.graphql.connections import Connection, build_connection
 from app.graphql.types.minimizable import Minimizable
 from app.graphql.types.user import GitHubUser, user_from_model, _node_id
-from app.graphql.types.enums import IssueState
+from app.graphql.types.enums import IssueState, IssueStateReason
 from app.graphql.types.repository import (
     Label,
     MilestoneType,
@@ -118,8 +118,12 @@ class Issue:
         return False
 
     @strawberry.field
-    def state_reason(self) -> Optional[str]:
-        return self._state_reason
+    def state_reason(self) -> Optional[IssueStateReason]:
+        # Stored as REST reports it ("not_planned"); GraphQL has the enum.
+        try:
+            return IssueStateReason((self._state_reason or "").upper())
+        except ValueError:
+            return None
 
     @strawberry.field
     def reaction_groups(self) -> list[ReactionGroup]:

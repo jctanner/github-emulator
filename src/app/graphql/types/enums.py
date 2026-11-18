@@ -55,6 +55,14 @@ class IssueStateReason(Enum):
 
 
 @strawberry.enum
+class IssueClosedStateReason(Enum):
+    """The reason an issue is being closed: ``closeIssue``'s ``stateReason``."""
+    COMPLETED = "COMPLETED"
+    NOT_PLANNED = "NOT_PLANNED"
+    DUPLICATE = "DUPLICATE"
+
+
+@strawberry.enum
 class RepositoryOrderField(Enum):
     """Properties by which repository connections can be ordered."""
     CREATED_AT = "CREATED_AT"

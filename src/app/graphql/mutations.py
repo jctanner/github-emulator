@@ -16,6 +16,7 @@ from app.graphql.types.user import GitHubUser, user_from_model
 from app.graphql.types.repository import Repository, repository_from_model
 from app.graphql.types.issue import Issue, issue_from_model, IssueComment, comment_from_model
 from app.graphql.types.pull_request import Commit, PullRequest, pull_request_from_model
+from app.graphql.types.enums import IssueClosedStateReason
 from app.graphql.types.minimizable import Minimizable
 from app.graphql.types.review_thread import MINIMIZED_REASONS, PullRequestReviewThread
 from graphql import GraphQLError
@@ -69,7 +70,8 @@ class UpdateIssueInput:
 @strawberry.input
 class CloseIssueInput:
     issue_id: strawberry.ID
-    state_reason: Optional[str] = None
+    state_reason: Optional[IssueClosedStateReason] = None
+    duplicate_issue_id: Optional[strawberry.ID] = None
     client_mutation_id: Optional[str] = None
 
 
@@ -835,12 +837,25 @@ class Mutation:
         if not issue:
             raise ValueError(f"Issue with id {issue_id} not found")
 
+        # GitHub closes as COMPLETED unless told otherwise; naming the
+        # original issue closes as DUPLICATE. REST reports it in lowercase.
+        state_reason = input.state_reason
+        if input.duplicate_issue_id is not None:
+            duplicate_of = (
+                await db.execute(
+                    select(IssueModel).where(IssueModel.id == _decode_node_id(input.duplicate_issue_id))
+                )
+            ).scalar_one_or_none()
+            if duplicate_of is None or duplicate_of.id == issue.id:
+                raise ValueError(f"Issue with id {input.duplicate_issue_id} not found")
+            state_reason = state_reason or IssueClosedStateReason.DUPLICATE
+        state_reason = state_reason or IssueClosedStateReason.COMPLETED
+
         if issue.state == "open":
             issue.state = "closed"
             issue.closed_at = datetime.now(timezone.utc)
             issue.closed_by_id = current_user.id
-            if input.state_reason:
-                issue.state_reason = input.state_reason
+            issue.state_reason = state_reason.value.lower()
 
             # Decrement open issues count
             repo_result = await db.execute(
