@@ -131,6 +131,8 @@ Actions visibility and runner evaluation.
 - `docs/bugs/fixed/branch-selector-lists-only-the-first-100-branches.md`
 - `docs/bugs/fixed/users-and-organizations-share-ids.md`
 - `docs/bugs/fixed/python-runner-skips-tls-verification.md`
+- `docs/bugs/fixed/installation-token-narrowing-by-repository.md`
+- `docs/bugs/fixed/actions-oidc-claims-and-discovery-differ-from-github.md`
 
 ## Decisions
 
