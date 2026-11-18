@@ -411,6 +411,30 @@ async def list_installation_repositories(installation_id: int, request: Request,
     return {"total_count": len(repos), "repositories": [{"id": repo.id, "full_name": repo.full_name, "name": repo.name, "private": repo.private} for repo in repos]}
 
 
+@router.delete("/installation/token", status_code=204)
+async def revoke_installation_token(
+    request: Request, db: DbSession, current_user: CurrentUser
+):
+    """Revoke the installation access token making the call.
+
+    GitHub's "Revoke an installation access token" answers 204, and the
+    token is refused from then on. Clients that mint a short-lived token
+    revoke it when their step ends and treat any other status as failure.
+    A personal access token is refused, as on the repositories route above.
+    """
+    installation_token = getattr(request.state, "installation_token", None)
+    if installation_token is None:
+        raise HTTPException(
+            status_code=403,
+            detail="Resource not accessible by personal access token",
+        )
+    row = await db.get(AppInstallationToken, installation_token.id)
+    if row is not None:
+        await db.delete(row)
+        await db.commit()
+    return None
+
+
 @router.get("/installation/repositories")
 async def list_token_installation_repositories(
     request: Request, db: DbSession, current_user: CurrentUser

@@ -114,6 +114,8 @@ Actions visibility and runner evaluation.
 - `docs/bugs/fixed/gh-in-upstream-runner-steps-calls-github-com.md`
 - `docs/bugs/fixed/upstream-runner-logs-land-on-the-wrong-job.md`
 - `docs/bugs/fixed/upstream-runner-job-outputs-are-empty.md`
+- `docs/bugs/fixed/installation-token-revoke-route-missing.md`
+- `docs/bugs/fixed/json-body-refused-without-a-json-content-type.md`
 - `docs/bugs/fixed/rate-limit-is-fixed-at-5000.md`
 - `docs/bugs/fixed/repository-private-and-visibility-drift.md`
 - `docs/bugs/fixed/author-can-approve-their-own-pull-request.md`

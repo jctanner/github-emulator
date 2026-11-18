@@ -159,6 +159,7 @@ def create_app() -> FastAPI:
     from app.middleware.error_handler import register_error_handlers
     from app.middleware.etag import ETagMiddleware
     from app.middleware.head_method import HeadMethodMiddleware
+    from app.middleware.json_body import JsonBodyMiddleware
     from app.middleware.rate_limit import RateLimitMiddleware
     from app.middleware.request_id import RequestIdMiddleware
     from app.middleware.security_headers import SecurityHeadersMiddleware
@@ -166,6 +167,7 @@ def create_app() -> FastAPI:
     # Outermost, so the rewritten method reaches every other middleware and
     # the router as a GET.
     app.add_middleware(HeadMethodMiddleware)
+    app.add_middleware(JsonBodyMiddleware)
     app.add_middleware(SecurityHeadersMiddleware)
     app.add_middleware(RequestIdMiddleware)
     app.add_middleware(ApiVersionMiddleware)
