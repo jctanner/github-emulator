@@ -281,6 +281,24 @@ class Issue:
         )
 
     @strawberry.field
+    def sub_issues(
+        self,
+        first: Optional[int] = 10,
+        after: Optional[str] = None,
+        last: Optional[int] = None,
+        before: Optional[str] = None,
+    ) -> Connection[Annotated["Issue", strawberry.lazy("app.graphql.types.issue")]]:
+        """GitHub's sub-issues. Not modelled here, so always empty: clients
+        that ask whether an issue has sub-issues get totalCount 0 instead
+        of a validation error for an unknown field."""
+        return empty_connection()
+
+    @strawberry.field
+    def parent(self) -> Optional[Annotated["Issue", strawberry.lazy("app.graphql.types.issue")]]:
+        """The issue this one is a sub-issue of; never set here."""
+        return None
+
+    @strawberry.field
     def project_cards(self) -> Connection[ProjectCardStub]:
         return empty_connection()
 
