@@ -157,6 +157,28 @@ async def test_a_job_that_needs_a_skipped_caller_is_skipped(
 
 
 @pytest.mark.asyncio
+async def test_a_job_that_always_runs_after_a_skipped_caller_reads_its_result_as_skipped(
+    monkeypatch, executable_workflow, db_session, test_user,  # noqa: F811
+):
+    _repo, workflow, _ = executable_workflow
+    caller = _caller()
+    caller["jobs"]["report"] = {
+        "needs": ["dispatch"],
+        "if": "${{ always() }}",
+        "runs-on": ["self-hosted"],
+        "steps": [{"run": "echo ${{ needs.dispatch.result }}"}],
+    }
+    workflow_yaml = await _materialize(monkeypatch, caller)
+    run = await _run(db_session, workflow, test_user, workflow_yaml, {"action": "opened"})
+
+    rows = {r.job_key: r for r in await _rows(db_session, run)}
+    assert sorted(rows) == ["dispatch", "report"]
+    assert rows["report"].needs == ["dispatch"]
+    assert rows["report"].status == "queued"
+    assert rows["report"].steps[0]["run"] == "echo skipped"
+
+
+@pytest.mark.asyncio
 async def test_a_caller_that_runs_keeps_the_called_job_names(
     monkeypatch, executable_workflow, db_session, test_user,  # noqa: F811
 ):

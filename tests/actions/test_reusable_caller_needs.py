@@ -107,3 +107,71 @@ def test_the_call_result_is_the_worst_of_its_jobs():
         "call / b": {"result": "failure", "outputs": {}},
     }
     assert needs_alias_entries(aliases, needs)["call"]["result"] == "failure"
+
+
+INNER = {
+    "on": {"workflow_call": {}},
+    "jobs": {"x": {"runs-on": ["self-hosted"], "steps": [{"run": "echo"}]}},
+}
+
+MID = {
+    "on": {"workflow_call": {}},
+    "jobs": {
+        "build": {"uses": "./.github/workflows/inner.yml"},
+        "after": {
+            "needs": ["build"],
+            "runs-on": ["self-hosted"],
+            "steps": [{"run": "echo ${{ needs.build.result }}"}],
+        },
+    },
+}
+
+
+@pytest.mark.asyncio
+async def test_a_nested_caller_sharing_a_skipped_top_level_callers_key_is_waited_for(
+    monkeypatch, executable_workflow, db_session, test_user,  # noqa: F811
+):
+    """``deploy / after`` needs the ``build`` call inside mid.yml, not the
+    run's own skipped ``build`` caller that happens to share its key."""
+    async def fake_detect(path, ref="HEAD"):
+        return [
+            {"_path": ".github/workflows/inner.yml", **INNER},
+            {"_path": ".github/workflows/mid.yml", **MID},
+        ]
+
+    monkeypatch.setattr(workflow_service, "detect_workflows", fake_detect)
+    workflow_yaml = await workflow_service.materialize_reusable_workflows({
+        "name": "caller",
+        "jobs": {
+            "build": {"if": "false", "uses": "./.github/workflows/inner.yml"},
+            "deploy": {"uses": "./.github/workflows/mid.yml"},
+        },
+    }, "caller.git", "main", None)
+    _repo, workflow, _ = executable_workflow
+    run = await create_workflow_run(
+        db_session, workflow, workflow_yaml, event="push",
+        payload={"repository": {"full_name": "testuser/actions-exec-repo"}},
+        actor=test_user, head_sha="caller123", head_branch="main",
+    )
+    await db_session.commit()
+
+    rows = {
+        r.job_key: r for r in (await db_session.execute(
+            select(WorkflowJob).where(WorkflowJob.run_id == run.id)
+        )).scalars().all()
+    }
+    assert sorted(rows) == ["build", "deploy / after", "deploy / build / x"]
+    assert rows["build"].conclusion == "skipped"
+    assert rows["deploy / after"].needs == ["deploy / build / x"]
+    assert rows["deploy / after"].status == "waiting"
+
+    rows["deploy / build / x"].status = "completed"
+    rows["deploy / build / x"].conclusion = "success"
+    await db_session.commit()
+    await dispatch_ready_jobs(db_session, run.id)
+    await db_session.commit()
+    after = (await db_session.execute(
+        select(WorkflowJob).where(WorkflowJob.run_id == run.id, WorkflowJob.job_key == "deploy / after")
+    )).scalar_one()
+    assert after.status == "queued"
+    assert after.steps[0]["run"] == "echo success"

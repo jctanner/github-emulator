@@ -4,6 +4,7 @@ import asyncio
 import copy
 import itertools
 import logging
+import os
 import re
 import uuid
 from dataclasses import dataclass
@@ -246,7 +247,31 @@ def _reusable_placeholder(key: str, config: dict, why: str) -> dict:
     }
     placeholder["steps"] = _refusal_steps("Resolve reusable workflow", why)
     placeholder["name"] = placeholder.get("name", f"{key} (reusable workflow)")
+    # Failed when it would start, with no runner: GitHub fails a run whose
+    # reusable workflow cannot be resolved without assigning a runner, and a
+    # placeholder sent to one waits forever on a stack that lacks its labels.
+    placeholder["_refused"] = why
     return placeholder
+
+
+def fail_refused_job(job: WorkflowJob, why: str) -> None:
+    """Conclude a job that is not run as failed, the reason in its log.
+
+    Its one step, the refusal, is recorded as the failed one; the reason is
+    also the job's log, which is where GitHub shows it for such a run.
+    """
+    job.status = "completed"
+    job.conclusion = "failure"
+    job.completed_at = datetime.now(timezone.utc)
+    job.steps = [
+        {**step, "status": "completed", "conclusion": "failure"}
+        for step in (job.steps or [])
+    ]
+    job.pending_render = None
+    log_dir = os.path.join(settings.DATA_DIR, "logs", "jobs")
+    os.makedirs(log_dir, exist_ok=True)
+    with open(os.path.join(log_dir, f"{job.id}.log"), "w", encoding="utf-8") as log:
+        log.write(f"##[error]{why}\n")
 
 
 def build_job_graph(workflow_yaml: dict) -> list[dict]:
@@ -316,7 +341,9 @@ def build_job_graph(workflow_yaml: dict) -> list[dict]:
             "_workflow_sha": config.get("_workflow_sha", ""),
             "_workflow_ref": config.get("_workflow_ref", ""),
             "_caller": config.get("_caller"),
+            "_refused": config.get("_refused"),
             "_needs_aliases": config.get("_needs_aliases") or {},
+            "_caller_needs": config.get("_caller_needs") or {},
             "timeout_minutes": config.get("timeout-minutes", 360),
         })
 
@@ -793,7 +820,17 @@ async def _materialize_reusable_jobs(
         for need in needs:
             if need in callers:
                 remapped.extend(callers[need]["jobs"].values())
-                job.setdefault("_needs_aliases", {})[need] = copy.deepcopy(callers[need])
+                # A called job already holding an alias under this key got it
+                # from its own workflow, where the key names that workflow's
+                # caller: keep it, since that is the job its needs.<key> reads.
+                job.setdefault("_needs_aliases", {}).setdefault(need, copy.deepcopy(callers[need]))
+                if depth == 0:
+                    # The run's own callers, by key, and the called jobs a
+                    # need on each became. Only these are decided at run
+                    # creation, so only these can be pointed back at a
+                    # skipped caller's job; a key from a nested workflow may
+                    # coincide with one of them and must not be.
+                    job.setdefault("_caller_needs", {})[need] = list(callers[need]["jobs"].values())
             else:
                 remapped.append(need)
         job["needs"] = list(dict.fromkeys(remapped))
@@ -1294,18 +1331,30 @@ async def create_workflow_run(
 
     job_list = build_job_graph(workflow_yaml)
     skipped_job_created = False
+    # Placeholders for reusable calls that could not be inlined, failed once
+    # the run is flushed and their rows have ids for a log.
+    refused_jobs: list[tuple[WorkflowJob, str]] = []
     # Caller jobs of reusable workflows, by key: True when the call runs.
     caller_runs: dict[str, bool] = {}
 
     for job_def in job_list:
         # A need on a caller became a need on its called jobs. A skipped
         # caller creates none of them, only one skipped job under its own
-        # key, so point the need back at that job.
-        for alias_caller, alias in (job_def.get("_needs_aliases") or {}).items():
-            if caller_runs.get(alias_caller) is False:
-                called = set(alias.get("jobs", {}).values())
-                kept = [need for need in job_def.get("needs", []) if need not in called]
-                job_def["needs"] = [*kept, alias_caller]
+        # key, so point the need back at that job. Its needs.<caller> is then
+        # that job's own entry (result "skipped"), not one built from called
+        # jobs that were never created, so the alias for it is dropped.
+        for top_caller, called_jobs in (job_def.get("_caller_needs") or {}).items():
+            if caller_runs.get(top_caller) is not False:
+                continue
+            called = set(called_jobs)
+            kept = [need for need in job_def.get("needs", []) if need not in called]
+            job_def["needs"] = [*kept, top_caller]
+            aliases = job_def.get("_needs_aliases") or {}
+            alias = aliases.get(top_caller)
+            if alias is not None and set(alias.get("jobs", {}).values()) == called:
+                job_def["_needs_aliases"] = {
+                    name: value for name, value in aliases.items() if name != top_caller
+                }
         caller = job_def.get("_caller")
         # A caller with needs is decided at promotion; its called jobs carry
         # its condition and are skipped one by one there.
@@ -1394,6 +1443,9 @@ async def create_workflow_run(
                     "_workflow_sha": job_config.get("_workflow_sha") or "",
                     "_needs_aliases": job_config.get("_needs_aliases") or {},
                 }
+                if job_config.get("_refused"):
+                    # Failed at promotion, once its condition is known.
+                    pending_render["refused"] = job_config["_refused"]
                 if dynamic_matrix is not None:
                     # Expanded at promotion, once needs.*.outputs exist. The
                     # name and concurrency group read matrix.*, so they are
@@ -1471,10 +1523,16 @@ async def create_workflow_run(
                 workflow_ref=job_config.get("_workflow_ref") or None,
             )
             db.add(job)
+            if job_config.get("_refused") and not needs and conclusion is None:
+                refused_jobs.append((job, job_config["_refused"]))
 
     await db.flush()
-    # A run containing only skipped jobs should finish immediately. Also
-    # propagate skipped dependencies before the first runner poll.
+    for job, why in refused_jobs:
+        fail_refused_job(job, why)
+        skipped_job_created = True
+    # A run containing only skipped (or refused) jobs should finish
+    # immediately. Also propagate those to dependents before the first
+    # runner poll.
     if skipped_job_created:
         await dispatch_ready_jobs(db, run.id)
         await check_run_completion(db, run.id)

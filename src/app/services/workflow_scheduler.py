@@ -45,6 +45,7 @@ async def dispatch_ready_jobs(db: AsyncSession, run_id: int) -> list[WorkflowJob
         build_needs_context,
         build_run_expression_context,
         build_steps_data,
+        fail_refused_job,
         needs_alias_entries,
         render_job_labels,
         strategy_context,
@@ -163,6 +164,12 @@ async def dispatch_ready_jobs(db: AsyncSession, run_id: int) -> list[WorkflowJob
                     ]
                     job.pending_render = None
                     continue
+                if pending.get("refused"):
+                    # A reusable call that could not be inlined: failed here,
+                    # without a runner, and its dependents decided next pass.
+                    fail_refused_job(job, pending["refused"])
+                    expansion_failed = True
+                    continue
                 instances = [(job, context)]
                 if pending.get("dynamic_matrix") is not None:
                     instances = await _expand_dynamic_matrix(db, job, pending, context)
@@ -193,8 +200,8 @@ async def dispatch_ready_jobs(db: AsyncSession, run_id: int) -> list[WorkflowJob
         await db.flush()
 
     if expansion_failed:
-        # A job that failed to expand is a finished, unsuccessful need: the
-        # jobs behind it (a cleanup with always(), or ones to skip) are
+        # A job that failed to expand, or was refused, is a finished,
+        # unsuccessful need: the jobs behind it (a cleanup with always(), or ones to skip) are
         # decided now, since no job will complete to trigger another pass.
         promoted.extend(await dispatch_ready_jobs(db, run_id))
 
