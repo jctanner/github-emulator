@@ -122,3 +122,26 @@ async def test_a_team_maintainer_manages_their_own_team_only(client, admin_token
         f"{API}/orgs/acme/teams/{other.json()['slug']}/memberships/admin", headers=auth_headers(test_token), json={}
     )
     assert elsewhere.status_code == 403
+
+
+@pytest.mark.asyncio
+async def test_a_maintainer_removed_from_the_org_manages_nothing(client, admin_token, test_user, test_token):
+    slug = await _org_with_team(client, admin_token)
+    await client.put(f"{API}/orgs/acme/memberships/testuser", headers=auth_headers(admin_token), json={"role": "member"})
+    made = await client.put(
+        f"{API}/orgs/acme/teams/{slug}/memberships/testuser", headers=auth_headers(admin_token), json={"role": "maintainer"}
+    )
+    assert made.status_code == 200, made.text
+    removed = await client.delete(f"{API}/orgs/acme/memberships/testuser", headers=auth_headers(admin_token))
+    assert removed.status_code == 204, removed.text
+
+    # Leaving the organization took the team membership with it.
+    gone = await client.get(f"{API}/orgs/acme/teams/{slug}/memberships/testuser", headers=auth_headers(admin_token))
+    assert gone.status_code == 404
+    url = f"{API}/orgs/acme/teams/{slug}/memberships/admin"
+    assert (await client.put(url, headers=auth_headers(test_token), json={})).status_code == 403
+    assert (await client.delete(url, headers=auth_headers(test_token))).status_code == 403
+
+    # Rejoining the organization does not bring the maintainer role back.
+    await client.put(f"{API}/orgs/acme/memberships/testuser", headers=auth_headers(admin_token), json={"role": "member"})
+    assert (await client.put(url, headers=auth_headers(test_token), json={})).status_code == 403

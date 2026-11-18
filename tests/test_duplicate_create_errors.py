@@ -155,3 +155,47 @@ async def test_creating_an_existing_ref_is_refused(client, test_user, test_token
         headers=auth_headers(test_token),
     )
     assert ref.json()["object"]["sha"] == main_sha
+
+
+async def test_a_label_with_non_ascii_capitals_is_found_by_its_name(client, test_user, test_token):
+    """SQLite's lower() folds ASCII only, so the exact spelling must match too."""
+    from urllib.parse import quote
+
+    await _repo(client, test_token, "unicode-labels")
+    assert (await _create_label(client, test_token, "unicode-labels", "Étiquette")).status_code == 201
+
+    got = await client.get(f"{API}/repos/testuser/unicode-labels/labels/{quote('Étiquette')}", headers=auth_headers(test_token))
+    assert got.status_code == 200, got.text
+    issue = await client.post(
+        f"{API}/repos/testuser/unicode-labels/issues", json={"title": "t", "labels": ["Étiquette"]},
+        headers=auth_headers(test_token),
+    )
+    assert issue.status_code == 201, issue.text
+    assert [label["name"] for label in issue.json()["labels"]] == ["Étiquette"]
+    listed = await client.get(f"{API}/repos/testuser/unicode-labels/labels", headers=auth_headers(test_token))
+    assert [label["name"] for label in listed.json()] == ["Étiquette"]
+
+
+async def test_labels_differing_only_in_case_from_an_older_database(client, db_session, test_user, test_token):
+    """A database written before names compared case-insensitively can hold
+    both "bug" and "BUG"; each is found by its own spelling, without a 500."""
+    from sqlalchemy import select
+
+    from app.models.label import Label
+    from app.models.repository import Repository
+
+    await _repo(client, test_token, "case-legacy")
+    repo = (await db_session.execute(select(Repository).where(Repository.full_name == "testuser/case-legacy"))).scalar_one()
+    db_session.add_all([Label(repo_id=repo.id, name="bug", color="ededed"), Label(repo_id=repo.id, name="BUG", color="d73a4a")])
+    await db_session.commit()
+
+    for name, color in (("bug", "ededed"), ("BUG", "d73a4a")):
+        got = await client.get(f"{API}/repos/testuser/case-legacy/labels/{name}", headers=auth_headers(test_token))
+        assert got.status_code == 200, got.text
+        assert got.json()["color"] == color
+    issue = await client.post(
+        f"{API}/repos/testuser/case-legacy/issues", json={"title": "t", "labels": ["BUG"]}, headers=auth_headers(test_token)
+    )
+    assert issue.status_code == 201, issue.text
+    assert [label["color"] for label in issue.json()["labels"]] == ["d73a4a"]
+    assert (await client.delete(f"{API}/repos/testuser/case-legacy/labels/BUG", headers=auth_headers(test_token))).status_code == 204

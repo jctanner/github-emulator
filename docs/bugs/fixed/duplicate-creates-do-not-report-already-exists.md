@@ -31,7 +31,11 @@ every run and treat `errors[].code == "already_exists"` as "nothing to do".
   case-insensitively (`_name_is`). Create, and a rename onto another label's
   name, raise `ValidationError` with the `already_exists` error. A rename
   that only changes a label's own case is allowed. `PUT /issues/{n}/labels`
-  applies `bug` and `Bug` in one request once.
+  applies `bug` and `Bug` in one request once. SQLite's `lower()` folds
+  ASCII letters only, so a name also matches its exact spelling, and a
+  name with non-ASCII capitals is found. A database written before this
+  can hold both `bug` and `BUG`: a lookup prefers the exact spelling and
+  never fails on the second row.
 - `src/app/api/releases.py`: the duplicate-asset error is a
   `ValidationError`, so `errors` is at the top level.
 - `src/app/api/git_refs.py`: `create_ref` refuses an existing ref with

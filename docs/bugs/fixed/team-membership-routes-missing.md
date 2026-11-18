@@ -20,6 +20,9 @@ every such check failed.
   the organization. The emulator has no team invitations, so that case
   answers 422 rather than creating a membership that does not exist.
 - `DELETE` lets the same callers remove a user, and answers 204. A
-  maintainer of one team gets 403 on another team's members.
+  maintainer of one team gets 403 on another team's members, and a
+  maintainer must still be an active member of the organization.
+  Leaving the organization removes a user's team memberships in it, as
+  on GitHub.
 
 Tests: `tests/test_team_memberships.py`.

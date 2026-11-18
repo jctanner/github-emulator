@@ -197,13 +197,20 @@ async def _team_membership(team: Team, target: User, db) -> TeamMembership | Non
 
 async def _require_team_manager(organisation, team: Team, user: User, db) -> None:
     """Who may add, change or remove a team's members: org admins, site admins
-    and the team's own maintainers, as on GitHub."""
-    from app.api.orgs import _is_org_admin
+    and the team's own maintainers who are still active members of the
+    organization, as on GitHub."""
+    from app.api.orgs import _get_membership, _is_org_admin
 
     if await _is_org_admin(organisation, user, db):
         return
     own = await _team_membership(team, user, db)
-    if own is None or own.role != "maintainer":
+    org_membership = await _get_membership(organisation, user, db)
+    if (
+        own is None
+        or own.role != "maintainer"
+        or org_membership is None
+        or org_membership.state != "active"
+    ):
         raise HTTPException(
             status_code=403, detail="You must be an organization owner or a maintainer of this team"
         )

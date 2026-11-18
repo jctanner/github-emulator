@@ -368,11 +368,20 @@ async def _remove_membership(org: str, username: str, user, db) -> Response:
         raise HTTPException(status_code=404, detail="Not Found")
     await _guard_last_admin(organisation, membership, db)
     await db.delete(membership)
-    # Leaving the organization removes the roles held in it, as on GitHub.
+    # Leaving the organization removes the roles and team memberships held
+    # in it, as on GitHub.
     await db.execute(
         sa_delete(OrgRoleAssignment).where(
             OrgRoleAssignment.org_id == organisation.id,
             OrgRoleAssignment.user_id == target.id,
+        )
+    )
+    from app.models.team import Team, TeamMembership
+
+    await db.execute(
+        sa_delete(TeamMembership).where(
+            TeamMembership.user_id == target.id,
+            TeamMembership.team_id.in_(select(Team.id).where(Team.org_id == organisation.id)),
         )
     )
     await db.commit()
