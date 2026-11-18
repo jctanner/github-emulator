@@ -581,8 +581,11 @@ async def _poll_for_jobs(
         # REPEATABLE READ or SERIALIZABLE a transaction keeps the snapshot of
         # its first read, so the next pass would never see a job queued
         # meanwhile; SQLite's driver happened not to hold reads in a
-        # transaction. Committing also expires the loaded objects.
+        # transaction. The session does not expire objects on commit, so
+        # expire them too: the next pass reads fresh rows, not the objects
+        # the identity map kept from this one.
         await db.commit()
+        db.expire_all()
         await asyncio.sleep(2)
 
     return Response(status_code=204)
