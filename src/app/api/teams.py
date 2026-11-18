@@ -195,6 +195,20 @@ async def _team_membership(team: Team, target: User, db) -> TeamMembership | Non
     ).scalar_one_or_none()
 
 
+async def _require_team_manager(organisation, team: Team, user: User, db) -> None:
+    """Who may add, change or remove a team's members: org admins, site admins
+    and the team's own maintainers, as on GitHub."""
+    from app.api.orgs import _is_org_admin
+
+    if await _is_org_admin(organisation, user, db):
+        return
+    own = await _team_membership(team, user, db)
+    if own is None or own.role != "maintainer":
+        raise HTTPException(
+            status_code=403, detail="You must be an organization owner or a maintainer of this team"
+        )
+
+
 def _team_membership_json(membership: TeamMembership, team: Team, org_login: str, target: User) -> dict:
     return {
         "url": f"{BASE}/api/v3/orgs/{org_login}/teams/{team.slug}/memberships/{target.login}",
@@ -235,17 +249,18 @@ async def get_team_membership(org: str, team_slug: str, username: str, db: DbSes
 async def set_team_membership(
     org: str, team_slug: str, username: str, db: DbSession, user: AuthUser, body: dict | None = None,
 ):
-    """Add a user to a team or change their team role (org admins, site admins).
+    """Add a user to a team or change their team role (org admins, site
+    admins and the team's maintainers).
 
     GitHub invites a user who is not yet in the organization (state
     "pending"); the emulator has no team invitations, so it refuses that
     case with 422 instead of reporting a membership that does not exist.
     """
-    from app.api.orgs import _get_membership, _get_org_or_404, _get_user_or_404, _require_org_admin
+    from app.api.orgs import _get_membership, _get_org_or_404, _get_user_or_404
 
     organisation = await _get_org_or_404(org, db)
-    await _require_org_admin(organisation, user, db)
     team = await _team_by_slug_or_404(organisation, team_slug, db)
+    await _require_team_manager(organisation, team, user, db)
     target = await _get_user_or_404(username, db)
     role = (body or {}).get("role", "member")
     if role not in TEAM_ROLES:
@@ -269,14 +284,15 @@ async def set_team_membership(
 
 @router.delete("/orgs/{org}/teams/{team_slug}/memberships/{username}", status_code=204)
 async def remove_team_membership(org: str, team_slug: str, username: str, db: DbSession, user: AuthUser):
-    """Remove a user from a team (org admins, site admins)."""
+    """Remove a user from a team (org admins, site admins and the team's
+    maintainers)."""
     from fastapi import Response
 
-    from app.api.orgs import _get_org_or_404, _get_user_or_404, _require_org_admin
+    from app.api.orgs import _get_org_or_404, _get_user_or_404
 
     organisation = await _get_org_or_404(org, db)
-    await _require_org_admin(organisation, user, db)
     team = await _team_by_slug_or_404(organisation, team_slug, db)
+    await _require_team_manager(organisation, team, user, db)
     target = await _get_user_or_404(username, db)
     membership = await _team_membership(team, target, db)
     if membership is None:

@@ -106,6 +106,7 @@ All settings are driven by environment variables with the `GITHUB_EMULATOR_` pre
 | `GITHUB_EMULATOR_APP_JWT_PERMISSIVE` | `true` | Skip App JWT signature verification; set `false` for strict verification |
 | `GITHUB_EMULATOR_SSH_ENABLED` | `true` | Enable/disable the SSH transport |
 | `GITHUB_EMULATOR_SSH_PORT` | `2222` | SSH server listen port |
+| `GITHUB_EMULATOR_RATE_LIMIT` | `5000` | Requests per token per hour that the rate-limit headers and `GET /rate_limit` report. Nothing is refused at zero; raise it so a client that paces itself on the headers does not wait |
 
 The Compose stack maps the HTTP API port from `${PORT:-8000}`. For example,
 `make CONTAINER_ENGINE=podman PORT=9000 up` exposes the service on port 9000

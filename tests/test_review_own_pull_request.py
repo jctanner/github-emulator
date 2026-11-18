@@ -85,3 +85,29 @@ async def test_the_author_cannot_submit_a_pending_review_as_approve_or_request_c
     commented = await submit(url, json={"event": "COMMENT"}, headers=auth_headers(test_token))
     assert commented.status_code == 200, commented.text
     assert commented.json()["state"] == "COMMENTED"
+
+
+@pytest.mark.parametrize("method", ["post", "put"])
+async def test_only_the_reviewer_submits_a_pending_review_and_only_once(
+    client, test_user, test_token, db_session, method,
+):
+    """Another user cannot submit the author's pending review (it is not
+    theirs to see), and a submitted review cannot be submitted again."""
+    pr = await _create_pr(client, test_token, f"pending-owner-{method}")
+    pending = await client.post(_reviews(f"pending-owner-{method}", pr["number"]), json={"body": "draft"},
+                                headers=auth_headers(test_token))
+    review_id = pending.json()["id"]
+    url = f"{_reviews(f'pending-owner-{method}', pr['number'])}/{review_id}/events"
+    other = await _make_user(db_session, f"other-{method}")
+    submit = getattr(client, method)
+
+    taken = await submit(url, json={"event": "APPROVE"}, headers=auth_headers(other))
+    assert taken.status_code == 404, taken.text
+    still = await client.get(f"{_reviews(f'pending-owner-{method}', pr['number'])}/{review_id}",
+                             headers=auth_headers(test_token))
+    assert still.json()["state"] == "PENDING"
+
+    done = await submit(url, json={"event": "COMMENT"}, headers=auth_headers(test_token))
+    assert done.status_code == 200, done.text
+    again = await submit(url, json={"event": "COMMENT", "body": "changed"}, headers=auth_headers(test_token))
+    assert again.status_code == 422, again.text

@@ -200,3 +200,49 @@ async def test_names_that_are_not_branch_names(name):
     from app.services.cross_repo_pulls import is_branch_name
 
     assert not await is_branch_name(name)
+
+
+@pytest.mark.asyncio
+async def test_compare_with_slashed_branch_names(client, test_token, repo):
+    main = await _main_sha(client, test_token, repo)
+    await _branch(client, test_token, repo, "feature/x", main)
+    head = await _put(client, test_token, repo, "x.txt", "x\n", "feature/x")
+
+    for basehead in ("main...feature/x", "main...testuser:feature/x"):
+        resp = await client.get(f"{API}/repos/{repo}/compare/{basehead}", headers=auth_headers(test_token))
+        assert resp.status_code == 200, (basehead, resp.text)
+        assert [c["sha"] for c in resp.json()["commits"]] == [head]
+
+
+@pytest.mark.asyncio
+async def test_a_fork_branch_with_a_slash_compares(client, test_token):
+    headers = auth_headers(test_token)
+    assert (await client.post(f"{API}/orgs", json={"login": "cmp-org3"}, headers=headers)).status_code == 201
+    created = await client.post(f"{API}/orgs/cmp-org3/repos", json={"name": "base", "auto_init": True}, headers=headers)
+    assert created.status_code == 201, created.text
+    assert (await client.post(f"{API}/repos/cmp-org3/base/forks", json={}, headers=headers)).status_code == 202
+    main = await _main_sha(client, test_token, "cmp-org3/base")
+    await _branch(client, test_token, "testuser/base", "fix/y", main)
+    head = await _put(client, test_token, "testuser/base", "y.txt", "y\n", "fix/y")
+
+    resp = await client.get(f"{API}/repos/cmp-org3/base/compare/main...testuser:fix/y", headers=headers)
+
+    assert resp.status_code == 200, resp.text
+    assert [c["sha"] for c in resp.json()["commits"]] == [head]
+
+
+@pytest.mark.asyncio
+async def test_compare_pages_link_to_each_other(client, test_token, repo):
+    main = await _main_sha(client, test_token, repo)
+    await _branch(client, test_token, repo, "two", main)
+    first = await _put(client, test_token, repo, "a.txt", "a\n", "two")
+    second = await _put(client, test_token, repo, "b.txt", "b\n", "two")
+    url = f"{API}/repos/{repo}/compare/main...two"
+
+    page1 = await client.get(url, params={"per_page": 1}, headers=auth_headers(test_token))
+    assert [c["sha"] for c in page1.json()["commits"]] == [first]
+    assert 'rel="next"' in page1.headers["link"] and "page=2" in page1.headers["link"]
+
+    page2 = await client.get(url, params={"per_page": 1, "page": 2}, headers=auth_headers(test_token))
+    assert [c["sha"] for c in page2.json()["commits"]] == [second]
+    assert 'rel="next"' not in page2.headers["link"] and 'rel="prev"' in page2.headers["link"]

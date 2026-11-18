@@ -251,8 +251,11 @@ async def submit_review(
         select(Review).where(Review.id == review_id, Review.pull_request_id == pr.id)
     )
     review = result.scalar_one_or_none()
-    if review is None:
+    # A pending review is its author's alone: to anyone else it does not exist.
+    if review is None or review.user_id != user.id:
         raise HTTPException(status_code=404, detail="Not Found")
+    if review.state != "PENDING":
+        raise HTTPException(status_code=422, detail="Only a pending review can be submitted")
 
     event = body.get("event", "").upper()
     if event not in ("APPROVE", "REQUEST_CHANGES", "COMMENT"):

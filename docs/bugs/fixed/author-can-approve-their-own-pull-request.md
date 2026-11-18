@@ -45,4 +45,8 @@ on their own pull request now have a second user submit the review. What
 they check (the event state, the review's comments, the triggered workflow
 event) is unchanged.
 
+Submitting a pending review also checks, first, that it is the caller's
+own review (another user's pending review answers 404, as it is not theirs
+to see) and that it is still pending (422 otherwise).
+
 Tests: `tests/test_review_own_pull_request.py`.

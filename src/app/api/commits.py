@@ -4,9 +4,12 @@ import asyncio
 import os
 
 from fastapi import APIRouter, HTTPException, Query, Request
+from fastapi.encoders import jsonable_encoder
+from fastapi.responses import JSONResponse
 from sqlalchemy import select
 
 from app.api.deps import CurrentUser, DbSession, get_repo_or_404
+from app.api.pagination import pagination_links
 from app.config import settings
 from app.git.bare_repo import (
     get_ahead_behind,
@@ -248,7 +251,8 @@ async def _commit_objects(
     ]
 
 
-@router.get("/repos/{owner}/{repo}/compare/{basehead}")
+# ``basehead`` is a path: either side may be a branch with "/" in it.
+@router.get("/repos/{owner}/{repo}/compare/{basehead:path}")
 async def compare_commits(
     owner: str,
     repo: str,
@@ -304,12 +308,15 @@ async def compare_commits(
     commit_shas = (
         await _git(repository.disk_path, "rev-list", "--reverse", f"{base_sha}..{head_sha}")
     ).split()
+    link = ""
     if page is None and per_page is None:
         commit_shas = commit_shas[:250]
         first_page = True
     else:
         size = per_page or 30
         start = ((page or 1) - 1) * size
+        # GitHub links the other pages of the commit list, as for any list.
+        link = pagination_links(request, page or 1, size, len(commit_shas))
         commit_shas = commit_shas[start:start + size]
         first_page = (page or 1) == 1
     commits = await _commit_objects(repository, owner, repo, commit_shas, verified)
@@ -322,7 +329,7 @@ async def compare_commits(
         )
 
     api = f"{BASE}/api/v3"
-    return {
+    body = {
         "url": f"{api}/repos/{owner}/{repo}/compare/{basehead}",
         "html_url": f"{BASE}/{owner}/{repo}/compare/{basehead}",
         "permalink_url": f"{BASE}/{owner}/{repo}/compare/{base_sha}...{head_sha}",
@@ -337,3 +344,4 @@ async def compare_commits(
         "commits": commits,
         "files": files,
     }
+    return JSONResponse(content=jsonable_encoder(body), headers={"Link": link} if link else None)

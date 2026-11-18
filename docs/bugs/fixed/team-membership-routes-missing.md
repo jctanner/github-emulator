@@ -15,10 +15,11 @@ every such check failed.
   otherwise. The user themselves, active members of the organization and
   site admins can see it. A secret team is visible only to its members,
   org admins and site admins, so to anyone else it answers 404.
-- `PUT` lets org admins and site admins add a user or change their team
+- `PUT` lets org admins, site admins and the team's maintainers add a user or change their team
   role (`member` or `maintainer`). GitHub invites a user who is not yet in
   the organization. The emulator has no team invitations, so that case
   answers 422 rather than creating a membership that does not exist.
-- `DELETE` lets org admins and site admins remove a user, and answers 204.
+- `DELETE` lets the same callers remove a user, and answers 204. A
+  maintainer of one team gets 403 on another team's members.
 
 Tests: `tests/test_team_memberships.py`.

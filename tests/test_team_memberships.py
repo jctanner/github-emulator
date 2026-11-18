@@ -94,3 +94,31 @@ async def test_a_secret_team_is_hidden_from_org_members_outside_it(client, admin
     joined = await client.put(f"{API}/orgs/acme/teams/{slug}/memberships/testuser", headers=auth_headers(admin_token), json={})
     assert joined.status_code == 200, joined.text
     assert (await client.get(url, headers=auth_headers(test_token))).status_code == 200
+
+
+@pytest.mark.asyncio
+async def test_a_team_maintainer_manages_their_own_team_only(client, admin_token, test_user, test_token):
+    slug = await _org_with_team(client, admin_token)
+    other = await client.post(f"{API}/orgs/acme/teams", headers=auth_headers(admin_token), json={"name": "other"})
+    assert other.status_code == 201, other.text
+    await client.put(f"{API}/orgs/acme/memberships/testuser", headers=auth_headers(admin_token), json={"role": "member"})
+    made = await client.put(
+        f"{API}/orgs/acme/teams/{slug}/memberships/testuser", headers=auth_headers(admin_token), json={"role": "maintainer"}
+    )
+    assert made.status_code == 200, made.text
+
+    # A maintainer adds, changes and removes members of their own team.
+    added = await client.put(f"{API}/orgs/acme/teams/{slug}/memberships/admin", headers=auth_headers(test_token), json={})
+    assert added.status_code == 200, added.text
+    changed = await client.put(
+        f"{API}/orgs/acme/teams/{slug}/memberships/admin", headers=auth_headers(test_token), json={"role": "maintainer"}
+    )
+    assert changed.json()["role"] == "maintainer"
+    removed = await client.delete(f"{API}/orgs/acme/teams/{slug}/memberships/admin", headers=auth_headers(test_token))
+    assert removed.status_code == 204
+
+    # Not another team's.
+    elsewhere = await client.put(
+        f"{API}/orgs/acme/teams/{other.json()['slug']}/memberships/admin", headers=auth_headers(test_token), json={}
+    )
+    assert elsewhere.status_code == 403

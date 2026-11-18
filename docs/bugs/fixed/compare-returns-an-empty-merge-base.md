@@ -38,6 +38,10 @@ helpers in `src/app/git/bare_repo.py` (`get_merge_base`,
   histories are `404 No common ancestor between base and head.`
 - `get_commit` and compare share one helper for the per-file URLs.
 
+Either side may name a branch with `/` in it (`main...feature/x`,
+`main...owner:fix/y`). A paginated comparison sends a `Link` header to the
+other pages of `commits`, as any GitHub list does.
+
 ## Tests
 
 - `tests/test_compare_api.py`
@@ -45,4 +49,7 @@ helpers in `src/app/git/bare_repo.py` (`get_merge_base`,
   `test_compare_reports_behind_diverged_and_identical`,
   `test_compare_accepts_shas_and_the_owner_prefix`,
   `test_compare_with_a_fork_branch`,
-  `test_compare_with_an_unknown_ref_is_not_found`).
+  `test_compare_with_an_unknown_ref_is_not_found`,
+  `test_compare_with_slashed_branch_names`,
+  `test_a_fork_branch_with_a_slash_compares`,
+  `test_compare_pages_link_to_each_other`).
