@@ -7,8 +7,7 @@ import pytest
 from sqlalchemy import select
 
 from app.config import settings
-from app.models.actions import Runner
-from app.models.actions import Workflow, WorkflowJob, WorkflowRun
+from app.models.actions import Runner, Workflow, WorkflowJob, WorkflowRun
 from app.models.repository import Repository
 from app.services.workflow_service import create_workflow_run
 from tests.conftest import API, auth_headers
