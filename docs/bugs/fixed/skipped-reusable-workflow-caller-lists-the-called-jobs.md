@@ -35,7 +35,8 @@ because no row carried that key, so it stayed waiting.
 - `create_workflow_run` evaluates a caller's `if:` once, when the caller has
   no `needs:`. When it is false, the run gets one skipped row, named after
   the caller and keyed by the caller's key, and none of the called jobs.
-  Jobs that need the caller are skipped through it as usual.
+  Jobs that need the caller are skipped through it as usual; one that runs
+  anyway (`if: always()`) reads `needs.<caller>.result` as `skipped`.
 - `workflow_scheduler.check_run_completion` concludes a run `skipped` when
   every job concluded `skipped`. Runs where some jobs ran keep their
   `success` or `failure` conclusion.
