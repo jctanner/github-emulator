@@ -21,7 +21,18 @@ if not logger.handlers:
     _handler = logging.StreamHandler()
     _handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(name)s: %(message)s"))
     logger.addHandler(_handler)
-    logger.setLevel(os.environ.get("GITHUB_EMULATOR_LOG_LEVEL", "INFO").upper())
+
+
+def _log_level(name: str) -> int:
+    """The level named by GITHUB_EMULATOR_LOG_LEVEL; INFO if logging does not know it."""
+    level = logging.getLevelName(name.strip().upper())
+    if isinstance(level, int):
+        return level
+    logger.warning("Unknown GITHUB_EMULATOR_LOG_LEVEL %r; using INFO", name)
+    return logging.INFO
+
+
+logger.setLevel(_log_level(os.environ.get("GITHUB_EMULATOR_LOG_LEVEL", "INFO")))
 
 
 @asynccontextmanager
@@ -92,11 +103,8 @@ async def _ensure_admin_user():
             await db.commit()
             await db.refresh(admin)
 
-            logger.info(
-                "Created admin user: %s (password: %s)",
-                settings.ADMIN_USERNAME,
-                settings.ADMIN_PASSWORD,
-            )
+            # Never the password: this line reaches the server log.
+            logger.info("Created admin user: %s", settings.ADMIN_USERNAME)
 
         token_hash = hash_token(settings.DEFAULT_ADMIN_TOKEN)
         result = await db.execute(
