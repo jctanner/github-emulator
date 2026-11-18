@@ -71,3 +71,30 @@ async def test_run_and_job_fields_github_fills(client, uses_workflow, test_token
     job = (await client.get(f"{base}/runs/{run.id}/jobs", headers=auth_headers(test_token))).json()["jobs"][0]
     assert job["head_sha"] == "abc123"
     assert job["created_at"]
+
+
+ATTEMPT_WORKFLOW = """
+on: push
+jobs:
+  only:
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo attempt ${{ github.run_attempt }}
+"""
+
+
+@pytest.mark.asyncio
+async def test_a_rerun_renders_its_own_attempt(client, db_session, test_user, test_token):
+    from app.services.workflow_service import process_push_event
+    from tests.actions.test_consolidation_bug_fixes import _repo_with_workflow
+    from tests.conftest import API, auth_headers
+
+    repository = await _repo_with_workflow(
+        client, test_token, db_session, name="attempt-repo", workflow=ATTEMPT_WORKFLOW)
+    original = (await process_push_event(db_session, repository, test_user, ref_name="main"))[0]
+    resp = await client.post(
+        f"{API}/repos/{repository.full_name}/actions/runs/{original.id}/rerun", headers=auth_headers(test_token))
+    assert resp.status_code == 201, resp.text
+    job = (await db_session.execute(
+        select(WorkflowJob).where(WorkflowJob.run_id == resp.json()["id"]))).scalar_one()
+    assert job.steps[0]["run"] == "echo attempt 2"

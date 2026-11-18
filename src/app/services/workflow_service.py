@@ -1068,6 +1068,7 @@ async def create_workflow_run(
     actor: User,
     head_sha: str,
     head_branch: str,
+    run_attempt: int = 1,
 ) -> WorkflowRun:
     """Create a WorkflowRun and its child WorkflowJob records."""
     count = (await db.execute(
@@ -1084,7 +1085,8 @@ async def create_workflow_run(
         event=event,
         status="queued",
         run_number=count + 1,
-        run_attempt=1,
+        # Set before the steps render: github.run_attempt is read from it.
+        run_attempt=run_attempt,
         actor_id=actor.id,
         trigger_payload=payload,
     )

@@ -680,9 +680,8 @@ async def rerun_workflow(
     )
     new_run = await create_workflow_run(
         db, workflow, workflow_yaml, run.event, payload, user,
-        run.head_sha, run.head_branch,
+        run.head_sha, run.head_branch, run_attempt=run.run_attempt + 1,
     )
-    new_run.run_attempt = run.run_attempt + 1
     await db.commit()
     await db.refresh(new_run)
     from app.services.workflow_service import dispatch_ready_jobs
