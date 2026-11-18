@@ -1,5 +1,6 @@
 """Tests for the Contents REST API endpoints."""
 
+import asyncio
 import base64
 
 import pytest
@@ -125,12 +126,152 @@ async def test_update_file(client, test_user, test_token, test_repo_with_init):
     new_content_b64 = base64.b64encode(b"Version 2\n").decode()
     update_resp = await client.put(
         f"{API}/repos/{owner}/{repo_name}/contents/version.txt",
-        json={"message": "Update", "content": new_content_b64},
+        json={"message": "Update", "content": new_content_b64, "sha": create_resp.json()["content"]["sha"]},
         headers=auth_headers(test_token),
     )
     assert update_resp.status_code == 200
     data = update_resp.json()
     assert "commit" in data
+
+
+def _put_body(text: str, **extra) -> dict:
+    return {"message": f"Write {text}", "content": base64.b64encode(text.encode()).decode(), **extra}
+
+
+async def _blob(client, owner, repo_name, path, headers, ref=None):
+    url = f"{API}/repos/{owner}/{repo_name}/contents/{path}" + (f"?ref={ref}" if ref else "")
+    return (await client.get(url, headers=headers)).json()
+
+
+@pytest.mark.asyncio
+async def test_update_file_sha_is_a_compare_and_swap(client, test_user, test_token, test_repo_with_init):
+    """An update needs the file's current blob sha, as on GitHub: a stale one is
+    409, a missing one is 422, and neither changes the file."""
+    owner, repo_name, _ = test_repo_with_init
+    headers = auth_headers(test_token)
+    url = f"{API}/repos/{owner}/{repo_name}/contents/lock.txt"
+
+    created = await client.put(url, json=_put_body("v1"), headers=headers)
+    assert created.status_code == 201
+    first_sha = created.json()["content"]["sha"]
+
+    updated = await client.put(url, json=_put_body("v2", sha=first_sha), headers=headers)
+    assert updated.status_code == 200
+    second_sha = updated.json()["content"]["sha"]
+
+    stale = await client.put(url, json=_put_body("v3", sha=first_sha), headers=headers)
+    assert stale.status_code == 409
+    assert stale.json()["message"] == f"lock.txt does not match {first_sha}"
+
+    missing = await client.put(url, json=_put_body("v4"), headers=headers)
+    assert missing.status_code == 422
+    assert "\"sha\" wasn't supplied" in missing.json()["message"]
+
+    current = await _blob(client, owner, repo_name, "lock.txt", headers)
+    assert current["sha"] == second_sha
+    assert base64.b64decode(current["content"]) == b"v2"
+
+
+@pytest.mark.asyncio
+async def test_concurrent_updates_with_the_same_sha_have_one_winner(client, test_user, test_token, test_repo_with_init):
+    """Two writers racing with the same sha: one 200, one 409, as on GitHub."""
+    owner, repo_name, _ = test_repo_with_init
+    headers = auth_headers(test_token)
+    url = f"{API}/repos/{owner}/{repo_name}/contents/lock.txt"
+    created = await client.put(url, json=_put_body("v1"), headers=headers)
+    sha = created.json()["content"]["sha"]
+
+    a, b = await asyncio.gather(
+        client.put(url, json=_put_body("writer-a", sha=sha), headers=headers),
+        client.put(url, json=_put_body("writer-b", sha=sha), headers=headers),
+    )
+    assert sorted([a.status_code, b.status_code]) == [200, 409]
+    winner = a if a.status_code == 200 else b
+    current = await _blob(client, owner, repo_name, "lock.txt", headers)
+    assert current["sha"] == winner.json()["content"]["sha"]
+
+
+@pytest.mark.asyncio
+async def test_create_file_ignores_an_unmatched_sha(client, test_user, test_token, test_repo_with_init):
+    """Creating a new path with a sha is still a create (201), as on GitHub."""
+    owner, repo_name, _ = test_repo_with_init
+    resp = await client.put(
+        f"{API}/repos/{owner}/{repo_name}/contents/fresh.txt",
+        json=_put_body("new", sha="0" * 40),
+        headers=auth_headers(test_token),
+    )
+    assert resp.status_code == 201
+
+
+@pytest.mark.asyncio
+async def test_update_file_sha_is_checked_on_the_named_branch(client, test_user, test_token, test_repo_with_init):
+    """With ``branch``, the sha is compared with that branch's copy of the file."""
+    owner, repo_name, _ = test_repo_with_init
+    headers = auth_headers(test_token)
+    url = f"{API}/repos/{owner}/{repo_name}/contents/lock.txt"
+
+    on_main = await client.put(url, json=_put_body("main"), headers=headers)
+    assert on_main.status_code == 201
+    main_sha = on_main.json()["content"]["sha"]
+    head = on_main.json()["commit"]["sha"]
+    ref = await client.post(
+        f"{API}/repos/{owner}/{repo_name}/git/refs",
+        json={"ref": "refs/heads/feature", "sha": head},
+        headers=headers,
+    )
+    assert ref.status_code == 201
+
+    on_feature = await client.put(url, json=_put_body("feature", sha=main_sha, branch="feature"), headers=headers)
+    assert on_feature.status_code == 200
+    feature_sha = on_feature.json()["content"]["sha"]
+
+    # main still holds main_sha, so main_sha is stale on feature and
+    # feature_sha is stale on main.
+    stale = await client.put(url, json=_put_body("x", sha=main_sha, branch="feature"), headers=headers)
+    assert stale.status_code == 409
+    wrong_branch = await client.put(url, json=_put_body("x", sha=feature_sha), headers=headers)
+    assert wrong_branch.status_code == 409
+    missing = await client.put(url, json=_put_body("x", branch="feature"), headers=headers)
+    assert missing.status_code == 422
+
+    assert (await _blob(client, owner, repo_name, "lock.txt", headers, ref="feature"))["sha"] == feature_sha
+    assert (await _blob(client, owner, repo_name, "lock.txt", headers))["sha"] == main_sha
+
+
+@pytest.mark.asyncio
+async def test_delete_file_sha_is_checked_on_the_named_branch(client, test_user, test_token, test_repo_with_init):
+    """DELETE with ``branch`` compares the sha with that branch's file: 409 on a
+    mismatch, 422 without a sha, and the file stays."""
+    owner, repo_name, _ = test_repo_with_init
+    headers = auth_headers(test_token)
+    url = f"{API}/repos/{owner}/{repo_name}/contents/lock.txt"
+
+    on_main = await client.put(url, json=_put_body("main"), headers=headers)
+    main_sha = on_main.json()["content"]["sha"]
+    ref = await client.post(
+        f"{API}/repos/{owner}/{repo_name}/git/refs",
+        json={"ref": "refs/heads/feature", "sha": on_main.json()["commit"]["sha"]},
+        headers=headers,
+    )
+    assert ref.status_code == 201
+    on_feature = await client.put(url, json=_put_body("feature", sha=main_sha, branch="feature"), headers=headers)
+    feature_sha = on_feature.json()["content"]["sha"]
+
+    stale = await client.request(
+        "DELETE", url, json={"message": "rm", "sha": main_sha, "branch": "feature"}, headers=headers,
+    )
+    assert stale.status_code == 409
+    assert stale.json()["message"] == f"lock.txt does not match {main_sha}"
+    missing = await client.request("DELETE", url, json={"message": "rm", "branch": "feature"}, headers=headers)
+    assert missing.status_code == 422
+    assert (await _blob(client, owner, repo_name, "lock.txt", headers, ref="feature"))["sha"] == feature_sha
+
+    ok = await client.request(
+        "DELETE", url, json={"message": "rm", "sha": feature_sha, "branch": "feature"}, headers=headers,
+    )
+    assert ok.status_code == 200
+    assert (await client.get(f"{url}?ref=feature", headers=headers)).status_code == 404
+    assert (await _blob(client, owner, repo_name, "lock.txt", headers))["sha"] == main_sha
 
 
 @pytest.mark.asyncio

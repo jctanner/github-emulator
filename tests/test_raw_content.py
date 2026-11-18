@@ -14,15 +14,17 @@ from tests.conftest import API, auth_headers
 
 
 async def _commit(client, token, full_name, path, text):
-    response = await client.put(
-        f"{API}/repos/{full_name}/contents/{path}",
-        json={
-            "message": f"add {path}",
-            "content": base64.b64encode(text.encode()).decode(),
-            "branch": "main",
-        },
-        headers=auth_headers(token),
-    )
+    url = f"{API}/repos/{full_name}/contents/{path}"
+    body = {
+        "message": f"add {path}",
+        "content": base64.b64encode(text.encode()).decode(),
+        "branch": "main",
+    }
+    # Updating an existing file needs its current blob sha, as on GitHub.
+    current = await client.get(f"{url}?ref=main", headers=auth_headers(token))
+    if current.status_code == 200:
+        body["sha"] = current.json()["sha"]
+    response = await client.put(url, json=body, headers=auth_headers(token))
     assert response.status_code in (200, 201), response.text
     return response.json()["commit"]["sha"]
 

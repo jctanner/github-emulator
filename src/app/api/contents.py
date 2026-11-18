@@ -212,18 +212,28 @@ async def create_or_update_file(
 
     # Get current tree
     is_new_file = True
+    current_sha = None
     try:
-        parent_sha = (await _git(repo_path, "rev-parse", branch)).strip()
-        tree_sha = (await _git(repo_path, "rev-parse", f"{branch}^{{tree}}")).strip()
+        parent_sha = (await _git(repo_path, "rev-parse", "--verify", f"refs/heads/{branch}")).strip()
+        tree_sha = (await _git(repo_path, "rev-parse", f"{parent_sha}^{{tree}}")).strip()
         # Check if the file already exists
         try:
-            await _git(repo_path, "rev-parse", f"{branch}:{path}")
+            current_sha = (await _git(repo_path, "rev-parse", f"{parent_sha}:{path}")).strip()
             is_new_file = False
         except RuntimeError:
             pass
     except RuntimeError:
         parent_sha = None
         tree_sha = None
+
+    # Updating an existing file needs its current blob sha, so a stale caller
+    # cannot overwrite a newer version. GitHub ignores ``sha`` on a create.
+    sha = body.get("sha")
+    if not is_new_file:
+        if not sha:
+            raise HTTPException(status_code=422, detail='Invalid request.\n\n"sha" wasn\'t supplied.')
+        if sha != current_sha:
+            raise HTTPException(status_code=409, detail=f"{path} does not match {sha}")
 
     # Build a new tree by applying the path through a temporary index.  Passing
     # a nested path directly to ``git mktree`` fails because mktree accepts only
@@ -288,8 +298,13 @@ async def create_or_update_file(
 
     commit_sha = (await _git(repo_path, *env_args)).strip()
 
-    # Update ref
-    await _git(repo_path, "update-ref", f"refs/heads/{branch}", commit_sha)
+    # Move the branch only if it is still where it was read (an empty old
+    # value means it must not exist yet), so of two concurrent writers with
+    # the same sha one gets the 409 instead of both succeeding.
+    try:
+        await _git(repo_path, "update-ref", f"refs/heads/{branch}", commit_sha, parent_sha or "")
+    except RuntimeError:
+        raise HTTPException(status_code=409, detail=f"{path} does not match {sha}" if sha else "Conflict") from None
     await record_branch(db, repository, branch, commit_sha)
     repository.pushed_at = datetime.now(timezone.utc)
     await db.commit()
