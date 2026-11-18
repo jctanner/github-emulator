@@ -447,7 +447,8 @@ async def dt_register_pool_agent(
         last_heartbeat=datetime.now(timezone.utc),
     )
     db.add(runner)
-    await db.delete(registration)
+    # The registration token stays until it expires: on GitHub one token
+    # registers any number of runners within its hour.
     await db.commit()
     await db.refresh(runner)
     return _agent_json(runner, runner_token, _request_base(request))

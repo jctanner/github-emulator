@@ -154,7 +154,8 @@ async def _create_runner_from_registration(
         last_heartbeat=datetime.now(timezone.utc),
     )
     db.add(runner)
-    await db.delete(registration)
+    # The registration token stays until it expires: on GitHub one token
+    # registers any number of runners within its hour.
     await db.commit()
     await db.refresh(runner)
     return runner, runner_token
