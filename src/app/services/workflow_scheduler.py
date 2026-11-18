@@ -45,6 +45,7 @@ async def dispatch_ready_jobs(db: AsyncSession, run_id: int) -> list[WorkflowJob
         build_needs_context,
         build_run_expression_context,
         build_steps_data,
+        needs_alias_entries,
         render_job_labels,
         strategy_context,
     )
@@ -123,7 +124,12 @@ async def dispatch_ready_jobs(db: AsyncSession, run_id: int) -> list[WorkflowJob
                 github_ctx = base_context.get("github") or {}
                 context = {
                     **base_context,
-                    "needs": needs_context,
+                    # A reusable-workflow caller this job needs is not a job
+                    # in the run; answer needs.<caller> from its called jobs.
+                    "needs": {
+                        **needs_context,
+                        **needs_alias_entries(pending.get("_needs_aliases"), needs_context),
+                    },
                     JOB_NEEDS_KEY: _ancestors(job, all_jobs),
                     RUN_CANCELLED_KEY: bool(base_context.get(RUN_CANCELLED_KEY)),
                     "matrix": pending.get("matrix") or {},
@@ -327,6 +333,9 @@ async def check_run_completion(db: AsyncSession, run_id: int) -> WorkflowRun | N
         run.conclusion = "failure"
     elif "cancelled" in conclusions:
         run.conclusion = "cancelled"
+    elif conclusions and all(c == "skipped" for c in conclusions):
+        # GitHub concludes a run whose every job was skipped as skipped.
+        run.conclusion = "skipped"
     elif all(c in ("success", "skipped") for c in conclusions):
         run.conclusion = "success"
     else:
