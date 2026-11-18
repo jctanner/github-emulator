@@ -160,7 +160,7 @@ async def create_label(
 
 
 @router.get(
-    "/repos/{owner}/{repo}/labels/{name}",
+    "/repos/{owner}/{repo}/labels/{name:path}",
     response_model=LabelResponse,
 )
 async def get_label(
@@ -181,7 +181,7 @@ async def get_label(
 
 
 @router.patch(
-    "/repos/{owner}/{repo}/labels/{name}", response_model=LabelResponse
+    "/repos/{owner}/{repo}/labels/{name:path}", response_model=LabelResponse
 )
 async def update_label(
     owner: str, repo: str, name: str, body: LabelUpdate, user: AuthUser, db: DbSession
@@ -219,7 +219,7 @@ async def update_label(
     return LabelResponse.from_db(label, BASE, owner, repo)
 
 
-@router.delete("/repos/{owner}/{repo}/labels/{name}", status_code=204)
+@router.delete("/repos/{owner}/{repo}/labels/{name:path}", status_code=204)
 async def delete_label(
     owner: str, repo: str, name: str, user: AuthUser, db: DbSession
 ):
@@ -391,7 +391,7 @@ async def set_issue_labels(
 
 
 @router.delete(
-    "/repos/{owner}/{repo}/issues/{issue_number}/labels/{name}",
+    "/repos/{owner}/{repo}/issues/{issue_number}/labels/{name:path}",
     status_code=200,
     response_model=list[LabelResponse],
 )

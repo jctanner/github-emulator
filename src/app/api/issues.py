@@ -369,6 +369,11 @@ async def update_issue(
             repository.open_issues_count += 1
     if "state_reason" in body:
         issue.state_reason = body["state_reason"]
+    elif "state" in body and body["state"] != old_state:
+        # GitHub sets the reason on every transition the request does not
+        # explain: a close is "completed", a reopen is "reopened". Keeping the
+        # old one made a reopened issue still read as not_planned.
+        issue.state_reason = "completed" if body["state"] == "closed" else "reopened"
     if "milestone" in body:
         if body["milestone"] is None:
             issue.milestone_id = None

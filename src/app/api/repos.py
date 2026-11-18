@@ -7,7 +7,13 @@ from fastapi import APIRouter, HTTPException, Query, Request, Response
 from sqlalchemy import select, func as sa_func
 
 from app.services import repository_access
-from app.api.deps import AuthUser, CurrentUser, DbSession, require_installation_grant
+from app.api.deps import (
+    AuthUser,
+    CurrentUser,
+    DbSession,
+    get_repo_or_404,
+    require_installation_grant,
+)
 from app.api.pagination import pagination_links
 from app.config import settings
 from app.db_loaders import repository_identity_options
@@ -230,6 +236,13 @@ async def get_repo(owner: str, repo: str, db: DbSession, current_user: CurrentUs
         raise HTTPException(status_code=404, detail="Not Found")
 
     return _repo_json(repository, BASE)
+
+
+@router.get("/repos/{owner}/{repo}/hash-algorithm")
+async def get_repo_hash_algorithm(owner: str, repo: str, db: DbSession, current_user: CurrentUser):
+    """The repository's object hash algorithm; every repository here is SHA-1."""
+    await get_repo_or_404(owner, repo, db)
+    return {"hash_algorithm": "sha1"}
 
 
 @router.patch("/repos/{owner}/{repo}", response_model=RepoResponse)
