@@ -906,26 +906,19 @@ async def _job_from_timeline_id(timeline_id: str, db) -> WorkflowJob | None:
     return None
 
 
-async def _job_from_plan_id(plan_id: str, db) -> WorkflowJob | None:
-    result = await db.execute(
-        select(WorkflowJob)
-        .where(WorkflowJob.status == "in_progress")
-        .order_by(WorkflowJob.started_at.desc())
-    )
-    in_progress_jobs = result.scalars().all()
-    for job in in_progress_jobs:
-        if _workflow_guid("run", job.run_id) == plan_id:
-            return job
+async def _job_for_plan(request: Request, db, plan_id: str, timeline_id: str | None = None) -> WorkflowJob:
+    """The job token's own job, when the plan and timeline in the path are its own.
 
-    result = await db.execute(
-        select(WorkflowJob)
-        .order_by(WorkflowJob.created_at.desc())
-        .limit(25)
-    )
-    for job in result.scalars().all():
-        if _workflow_guid("run", job.run_id) == plan_id:
-            return job
-    return None
+    The runner addresses each job-server call with the plan (the run) and
+    timeline (the job) ids from its job message. A token reaches only those;
+    any other plan or timeline is 404.
+    """
+    job = await _get_job_from_job_token(request, db)
+    if plan_id != _workflow_guid("run", job.run_id):
+        raise HTTPException(status_code=404, detail="Plan not found")
+    if timeline_id is not None and timeline_id not in (_workflow_guid("timeline", job.id), str(job.id)):
+        raise HTTPException(status_code=404, detail="Timeline not found")
+    return job
 
 
 def _complete_queued_steps(job: WorkflowJob, result_str: str | int) -> None:
@@ -1263,14 +1256,7 @@ async def dt_append_timeline_record_feed(
     db: DbSession,
 ):
     """Append web console lines emitted by the upstream runner worker."""
-    auth_job = await _get_job_from_job_token(request, db)
-    job = (
-        await _job_from_plan_id(plan_id, db)
-        or await _job_from_timeline_id(timeline_id, db)
-        or auth_job
-    )
-    if job is None:
-        raise HTTPException(status_code=404, detail="Plan not found")
+    job = await _job_for_plan(request, db, plan_id, timeline_id)
 
     body = await request.json()
     lines = body.get("lines", body.get("Lines", body.get("value", body.get("Value", []))))
@@ -1320,7 +1306,7 @@ async def dt_resolve_action_download_info(
     here: the runner downloads it with the job token as a Basic credential,
     which GitHub would reject and this service can verify.
     """
-    job = await _get_job_from_job_token(request, db)
+    job = await _job_for_plan(request, db, plan_id)
     body = await request.json()
     references = body.get("actions") or body.get("Actions") or []
     base = _runner_reachable_base_url(_request_base(request))
@@ -1375,13 +1361,9 @@ async def dt_create_hub_plan_log(
     hub_name: str, plan_id: str, request: Request, db: DbSession,
 ):
     """Create a log placeholder or append raw log bytes from the upstream runner."""
-    auth_job = await _get_job_from_job_token(request, db)
+    job = await _job_for_plan(request, db, plan_id)
     content_type = request.headers.get("content-type", "")
     if "application/octet-stream" in content_type:
-        job = await _job_from_plan_id(plan_id, db) or auth_job
-        if job is None:
-            raise HTTPException(status_code=404, detail="Plan not found")
-
         log_data = await request.body()
         log_path = _job_log_path(job.id)
         os.makedirs(os.path.dirname(log_path), exist_ok=True)
@@ -1408,10 +1390,7 @@ async def dt_append_hub_plan_log(
     db: DbSession,
 ):
     """Append uploaded log file bytes from the upstream runner worker."""
-    auth_job = await _get_job_from_job_token(request, db)
-    job = await _job_from_plan_id(plan_id, db) or auth_job
-    if job is None:
-        raise HTTPException(status_code=404, detail="Plan not found")
+    job = await _job_for_plan(request, db, plan_id)
 
     log_data = await request.body()
     log_path = _job_log_path(job.id)
@@ -1432,15 +1411,8 @@ async def dt_update_hub_timeline_records(
     db: DbSession,
 ):
     """Update timeline records emitted by the upstream runner worker."""
-    auth_job = await _get_job_from_job_token(request, db)
+    job = await _job_for_plan(request, db, plan_id, timeline_id)
     body = await request.json()
-    job = (
-        await _job_from_plan_id(plan_id, db)
-        or await _job_from_timeline_id(timeline_id, db)
-        or auth_job
-    )
-    if job is None:
-        raise HTTPException(status_code=404, detail="Timeline not found")
 
     await _update_timeline_for_job(job, body, db)
     await db.commit()

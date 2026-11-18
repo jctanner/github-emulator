@@ -16,12 +16,12 @@ from app.config import settings
 from tests.actions.test_uses_steps import SHA, _claim_job, uses_workflow  # noqa: F401
 
 
-def _b64(value: dict) -> str:
+def _b64(value: dict | list) -> str:
     raw = json.dumps(value, separators=(",", ":")).encode()
     return base64.urlsafe_b64encode(raw).rstrip(b"=").decode("ascii")
 
 
-def _sign(payload: dict, key: str) -> str:
+def _sign(payload: dict | list, key: str) -> str:
     signing_input = f"{_b64({'typ': 'JWT', 'alg': 'HS256'})}.{_b64(payload)}"
     digest = hmac.digest(key.encode(), signing_input.encode(), "sha256")
     signature = base64.urlsafe_b64encode(digest).rstrip(b"=").decode("ascii")
@@ -42,6 +42,8 @@ def _bad_tokens(job_token: str) -> dict[str, str]:
         "wrong issuer": _sign({**claims, "iss": "someone-else"}, settings.SECRET_KEY),
         "expired": _sign({**claims, "nbf": now - 7200, "iat": now - 7200, "exp": now - 3600},
                          settings.SECRET_KEY),
+        "a header that is not an object": f"{_b64([])}.{job_token.split('.')[1]}.x",
+        "a payload that is not an object": _sign([], settings.SECRET_KEY),
     }
 
 
