@@ -341,11 +341,37 @@ async def create_admin_installation_token(app_id: str, installation_id: int, bod
     return await _issue_installation_token(db, installation, body, lifetime)
 
 
+async def _narrowed_repositories(db, installation: AppInstallation, body: dict) -> list[str]:
+    """Full names the request narrows the token to, or [] when it doesn't.
+
+    GitHub documents `repositories` (names) and `repository_ids` as two ways
+    to narrow a token. When both are given, the emulator grants their union.
+    A missing or null field does not narrow; any other non-list is refused,
+    so a malformed request cannot fall through to an un-narrowed token.
+    """
+    names = body.get("repositories")
+    ids = body.get("repository_ids")
+    names = [] if names is None else names
+    ids = [] if ids is None else ids
+    if not isinstance(names, list) or not isinstance(ids, list):
+        raise HTTPException(status_code=422, detail="repositories and repository_ids must be lists")
+    if any(isinstance(item, bool) or not isinstance(item, int) or not 0 < item < 2**63 for item in ids):
+        raise HTTPException(status_code=422, detail="repository_ids must be positive integers")
+    full = [item if "/" in str(item) else f"{installation.account_login}/{item}" for item in names]
+    if ids:
+        rows = (await db.execute(select(Repository.id, Repository.full_name).where(Repository.id.in_(ids)))).all()
+        found = {row.id: row.full_name for row in rows}
+        if set(ids) - set(found):
+            raise HTTPException(status_code=422, detail="requested repository is not installed")
+        full += [found[item] for item in ids]
+    return full
+
+
 async def _issue_installation_token(db, installation: AppInstallation, body: dict, lifetime: timedelta) -> dict:
-    requested = body.get("repositories") or installation.repositories
-    if not isinstance(requested, list):
-        raise HTTPException(status_code=422, detail="requested repositories must be a list")
-    requested_full = [item if "/" in str(item) else f"{installation.account_login}/{item}" for item in requested]
+    narrowed = await _narrowed_repositories(db, installation, body)
+    requested_full = narrowed or [
+        item if "/" in str(item) else f"{installation.account_login}/{item}" for item in installation.repositories or []
+    ]
     if installation.repositories:
         covered = set(requested_full).issubset(set(installation.repositories))
     else:
@@ -371,7 +397,7 @@ async def _issue_installation_token(db, installation: AppInstallation, body: dic
     expires = datetime.now(timezone.utc) + lifetime
     db.add(AppInstallationToken(installation_id=installation.id, token_hash=hashlib.sha256(raw.encode()).hexdigest(), token_prefix=raw[:8], repositories=sorted(set(requested_full)), permissions=permissions, expires_at=expires))
     await db.commit()
-    return {"token": raw, "expires_at": _fmt_dt(expires), "permissions": permissions, "repository_selection": "selected" if installation.repositories else "all", "repositories": [{"full_name": item} for item in sorted(set(requested_full))]}
+    return {"token": raw, "expires_at": _fmt_dt(expires), "permissions": permissions, "repository_selection": "selected" if (narrowed or installation.repositories) else "all", "repositories": [{"full_name": item} for item in sorted(set(requested_full))]}
 
 
 @router.get("/app/installations/{installation_id}/repositories")
