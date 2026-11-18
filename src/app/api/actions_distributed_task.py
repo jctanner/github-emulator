@@ -20,6 +20,21 @@ from fastapi.responses import FileResponse, JSONResponse, Response
 from sqlalchemy import and_, select, update
 from sqlalchemy.orm.attributes import flag_modified
 
+from app.api.actions_dispatch import _claim_queued_job
+from app.api.actions_runner_protocol import (
+    _SERVICE_OWNER,
+    EMULATOR_INSTANCE_ID,
+    EMULATOR_USER_ID,
+    TASK_AREA_ID,
+    _agent_json,
+    _context_dictionary,
+    _job_access_token,
+    _service_definition,
+    _template_mapping,
+    _variable,
+    _workflow_guid,
+)
+from app.api.actions_runners import _delete_runner_and_detach_history, normalise_runner_os
 from app.api.deps import DbSession
 from app.config import settings
 from app.models.actions import (
@@ -137,25 +152,6 @@ def _request_base(request: Request) -> str:
     )
     return _runner_reachable_base_url(configured)
 
-
-from app.api.actions_dispatch import _claim_queued_job
-from app.api.actions_runners import normalise_runner_os
-from app.api.actions_runner_protocol import (
-    EMULATOR_INSTANCE_ID,
-    EMULATOR_USER_ID,
-    TASK_AREA_ID,
-    _SERVICE_OWNER,
-    _agent_json,
-    _base64url_json,
-    _context_dictionary,
-    _context_value,
-    _job_access_token,
-    _runner_client_id,
-    _service_definition,
-    _template_mapping,
-    _variable,
-    _workflow_guid,
-)
 
 @router.get("/_apis/connectionData")
 @router.get("/{owner}/{repo}/_apis/connectionData")
@@ -549,8 +545,8 @@ async def dt_delete_pool_agent(
     runner = result.scalar_one_or_none()
     if runner is None:
         raise HTTPException(status_code=404, detail="Agent not found")
-    await db.delete(runner)
-    await db.commit()
+    # Detach the jobs that ran on it: PostgreSQL enforces the foreign key.
+    await _delete_runner_and_detach_history(db, runner)
     return {"status": "removed"}
 
 

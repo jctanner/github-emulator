@@ -11,11 +11,11 @@ from datetime import datetime, timezone
 from fastapi import APIRouter, HTTPException, Request
 from sqlalchemy import select
 
+from app.api.actions_runners import _delete_runner_and_detach_history, normalise_runner_os
 from app.api.deps import DbSession, get_repo_or_404
 from app.config import settings
-from app.models.actions import EnterpriseRunnerRegistrationToken, Runner, RegistrationToken
+from app.models.actions import EnterpriseRunnerRegistrationToken, RegistrationToken, Runner
 from app.services.auth_service import hash_token
-from app.api.actions_runners import normalise_runner_os
 
 router = APIRouter(tags=["actions-pipelines"])
 
@@ -94,8 +94,8 @@ async def pipelines_deregister_enterprise_runner(
     runner = result.scalar_one_or_none()
     if runner is None:
         raise HTTPException(status_code=404, detail="Runner not found")
-    await db.delete(runner)
-    await db.commit()
+    # Detach the jobs that ran on it: PostgreSQL enforces the foreign key.
+    await _delete_runner_and_detach_history(db, runner)
     return {"status": "removed"}
 
 
@@ -185,8 +185,8 @@ async def pipelines_deregister_runner(
     runner = result.scalar_one_or_none()
     if runner is None:
         raise HTTPException(status_code=404, detail="Runner not found")
-    await db.delete(runner)
-    await db.commit()
+    # Detach the jobs that ran on it: PostgreSQL enforces the foreign key.
+    await _delete_runner_and_detach_history(db, runner)
     return {"status": "removed"}
 
 

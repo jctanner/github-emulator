@@ -684,6 +684,13 @@ async def test_pool_distributed_task_protocol_flow(
         headers=runner_headers,
     )
     assert agent_delete_resp.status_code == 200
+    # The job it ran no longer points at the deleted runner (a foreign key
+    # SQLite does not enforce; PostgreSQL refused the delete with 500).
+    db_session.expire_all()
+    dangling = (await db_session.execute(
+        select(WorkflowJob).where(WorkflowJob.runner_id == register_resp.json()["id"])
+    )).scalars().all()
+    assert dangling == []
 
 
 @pytest.mark.asyncio

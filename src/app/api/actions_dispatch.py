@@ -1,9 +1,8 @@
 """Custom runner job dispatch protocol -- long-poll, progress, completion."""
 
 import asyncio
-import hashlib
-import os
 import copy
+import os
 import secrets
 from datetime import datetime, timedelta, timezone
 from urllib.parse import parse_qs
@@ -12,14 +11,14 @@ from fastapi import APIRouter, HTTPException, Query, Request
 from fastapi.responses import Response
 from sqlalchemy import select, update
 
+from app.api.actions_runners import normalise_runner_os
 from app.api.deps import AuthUser, DbSession, get_repo_or_404
 from app.config import settings
-from app.models.actions import EnterpriseRunnerRegistrationToken, Runner, RegistrationToken, WorkflowJob, WorkflowRun
+from app.models.actions import EnterpriseRunnerRegistrationToken, RegistrationToken, Runner, WorkflowJob, WorkflowRun
 from app.models.repository import Repository
 from app.services.auth_service import hash_token
 from app.services.job_token_service import issue_job_token
 from app.services.workflow_service import check_run_completion, dispatch_ready_jobs, resolve_job_outputs
-from app.api.actions_runners import normalise_runner_os
 
 router = APIRouter(tags=["actions-dispatch"])
 
@@ -578,10 +577,13 @@ async def _poll_for_jobs(
                     "repository": repository.full_name if repository else "",
                 }
 
+        # End the read transaction before waiting. Under PostgreSQL's
+        # REPEATABLE READ or SERIALIZABLE a transaction keeps the snapshot of
+        # its first read, so the next pass would never see a job queued
+        # meanwhile; SQLite's driver happened not to hold reads in a
+        # transaction. Committing also expires the loaded objects.
+        await db.commit()
         await asyncio.sleep(2)
-        # AsyncSession.expire_all is synchronous; awaiting it raises a
-        # TypeError whenever the runner has no queued job during long-polling.
-        db.expire_all()
 
     return Response(status_code=204)
 
