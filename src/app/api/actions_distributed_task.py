@@ -986,12 +986,56 @@ def _complete_queued_steps(job: WorkflowJob, result_str: str | int) -> None:
     flag_modified(job, "steps")
 
 
+# Jobs a JobCancellation message has been sent for, so the long-poll sends it
+# once. In memory: after a restart the runner may get it again, and a runner
+# ignores a cancellation for a job it no longer runs.
+_cancellations_sent: set[int] = set()
+
+
+async def _pending_cancellation(runner: Runner, db) -> dict | None:
+    """A JobCancellation message for the job this runner holds, once the job
+    was cancelled while it ran (a newer job superseding it under
+    ``concurrency: cancel-in-progress``, or a run cancelled through the API).
+
+    Without it the runner never heard: the job was cancelled in the database
+    and ran to its end anyway, so a superseded stage ran twice.
+    """
+    if not (runner.busy or runner.status == "busy"):
+        return None
+    job = (await db.execute(
+        select(WorkflowJob)
+        .where(WorkflowJob.runner_id == runner.id)
+        .order_by(WorkflowJob.started_at.desc(), WorkflowJob.id.desc())
+        .limit(1)
+    )).scalar_one_or_none()
+    if job is None or job.conclusion != "cancelled" or job.id in _cancellations_sent:
+        return None
+    _cancellations_sent.add(job.id)
+    # The shape the runner's JobCancelMessage reads; the timeout is how long
+    # its steps get to stop before they are killed.
+    body = json.dumps(
+        {"jobId": _workflow_guid("job", job.id), "timeout": "00:05:00"},
+        separators=(",", ":"),
+    )
+    return {
+        "messageId": job.id,
+        "messageType": "JobCancellation",
+        "body": body,
+        "MessageId": job.id,
+        "MessageType": "JobCancellation",
+        "Body": body,
+    }
+
+
 async def _complete_job(job: WorkflowJob, runner: Runner, result_str: str, db) -> None:
-    job.status = "completed"
-    job.conclusion = _result_to_conclusion(result_str)
-    job.completed_at = datetime.now(timezone.utc)
-    if _is_success_result(result_str):
-        _complete_queued_steps(job, result_str)
+    # A job cancelled while it ran keeps that conclusion when its runner
+    # reports the end; the report still frees the runner.
+    if not (job.status == "completed" and job.conclusion == "cancelled"):
+        job.status = "completed"
+        job.conclusion = _result_to_conclusion(result_str)
+        job.completed_at = datetime.now(timezone.utc)
+        if _is_success_result(result_str):
+            _complete_queued_steps(job, result_str)
 
     runner.busy = False
     runner.status = "online"
@@ -1053,6 +1097,9 @@ async def dt_get_messages(
 
     deadline = asyncio.get_event_loop().time() + 30
     while asyncio.get_event_loop().time() < deadline:
+        cancellation = await _pending_cancellation(runner, db)
+        if cancellation is not None:
+            return cancellation
         message = await _claim_next_job(runner, db, _request_base(request))
         if not isinstance(message, Response):
             return message

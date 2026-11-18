@@ -143,6 +143,7 @@ Actions visibility and runner evaluation.
 - `docs/bugs/fixed/contents-ignore-the-raw-media-type-and-the-1-mib-limit.md`
 - `docs/bugs/fixed/upload-artifact-v4-has-no-results-service.md`
 - `docs/bugs/fixed/two-runners-claim-the-same-job.md`
+- `docs/bugs/fixed/upstream-runner-keeps-running-a-cancelled-job.md`
 
 ## Decisions
 
