@@ -61,6 +61,24 @@ async def test_a_missing_file_is_404(client, test_repo_with_init):
 
 
 @pytest.mark.asyncio
+async def test_a_directory_is_404(client, test_token, test_repo_with_init):
+    """GitHub's raw host serves files only; a directory path is a 404."""
+    _owner, _name, repo = test_repo_with_init
+    await _commit(client, test_token, repo["full_name"], "agents/triage.md", "harness\n")
+
+    response = await client.get(f"/{repo['full_name']}/raw/main/agents")
+    assert response.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_a_ref_that_looks_like_an_option_is_404(client, test_repo_with_init):
+    _owner, _name, repo = test_repo_with_init
+    for ref in ("--all", "-p", "--output=out.txt"):
+        response = await client.get(f"/{repo['full_name']}/raw/{ref}/README.md")
+        assert response.status_code == 404, ref
+
+
+@pytest.mark.asyncio
 async def test_a_missing_repository_is_404(client):
     response = await client.get("/nobody/nothing/raw/main/README.md")
     assert response.status_code == 404

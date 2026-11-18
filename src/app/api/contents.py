@@ -11,6 +11,7 @@ from fastapi.responses import JSONResponse
 
 from app.api.deps import AuthUser, CurrentUser, DbSession, get_repo_record_or_404, require_contents_write
 from app.config import settings
+from app.git.bare_repo import parse_tree, read_object
 from app.schemas.browse import ContentResponse
 from app.schemas.user import _make_node_id
 from app.services.api_push import after_api_commit
@@ -106,37 +107,24 @@ async def get_contents(
 
     branch = ref or repository.default_branch
 
-    # Try to get as file first
-    try:
-        blob_sha = (await _git(repository.disk_path, "rev-parse", f"{branch}:{path}")).strip()
-        # Check if it's a blob (file) or tree (directory)
-        obj_type = (await _git(repository.disk_path, "cat-file", "-t", blob_sha)).strip()
-    except RuntimeError:
-        raise HTTPException(status_code=404, detail="Not Found") from None
+    # One git process per call: resolve the path and read the object
+    # together. A job reads the agents harness with about a thousand of these
+    # calls, and on a loaded machine each process start is the main cost.
+    found = await read_object(repository.disk_path, f"{branch}:{path}")
+    if found is None:
+        raise HTTPException(status_code=404, detail="Not Found")
+    object_sha, obj_type, content_bytes = found
 
     if obj_type == "blob":
-        content_bytes = await _git_bytes(repository.disk_path, "cat-file", "blob", blob_sha)
-        return _file_response(owner, repo, path, content_bytes, blob_sha, branch, BASE)
+        return _file_response(owner, repo, path, content_bytes, object_sha, branch, BASE)
     elif obj_type == "tree":
-        # List directory
-        try:
-            ls_out = await _git(repository.disk_path, "ls-tree", blob_sha)
-        except RuntimeError:
-            raise HTTPException(status_code=404, detail="Not Found") from None
-
         api = f"{BASE}/api/v3"
         entries = []
-        for line in ls_out.strip().splitlines():
-            if not line:
-                continue
-            parts = line.split("\t", 1)
-            meta = parts[0].split()
-            entry_name = parts[1] if len(parts) > 1 else ""
-            entry_sha = meta[2] if len(meta) > 2 else ""
-            entry_type = meta[1] if len(meta) > 1 else "blob"
-
+        for mode, entry_name, entry_sha in parse_tree(content_bytes, len(object_sha) // 2):
             entry_path = f"{path}/{entry_name}".strip("/")
-            t = "file" if entry_type == "blob" else "dir"
+            # A tree or a submodule (gitlink) lists as "dir", anything else
+            # as "file", as before.
+            t = "dir" if mode in ("40000", "160000") else "file"
             entries.append({
                 "type": t,
                 "size": 0,
@@ -366,12 +354,9 @@ async def _readme_response(owner: str, repo: str, db, ref: str | None, directory
     # Try common README filenames
     for readme_name in README_NAMES:
         path = f"{directory}/{readme_name}" if directory else readme_name
-        try:
-            blob_sha = (await _git(repository.disk_path, "rev-parse", f"{branch}:{path}")).strip()
-            content_bytes = await _git_bytes(repository.disk_path, "cat-file", "blob", blob_sha)
-            return _file_response(owner, repo, path, content_bytes, blob_sha, branch, BASE)
-        except RuntimeError:
-            continue
+        found = await read_object(repository.disk_path, f"{branch}:{path}")
+        if found is not None and found[1] == "blob":
+            return _file_response(owner, repo, path, found[2], found[0], branch, BASE)
 
     raise HTTPException(status_code=404, detail="Not Found")
 

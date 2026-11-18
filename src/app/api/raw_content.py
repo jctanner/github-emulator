@@ -23,7 +23,7 @@ from sqlalchemy import func, select
 
 from app.api.deps import CurrentUser, DbSession, get_repo_record_or_404
 from app.config import settings
-from app.git.bare_repo import get_file_content, resolve_ref
+from app.git.bare_repo import read_object
 from app.models.repository import Repository
 from app.services import repository_access
 
@@ -101,13 +101,15 @@ async def raw_file(
     if not repository.disk_path:
         raise HTTPException(status_code=404, detail="Not Found")
 
-    resolved = await resolve_ref(repository.disk_path, ref) or ref
-    content = await get_file_content(repository.disk_path, resolved, path)
-    if content is None:
+    # "<ref>:<path>" resolves the ref the way rev-parse does, in the same
+    # process that reads the file; git reads the name from stdin. Like
+    # GitHub's raw host, anything but a file (a directory, a submodule) is 404.
+    found = await read_object(repository.disk_path, f"{ref}:{path}")
+    if found is None or found[1] != "blob":
         raise HTTPException(status_code=404, detail="Not Found")
 
     return Response(
-        content=content,
+        content=found[2],
         media_type="text/plain; charset=utf-8",
         headers={"X-Content-Type-Options": "nosniff"},
     )
