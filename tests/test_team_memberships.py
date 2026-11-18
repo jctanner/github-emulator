@@ -1,0 +1,72 @@
+"""GET/PUT/DELETE /orgs/{org}/teams/{team_slug}/memberships/{username}."""
+
+import pytest
+
+from tests.conftest import API, auth_headers
+
+
+async def _org_with_team(client, admin_token, org="acme", team="mint-status"):
+    created = await client.post(
+        f"{API}/admin/organizations", headers=auth_headers(admin_token),
+        json={"login": org, "admin": "admin"},
+    )
+    assert created.status_code == 201, created.text
+    made = await client.post(f"{API}/orgs/{org}/teams", headers=auth_headers(admin_token), json={"name": team})
+    assert made.status_code == 201, made.text
+    return made.json()["slug"]
+
+
+@pytest.mark.asyncio
+async def test_member_reads_own_team_membership(client, admin_token, test_user, test_token):
+    slug = await _org_with_team(client, admin_token)
+    joined = await client.put(f"{API}/orgs/acme/memberships/testuser", headers=auth_headers(admin_token), json={"role": "member"})
+    assert joined.status_code == 200, joined.text
+
+    added = await client.put(f"{API}/orgs/acme/teams/{slug}/memberships/testuser", headers=auth_headers(admin_token), json={})
+    assert added.status_code == 200, added.text
+    assert added.json()["role"] == "member"
+    assert added.json()["state"] == "active"
+
+    own = await client.get(f"{API}/orgs/acme/teams/{slug}/memberships/testuser", headers=auth_headers(test_token))
+    assert own.status_code == 200, own.text
+    assert own.json() == added.json()
+
+
+@pytest.mark.asyncio
+async def test_non_member_is_404_and_removal_takes_effect(client, admin_token, test_user, test_token):
+    slug = await _org_with_team(client, admin_token)
+    await client.put(f"{API}/orgs/acme/memberships/testuser", headers=auth_headers(admin_token), json={"role": "member"})
+
+    missing = await client.get(f"{API}/orgs/acme/teams/{slug}/memberships/testuser", headers=auth_headers(test_token))
+    assert missing.status_code == 404
+
+    await client.put(f"{API}/orgs/acme/teams/{slug}/memberships/testuser", headers=auth_headers(admin_token), json={"role": "maintainer"})
+    assert (await client.get(f"{API}/orgs/acme/teams/{slug}/memberships/testuser", headers=auth_headers(test_token))).json()["role"] == "maintainer"
+
+    removed = await client.delete(f"{API}/orgs/acme/teams/{slug}/memberships/testuser", headers=auth_headers(admin_token))
+    assert removed.status_code == 204
+    gone = await client.get(f"{API}/orgs/acme/teams/{slug}/memberships/testuser", headers=auth_headers(test_token))
+    assert gone.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_adding_needs_an_org_admin_and_an_org_member(client, admin_token, test_user, test_token):
+    slug = await _org_with_team(client, admin_token)
+
+    not_in_org = await client.put(f"{API}/orgs/acme/teams/{slug}/memberships/testuser", headers=auth_headers(admin_token), json={})
+    assert not_in_org.status_code == 422
+
+    await client.put(f"{API}/orgs/acme/memberships/testuser", headers=auth_headers(admin_token), json={"role": "member"})
+    by_member = await client.put(f"{API}/orgs/acme/teams/{slug}/memberships/testuser", headers=auth_headers(test_token), json={})
+    assert by_member.status_code == 403
+
+    bad_role = await client.put(f"{API}/orgs/acme/teams/{slug}/memberships/testuser", headers=auth_headers(admin_token), json={"role": "owner"})
+    assert bad_role.status_code == 422
+
+
+@pytest.mark.asyncio
+async def test_outsider_cannot_read_someone_elses_membership(client, admin_token, test_user, test_token):
+    slug = await _org_with_team(client, admin_token)
+    # admin is a member of acme (it created it); testuser is not.
+    hidden = await client.get(f"{API}/orgs/acme/teams/{slug}/memberships/admin", headers=auth_headers(test_token))
+    assert hidden.status_code == 404

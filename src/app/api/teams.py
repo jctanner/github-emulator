@@ -169,3 +169,110 @@ async def list_team_members(
     )
     memberships = (await db.execute(query)).scalars().all()
     return [SimpleUser.from_db(m.user, BASE).model_dump() for m in memberships if m.user]
+
+
+# -- Team membership for a user ------------------------------------------
+
+TEAM_ROLES = ("member", "maintainer")
+
+
+async def _team_by_slug_or_404(organisation: Organization, team_slug: str, db) -> Team:
+    team = (
+        await db.execute(select(Team).where(Team.org_id == organisation.id, Team.slug == team_slug))
+    ).scalar_one_or_none()
+    if team is None:
+        raise HTTPException(status_code=404, detail="Not Found")
+    return team
+
+
+async def _team_membership(team: Team, target: User, db) -> TeamMembership | None:
+    return (
+        await db.execute(
+            select(TeamMembership).where(
+                TeamMembership.team_id == team.id, TeamMembership.user_id == target.id
+            )
+        )
+    ).scalar_one_or_none()
+
+
+def _team_membership_json(membership: TeamMembership, team: Team, org_login: str, target: User) -> dict:
+    return {
+        "url": f"{BASE}/api/v3/orgs/{org_login}/teams/{team.slug}/memberships/{target.login}",
+        "role": membership.role,
+        "state": "active",
+    }
+
+
+@router.get("/orgs/{org}/teams/{team_slug}/memberships/{username}")
+async def get_team_membership(org: str, team_slug: str, username: str, db: DbSession, user: AuthUser):
+    """A user's membership in a team: 200 with role and state, 404 when the
+    user is not a member. The user, active members of the organization and
+    site admins can see it, as for a GitHub team that is not secret."""
+    from app.api.orgs import _get_membership, _get_org_or_404, _get_user_or_404
+
+    organisation = await _get_org_or_404(org, db)
+    if user.login != username and not user.site_admin:
+        own = await _get_membership(organisation, user, db)
+        if own is None or own.state != "active":
+            raise HTTPException(status_code=404, detail="Not Found")
+    team = await _team_by_slug_or_404(organisation, team_slug, db)
+    target = await _get_user_or_404(username, db)
+    membership = await _team_membership(team, target, db)
+    if membership is None:
+        raise HTTPException(status_code=404, detail="Not Found")
+    return _team_membership_json(membership, team, organisation.login, target)
+
+
+@router.put("/orgs/{org}/teams/{team_slug}/memberships/{username}")
+async def set_team_membership(
+    org: str, team_slug: str, username: str, db: DbSession, user: AuthUser, body: dict | None = None,
+):
+    """Add a user to a team or change their team role (org admins, site admins).
+
+    GitHub invites a user who is not yet in the organization (state
+    "pending"); the emulator has no team invitations, so it refuses that
+    case with 422 instead of reporting a membership that does not exist.
+    """
+    from app.api.orgs import _get_membership, _get_org_or_404, _get_user_or_404, _require_org_admin
+
+    organisation = await _get_org_or_404(org, db)
+    await _require_org_admin(organisation, user, db)
+    team = await _team_by_slug_or_404(organisation, team_slug, db)
+    target = await _get_user_or_404(username, db)
+    role = (body or {}).get("role", "member")
+    if role not in TEAM_ROLES:
+        raise HTTPException(status_code=422, detail="role must be one of member, maintainer")
+    org_membership = await _get_membership(organisation, target, db)
+    if org_membership is None or org_membership.state != "active":
+        raise HTTPException(
+            status_code=422,
+            detail="the user must be an active member of the organization; team invitations are not emulated",
+        )
+    membership = await _team_membership(team, target, db)
+    if membership is None:
+        membership = TeamMembership(team_id=team.id, user_id=target.id, role=role)
+        db.add(membership)
+    else:
+        membership.role = role
+    await db.commit()
+    await db.refresh(membership)
+    return _team_membership_json(membership, team, organisation.login, target)
+
+
+@router.delete("/orgs/{org}/teams/{team_slug}/memberships/{username}", status_code=204)
+async def remove_team_membership(org: str, team_slug: str, username: str, db: DbSession, user: AuthUser):
+    """Remove a user from a team (org admins, site admins)."""
+    from fastapi import Response
+
+    from app.api.orgs import _get_org_or_404, _get_user_or_404, _require_org_admin
+
+    organisation = await _get_org_or_404(org, db)
+    await _require_org_admin(organisation, user, db)
+    team = await _team_by_slug_or_404(organisation, team_slug, db)
+    target = await _get_user_or_404(username, db)
+    membership = await _team_membership(team, target, db)
+    if membership is None:
+        raise HTTPException(status_code=404, detail="Not Found")
+    await db.delete(membership)
+    await db.commit()
+    return Response(status_code=204)

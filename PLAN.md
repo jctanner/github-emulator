@@ -114,6 +114,7 @@ Actions visibility and runner evaluation.
 - `docs/bugs/fixed/gh-in-upstream-runner-steps-calls-github-com.md`
 - `docs/bugs/fixed/upstream-runner-logs-land-on-the-wrong-job.md`
 - `docs/bugs/fixed/upstream-runner-job-outputs-are-empty.md`
+- `docs/bugs/fixed/team-membership-routes-missing.md`
 - `docs/bugs/fixed/graphql-repository-visibility.md`
 - `docs/bugs/fixed/graphql-pull-request-payload-missing-greenlet.md`
 - `docs/bugs/fixed/git-push-does-not-synchronize-pull-requests.md`
