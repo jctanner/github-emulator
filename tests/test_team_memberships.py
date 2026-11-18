@@ -70,3 +70,27 @@ async def test_outsider_cannot_read_someone_elses_membership(client, admin_token
     # admin is a member of acme (it created it); testuser is not.
     hidden = await client.get(f"{API}/orgs/acme/teams/{slug}/memberships/admin", headers=auth_headers(test_token))
     assert hidden.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_a_secret_team_is_hidden_from_org_members_outside_it(client, admin_token, test_user, test_token):
+    created = await client.post(
+        f"{API}/admin/organizations", headers=auth_headers(admin_token), json={"login": "acme", "admin": "admin"}
+    )
+    assert created.status_code == 201, created.text
+    made = await client.post(
+        f"{API}/orgs/acme/teams", headers=auth_headers(admin_token), json={"name": "security", "privacy": "secret"}
+    )
+    assert made.status_code == 201, made.text
+    slug = made.json()["slug"]
+    await client.put(f"{API}/orgs/acme/memberships/testuser", headers=auth_headers(admin_token), json={"role": "member"})
+    added = await client.put(f"{API}/orgs/acme/teams/{slug}/memberships/admin", headers=auth_headers(admin_token), json={})
+    assert added.status_code == 200, added.text
+    url = f"{API}/orgs/acme/teams/{slug}/memberships/admin"
+
+    # An org member outside a secret team cannot see who is in it.
+    assert (await client.get(url, headers=auth_headers(test_token))).status_code == 404
+
+    joined = await client.put(f"{API}/orgs/acme/teams/{slug}/memberships/testuser", headers=auth_headers(admin_token), json={})
+    assert joined.status_code == 200, joined.text
+    assert (await client.get(url, headers=auth_headers(test_token))).status_code == 200

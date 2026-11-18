@@ -207,8 +207,10 @@ def _team_membership_json(membership: TeamMembership, team: Team, org_login: str
 async def get_team_membership(org: str, team_slug: str, username: str, db: DbSession, user: AuthUser):
     """A user's membership in a team: 200 with role and state, 404 when the
     user is not a member. The user, active members of the organization and
-    site admins can see it, as for a GitHub team that is not secret."""
-    from app.api.orgs import _get_membership, _get_org_or_404, _get_user_or_404
+    site admins can see it. A secret team is visible only to its own
+    members, org admins and site admins, as on GitHub; to anyone else it
+    does not exist."""
+    from app.api.orgs import _get_membership, _get_org_or_404, _get_user_or_404, _is_org_admin
 
     organisation = await _get_org_or_404(org, db)
     if user.login != username and not user.site_admin:
@@ -216,6 +218,12 @@ async def get_team_membership(org: str, team_slug: str, username: str, db: DbSes
         if own is None or own.state != "active":
             raise HTTPException(status_code=404, detail="Not Found")
     team = await _team_by_slug_or_404(organisation, team_slug, db)
+    if (
+        team.privacy == "secret"
+        and not await _is_org_admin(organisation, user, db)
+        and await _team_membership(team, user, db) is None
+    ):
+        raise HTTPException(status_code=404, detail="Not Found")
     target = await _get_user_or_404(username, db)
     membership = await _team_membership(team, target, db)
     if membership is None:

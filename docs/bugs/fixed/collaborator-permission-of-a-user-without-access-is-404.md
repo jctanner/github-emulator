@@ -29,8 +29,8 @@ person that `repository_permission` gives no permission:
   `permissions` flag false.
 
 Collaborator, organization-role and owner answers are unchanged. An App's bot
-without a collaborator row is still 404: GitHub does not report an
-installation's access on this endpoint, and existing tests pin that.
+without a collaborator row is covered separately: see
+`app-bot-permission-is-not-found.md`.
 
 Two tests in `tests/test_org_roles_api.py` pinned the old 404 for a member
 without a role on a public organization repository. They now expect `read`.

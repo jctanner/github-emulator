@@ -13,7 +13,8 @@ every such check failed.
 
 - `GET` answers 200 with `role` and `state` for a team member, and 404
   otherwise. The user themselves, active members of the organization and
-  site admins can see it.
+  site admins can see it. A secret team is visible only to its members,
+  org admins and site admins, so to anyone else it answers 404.
 - `PUT` lets org admins and site admins add a user or change their team
   role (`member` or `maintainer`). GitHub invites a user who is not yet in
   the organization. The emulator has no team invitations, so that case
