@@ -89,8 +89,42 @@ async def test_the_readme_in_the_raw_media_type_is_its_bytes(client, media_repo)
 
 
 @pytest.mark.asyncio
-async def test_a_file_over_1_mib_has_no_content_in_json(client, media_repo):
+@pytest.mark.parametrize("accept", [
+    "application/vnd.github.raw;q=0, application/vnd.github+json",
+    "application/vnd.github.raw; q=0.0, application/json",
+])
+async def test_a_raw_media_type_with_q_0_is_not_selected(client, media_repo, accept):
+    resp = await client.get(
+        f"{API}/repos/testuser/media/contents/config.yaml", headers={**media_repo, "Accept": accept})
+    assert resp.status_code == 200
+    assert resp.headers["content-type"] == "application/json"
+    assert base64.b64decode(resp.json()["content"]) == b"agents: main\n"
+
+
+@pytest.mark.asyncio
+async def test_a_raw_media_type_with_a_nonzero_q_is_selected(client, media_repo):
+    media = "application/vnd.github.raw"
+    resp = await client.get(
+        f"{API}/repos/testuser/media/contents/config.yaml",
+        headers={**media_repo, "Accept": f"{media};q=0.5, application/json;q=0.1"})
+    assert resp.headers["content-type"] == media
+    assert resp.content == b"agents: main\n"
+
+
+@pytest.mark.asyncio
+async def test_a_file_over_1_mib_has_no_content_in_json(client, media_repo, monkeypatch):
+    import app.api.contents as contents
+
+    encode = contents.base64.b64encode
+
+    def checked_encode(data, *args):
+        # The content is left out before it is encoded, not after.
+        assert len(data) < 1024 * 1024
+        return encode(data, *args)
+
+    monkeypatch.setattr(contents.base64, "b64encode", checked_encode)
     resp = await client.get(f"{API}/repos/testuser/media/contents/big.txt", headers=media_repo)
+    monkeypatch.undo()  # the blobs endpoint below encodes the whole file
     assert resp.status_code == 200
     body = resp.json()
     assert body["size"] == len(LARGE)

@@ -67,13 +67,13 @@ async def _git_bytes(repo_path: str, *args: str) -> bytes:
 
 def _file_response(
     owner: str, repo_name: str, path: str, content_bytes: bytes,
-    sha: str, ref: str, base_url: str,
+    sha: str, ref: str, base_url: str, with_content: bool = True,
 ) -> dict:
     api = f"{base_url}/api/v3"
-    encoded = base64.b64encode(content_bytes).decode()
+    encoded = base64.b64encode(content_bytes).decode() if with_content else ""
     return {
         "type": "file",
-        "encoding": "base64",
+        "encoding": "base64" if with_content else "none",
         "size": len(content_bytes),
         "name": os.path.basename(path),
         "path": path,
@@ -107,10 +107,25 @@ _JSON_CONTENT_LIMIT = 1024 * 1024
 
 
 def _raw_media_type(request: Request) -> str | None:
-    """The raw media type the Accept header asks for, if any."""
+    """The raw media type the Accept header asks for, if any.
+
+    A media range with ``q=0`` is one the client does not accept, so it is
+    not selected.
+    """
     for part in request.headers.get("accept", "").split(","):
-        media = part.split(";", 1)[0].strip().lower()
-        if media in _RAW_MEDIA_TYPES:
+        media, *params = part.split(";")
+        media = media.strip().lower()
+        if media not in _RAW_MEDIA_TYPES:
+            continue
+        q = 1.0
+        for param in params:
+            name, _, value = param.partition("=")
+            if name.strip().lower() == "q":
+                try:
+                    q = float(value.strip())
+                except ValueError:
+                    q = 1.0
+        if q > 0:
             return media
     return None
 
@@ -123,11 +138,10 @@ def _get_file_response(
     media = _raw_media_type(request)
     if media is not None:
         return Response(content=content_bytes, media_type=media)
-    body = _file_response(owner, repo_name, path, content_bytes, sha, ref, BASE)
-    if len(content_bytes) >= _JSON_CONTENT_LIMIT:
-        body["encoding"] = "none"
-        body["content"] = ""
-    return body
+    return _file_response(
+        owner, repo_name, path, content_bytes, sha, ref, BASE,
+        with_content=len(content_bytes) < _JSON_CONTENT_LIMIT,
+    )
 
 
 @router.get(
