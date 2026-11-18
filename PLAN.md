@@ -174,6 +174,8 @@ Actions visibility and runner evaluation.
 - `docs/bugs/fixed/indexing-a-push-holds-the-write-lock-through-the-reads.md`
 - `docs/bugs/fixed/workflow-runs-hold-the-write-lock-for-seconds.md`
 - `docs/bugs/fixed/workflow-lookups-resync-the-workflow-table-on-every-request.md`
+- `docs/bugs/fixed/connection-pool-caps-concurrent-runners.md`
+- `docs/bugs/fixed/writes-fail-after-a-5s-lock-wait.md`
 
 ## Decisions
 

@@ -12,7 +12,23 @@ class Settings(BaseSettings):
 
     # SQLite database URL
     DATABASE_URL: str = ""
-    SQLITE_BUSY_TIMEOUT_MS: int = 5000
+    # How long a writer waits for SQLite's single writer lock before the
+    # request fails with 503 "database is locked". Under a dozen runners and
+    # parallel clients on a loaded machine, lock waits ran past 5 s (up to
+    # 8.5 s observed); waiting is better than failing a write.
+    SQLITE_BUSY_TIMEOUT_MS: int = 30000
+    # Log a write transaction that holds SQLite's writer lock this long
+    # (app/database_diag.py).
+    SQLITE_SLOW_WRITE_LOG_MS: int = 1000
+    # Log the event loop running a timer this late (app/database_diag.py).
+    EVENT_LOOP_LAG_LOG_MS: int = 500
+    # Pooled connections to a file database. A request holds one from its
+    # first query (authentication) until it ends, and WAL lets readers run
+    # side by side, so the pool, not SQLite, capped concurrency: at
+    # SQLAlchemy's default 5 + 10, a dozen runners polling and posting logs
+    # used all 15 and every other request queued for one.
+    SQLITE_POOL_SIZE: int = 20
+    SQLITE_MAX_OVERFLOW: int = 40
     SQLITE_WRITE_RETRY_ATTEMPTS: int = 2
     # Requests per token (or client address) per hour that the rate-limit
     # headers and GET /rate_limit report, as github.com does. Nothing is

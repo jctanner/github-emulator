@@ -60,8 +60,15 @@ async def lifespan(app: FastAPI):
     except Exception:
         logger.warning("SSH server failed to start")
 
+    import asyncio
+
+    from app.database_diag import watch_event_loop_lag
+
+    loop_lag = asyncio.create_task(watch_event_loop_lag())
+
     yield
 
+    loop_lag.cancel()
     if memory_watch is not None:
         memory_watch.stop()
     # Stop SSH server
@@ -176,6 +183,9 @@ def create_app() -> FastAPI:
     if settings.MEMORY_WATCH:
         from app.middleware.memory_watch import MemoryWatchMiddleware
         app.add_middleware(MemoryWatchMiddleware)
+    # Names the request in the writer-lock logging.
+    from app.database_diag import RequestContextMiddleware
+    app.add_middleware(RequestContextMiddleware)
     # Outermost of all: a raw.githubusercontent.com path is rewritten before
     # anything else reads it.
     from app.middleware.raw_host import RawHostMiddleware
