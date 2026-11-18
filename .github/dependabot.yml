@@ -26,6 +26,7 @@ updates:
     cooldown: {default-days: 14}
 
   - package-ecosystem: docker
-    directory: /
+    # The emulator images, and the two runner images.
+    directories: ["/", "/src/runners/emulator", "/src/runners/upstream"]
     schedule: {interval: weekly}
     cooldown: {default-days: 14}

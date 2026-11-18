@@ -6,12 +6,21 @@ This guide shows you how to pass the checks required for your change; start by c
 
 Run these commands once from the repository root:
 
-1. Create the virtual environment and install Python dependencies:
+1. Create the virtual environment and install the locked Python dependencies:
    ```bash
-   uv venv && uv pip install -e ".[dev]"
+   uv sync --frozen --extra dev
    ```
 
-2. Install pre-commit hooks (scripts that run automated checks before git records a commit):
+2. Install pre-commit (the version CI uses) as a uv tool. It is not in the project's dependencies:
+   ```bash
+   uv tool install pre-commit==4.7.0
+   ```
+   ```
+   Installed 1 executable: pre-commit
+   ```
+   If uv warns that its tool directory is not on your `PATH`, run `uv tool update-shell` and open a new shell.
+
+3. Install the hooks (scripts that run automated checks before git records a commit):
    ```bash
    pre-commit install
    ```
@@ -19,7 +28,7 @@ Run these commands once from the repository root:
    pre-commit installed at .git/hooks/pre-commit
    ```
 
-3. Install frontend dependencies (needed only for the two frontend hooks):
+4. Install frontend dependencies (needed only for the two frontend hooks):
    ```bash
    npm --prefix src/frontend ci
    ```

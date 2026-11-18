@@ -71,8 +71,23 @@ jobs:
             "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz"
           echo "${GITLEAKS_SHA256}  /tmp/gitleaks.tgz" | sha256sum -c -
           tar -xzf /tmp/gitleaks.tgz -C /usr/local/bin gitleaks
+      # A pull request does not choose its own allowlist: the scan reads the
+      # base commit's .gitleaks.toml, and ignores .gitleaksignore files and
+      # gitleaks:allow comments. Until the base has the file (the change
+      # that adds it), the change's own copy is used.
       - name: Scan the full history
-        run: gitleaks git --no-banner --redact --config .gitleaks.toml .
+        env:
+          PR_BASE: ${{ github.event.pull_request.base.sha }}
+        run: |
+          config=.gitleaks.toml
+          if [ -n "$PR_BASE" ] && git cat-file -e "$PR_BASE:.gitleaks.toml" 2>/dev/null; then
+            git show "$PR_BASE:.gitleaks.toml" > /tmp/gitleaks-base.toml
+            config=/tmp/gitleaks-base.toml
+          fi
+          echo "config: $config"
+          mkdir -p /tmp/no-gitleaksignore
+          gitleaks git --no-banner --redact --config "$config" \
+            --gitleaks-ignore-path /tmp/no-gitleaksignore --ignore-gitleaks-allow .
 
   audit:
     runs-on: ubuntu-24.04
