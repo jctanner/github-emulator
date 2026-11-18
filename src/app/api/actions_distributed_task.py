@@ -221,6 +221,13 @@ async def connection_data(request: Request):
                 "action download info",
                 "_apis/distributedtask/hubs/{hubName}/plans/{planId}/actionsdownloadinfo",
             ),
+            # TaskResourceIds.PlanEvents: the worker raises JobCompleted here,
+            # and that event is the only place the job's outputs travel.
+            _service_definition(
+                "557624af-b29e-4c20-8ab0-0399d2204f3f",
+                "events",
+                "_apis/distributedtask/hubs/{hubName}/plans/{planId}/events",
+            ),
         ],
     }
     location_service_data.update(
@@ -588,7 +595,11 @@ def _job_request_message(
         "plan": {
             "planId": plan_guid,
             "planType": "Build",
-            "version": 1,
+            # From plan version 8 the worker raises JobCompleted, carrying the
+            # job's outputs, and the listener no longer finishes the request
+            # (PlanUtil.GetFeatures). Below 8 the outputs are never sent, so
+            # dt_raise_plan_event completes the job instead.
+            "version": 8,
         },
         "timeline": {
             "id": timeline_id,
@@ -597,6 +608,10 @@ def _job_request_message(
             _job_step_message(job, step, oidc_environment)
             for step in (job.steps or [])
         ],
+        # The job's `outputs:`, which the runner evaluates against its steps
+        # when the job ends and reports in JobCompleted. Without them it has
+        # nothing to report, and needs.<job>.outputs stays empty.
+        **({"jobOutputs": _template_mapping(job.outputs_config)} if job.outputs_config else {}),
         "variables": {
             "system.github.token": _variable(access_token, is_secret=True),
             "system.github.job": _variable(job.name),
@@ -1292,6 +1307,59 @@ def _wrapped_exception(status: int, type_key: str, message: str) -> JSONResponse
             "eventId": 3000,
         },
     )
+
+
+@router.post("/_apis/distributedtask/hubs/{hub_name}/plans/{plan_id}/events")
+@router.post("/{owner}/{repo}/_apis/distributedtask/hubs/{hub_name}/plans/{plan_id}/events")
+async def dt_raise_plan_event(
+    hub_name: str, plan_id: str, request: Request, db: DbSession,
+):
+    """Complete the job from the worker's JobCompleted event.
+
+    The upstream runner resolves a job's ``outputs:`` itself and sends them
+    only in this event, which it raises from plan version 8; at that version
+    the listener no longer finishes the job request, so this event is the
+    job's completion too. The outputs are stored first, so the jobs that need
+    this one are released with them. A secret output is left out, as GitHub
+    leaves it out. The event completes a job and sets the outputs the jobs
+    that need it read, so the job token's signature and expiry are checked.
+    """
+    from app.services.job_token_service import validate_job_token
+
+    auth = request.headers.get("Authorization", "")
+    validated = await validate_job_token(db, auth[7:]) if auth.startswith("Bearer ") else None
+    if validated is None:
+        raise HTTPException(
+            status_code=401, detail="Authentication required", headers={"WWW-Authenticate": "Bearer"}
+        )
+    job, _run = validated
+    body = await request.json()
+    name = body.get("name", body.get("Name", ""))
+    if name != "JobCompleted":
+        return Response(status_code=200)
+    event_job = str(body.get("jobId", body.get("JobId", "")) or "")
+    if event_job and event_job.lower() != _workflow_guid("job", job.id).lower():
+        raise HTTPException(status_code=403, detail="Event is for another job")
+    if job.status != "in_progress":
+        # Only a running job completes. A repeat after completion, or an event
+        # for a job that is queued again, changes neither its outputs nor its
+        # result: the jobs that need it may already have read them.
+        return Response(status_code=200)
+    outputs = body.get("outputs", body.get("Outputs")) or {}
+    resolved = {}
+    for key, value in outputs.items():
+        if isinstance(value, dict):
+            if value.get("isSecret", value.get("IsSecret")):
+                continue
+            value = value.get("value", value.get("Value"))
+        resolved[key] = "" if value is None else str(value)
+    runner = (await db.execute(select(Runner).where(Runner.id == job.runner_id))).scalar_one_or_none()
+    if runner is None:
+        raise HTTPException(status_code=409, detail="Job has no runner to complete it")
+    job.outputs = {**(job.outputs or {}), **resolved}
+    await _complete_job(job, runner, body.get("result", body.get("Result", "Succeeded")), db)
+    await db.commit()
+    return Response(status_code=200)
 
 
 @router.post("/_apis/distributedtask/hubs/{hub_name}/plans/{plan_id}/actionsdownloadinfo")

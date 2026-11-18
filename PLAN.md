@@ -109,6 +109,7 @@ Actions visibility and runner evaluation.
 - `docs/bugs/fixed/runner-agent-routes-are-not-scoped-to-the-runner.md`
 - `docs/bugs/fixed/actions-write-routes-do-not-check-the-repository-role.md`
 - `docs/bugs/fixed/job-server-routes-do-not-validate-the-job-token.md`
+- `docs/bugs/fixed/upstream-runner-job-outputs-are-empty.md`
 - `docs/bugs/fixed/graphql-repository-visibility.md`
 - `docs/bugs/fixed/graphql-pull-request-payload-missing-greenlet.md`
 - `docs/bugs/fixed/git-push-does-not-synchronize-pull-requests.md`
