@@ -1,0 +1,69 @@
+# Run on the files a change touches: `pre-commit install`, then commit as
+# usual, or `pre-commit run --from-ref origin/main --to-ref HEAD`. CI runs the
+# same range (.github/workflows/hygiene.yml).
+#
+# Hooks are pinned by commit, with the version in the comment; Dependabot
+# does not update these, so bump them with `pre-commit autoupdate --freeze`.
+#
+# ruff lints only, it does not format: most of the tree predates a formatter,
+# and reformatting it would touch nearly every file.
+repos:
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: 3e8a8703264a2f4a69428a0aa4dcb512790b2c8c  # frozen: v6.0.0
+    hooks:
+      - id: check-added-large-files
+        args: [--maxkb=500]
+      - id: check-merge-conflict
+      - id: check-toml
+      - id: check-yaml
+        args: [--allow-multiple-documents]
+      - id: end-of-file-fixer
+      - id: trailing-whitespace
+      - id: detect-private-key
+        # Test fixtures generate keys at run time; nothing in tests/ is real.
+        exclude: ^tests/
+
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: 25bcf95026b96e2dd3c0aec3090c3d6ef6ca2e6c  # frozen: v0.17.3
+    hooks:
+      - id: ruff-check
+
+  - repo: https://github.com/gitleaks/gitleaks
+    rev: 83d9cd684c87d95d656c1458ef04895a7f1cbd8e  # frozen: v8.30.1
+    hooks:
+      - id: gitleaks
+
+  - repo: https://github.com/shellcheck-py/shellcheck-py
+    rev: 745eface02aef23e168a8afb6b5737818efbea95  # frozen: v0.11.0.1
+    hooks:
+      - id: shellcheck
+        args: [--severity=warning]
+
+  - repo: https://github.com/rhysd/actionlint
+    rev: 914e7df21a07ef503a81201c76d2b11c789d3fca  # frozen: v1.7.12
+    hooks:
+      - id: actionlint
+
+  - repo: https://github.com/zizmorcore/zizmor-pre-commit
+    rev: c92afdf2c6ca336aaa8f39e2bd8d48f62dbd8e1f  # frozen: v1.31.1
+    hooks:
+      - id: zizmor
+        args: [--offline, --min-severity=medium]
+        # installed and updated by fullsend; changes go through fullsend's installer
+        exclude: ^\.github/workflows/(fullsend\.yaml|prioritize\.yml)$
+
+  # The frontend's own tools, from its lockfile (npm ci in src/frontend first).
+  - repo: local
+    hooks:
+      - id: frontend-eslint
+        name: frontend eslint
+        language: system
+        entry: npm --prefix src/frontend run lint
+        files: ^src/frontend/src/.*\.(ts|tsx)$
+        pass_filenames: false
+      - id: frontend-prettier
+        name: frontend prettier
+        language: system
+        entry: npm --prefix src/frontend run format
+        files: ^src/frontend/
+        pass_filenames: false

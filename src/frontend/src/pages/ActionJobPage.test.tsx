@@ -15,7 +15,10 @@ function stubJob(statuses: string[]) {
   vi.stubGlobal(
     "fetch",
     vi.fn().mockImplementation((input: Request | string) => {
-      const url = new URL(typeof input === "string" ? input : input.url, "http://localhost");
+      const url = new URL(
+        typeof input === "string" ? input : input.url,
+        "http://localhost",
+      );
       if (url.pathname.endsWith("/logs")) {
         logRequests.push(url.pathname);
         return Promise.resolve(new Response(`log line ${logRequests.length}`));
@@ -25,7 +28,12 @@ function stubJob(statuses: string[]) {
       const status = statuses[Math.min(jobReads, statuses.length - 1)];
       if (typeof input === "string") jobReads += 1;
       return Promise.resolve(
-        Response.json({id: 7, name: "Code", status, conclusion: status === "completed" ? "success" : null}),
+        Response.json({
+          id: 7,
+          name: "Code",
+          status,
+          conclusion: status === "completed" ? "success" : null,
+        }),
       );
     }),
   );
@@ -36,7 +44,10 @@ function renderPage() {
   render(
     <MemoryRouter initialEntries={["/ui/o/r/actions/jobs/7"]}>
       <Routes>
-        <Route path="/ui/:owner/:repo/actions/jobs/:jobId" element={<ActionJobPage />} />
+        <Route
+          path="/ui/:owner/:repo/actions/jobs/:jobId"
+          element={<ActionJobPage />}
+        />
       </Routes>
     </MemoryRouter>,
   );

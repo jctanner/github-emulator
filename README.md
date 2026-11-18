@@ -84,6 +84,8 @@ Honcho starts the reloadable FastAPI backend on port 8000 and Vite on port
 and GraphQL requests to FastAPI. The production image builds the same React
 source and serves its static bundle directly from FastAPI.
 
+See [CONTRIBUTING.md](CONTRIBUTING.md) for the checks a change must pass.
+
 ## Configuration
 
 All settings are driven by environment variables with the `GITHUB_EMULATOR_` prefix:

@@ -8,14 +8,13 @@ from datetime import datetime, timezone
 
 from fastapi import APIRouter, HTTPException
 from fastapi.responses import JSONResponse
-from sqlalchemy import select
 
-from app.api.deps import require_contents_write, AuthUser, CurrentUser, DbSession, get_repo_record_or_404
-from app.services.api_push import after_api_commit
-from app.services.branch_service import record_branch
+from app.api.deps import AuthUser, CurrentUser, DbSession, get_repo_record_or_404, require_contents_write
 from app.config import settings
 from app.schemas.browse import ContentResponse
 from app.schemas.user import _make_node_id
+from app.services.api_push import after_api_commit
+from app.services.branch_service import record_branch
 
 router = APIRouter(tags=["contents"])
 
@@ -113,7 +112,7 @@ async def get_contents(
         # Check if it's a blob (file) or tree (directory)
         obj_type = (await _git(repository.disk_path, "cat-file", "-t", blob_sha)).strip()
     except RuntimeError:
-        raise HTTPException(status_code=404, detail="Not Found")
+        raise HTTPException(status_code=404, detail="Not Found") from None
 
     if obj_type == "blob":
         content_bytes = await _git_bytes(repository.disk_path, "cat-file", "blob", blob_sha)
@@ -123,7 +122,7 @@ async def get_contents(
         try:
             ls_out = await _git(repository.disk_path, "ls-tree", blob_sha)
         except RuntimeError:
-            raise HTTPException(status_code=404, detail="Not Found")
+            raise HTTPException(status_code=404, detail="Not Found") from None
 
         api = f"{BASE}/api/v3"
         entries = []
@@ -177,7 +176,7 @@ async def create_or_update_file(
     try:
         content_bytes = base64.b64decode(content_b64)
     except Exception:
-        raise HTTPException(status_code=422, detail="Invalid base64 content")
+        raise HTTPException(status_code=422, detail="Invalid base64 content") from None
 
     repo_path = repository.disk_path
 
@@ -307,7 +306,7 @@ async def delete_file(
         parent_sha = (await _git(repo_path, "rev-parse", "--verify", f"refs/heads/{branch}")).strip()
         current = (await _git(repo_path, "rev-parse", f"{parent_sha}:{path}")).strip()
     except RuntimeError:
-        raise HTTPException(status_code=404, detail="Not Found")
+        raise HTTPException(status_code=404, detail="Not Found") from None
     if current != sha:
         raise HTTPException(status_code=409, detail=f"{path} does not match {sha}")
 
@@ -393,16 +392,3 @@ async def get_directory_readme(
 ):
     """Get the README in a directory (GitHub's ``GET /repos/{owner}/{repo}/readme/{dir}``)."""
     return await _readme_response(owner, repo, db, ref, dir)
-
-    branch = ref or repository.default_branch
-
-    # Try common README filenames
-    for readme_name in ["README.md", "README.rst", "README.txt", "README", "readme.md"]:
-        try:
-            blob_sha = (await _git(repository.disk_path, "rev-parse", f"{branch}:{readme_name}")).strip()
-            content_bytes = await _git_bytes(repository.disk_path, "cat-file", "blob", blob_sha)
-            return _file_response(owner, repo, readme_name, content_bytes, blob_sha, branch, BASE)
-        except RuntimeError:
-            continue
-
-    raise HTTPException(status_code=404, detail="Not Found")

@@ -68,6 +68,7 @@ Actions visibility and runner evaluation.
 - `docs/tasks/done/pull-request-web-labels.md`
 - `docs/tasks/done/issue-conversation-timeline-parity.md`
 - `docs/tasks/done/pull-request-commits-and-files-navigation.md`
+- `docs/tasks/done/repository-hygiene-and-locked-dependencies.md`
 
 ## Milestones
 

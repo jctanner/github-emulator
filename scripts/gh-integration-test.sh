@@ -200,7 +200,7 @@ else
 fi
 
 if [ -d "$CLONE_DIR/test-repo" ]; then
-    cd "$CLONE_DIR/test-repo"
+    cd "$CLONE_DIR/test-repo" || exit 1
     echo "# Test Repo" > README.md
     git add README.md
     git -c user.name="Test" -c user.email="test@test.com" -c commit.gpgsign=false \
