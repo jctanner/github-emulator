@@ -24,5 +24,8 @@ every such check failed.
   maintainer must still be an active member of the organization.
   Leaving the organization removes a user's team memberships in it, as
   on GitHub.
+- An App's bot has no organization membership. Its installation's `members`
+  permission decides instead, as for organization memberships: `read`
+  sees any team's memberships, and `write` also changes them.
 
 Tests: `tests/test_team_memberships.py`.

@@ -5,8 +5,7 @@ from urllib.parse import parse_qs
 
 from fastapi import APIRouter, HTTPException, Query, Request
 from fastapi.responses import JSONResponse
-from sqlalchemy import case, or_
-from sqlalchemy import func as sa_func, select, delete as sa_delete
+from sqlalchemy import select, delete as sa_delete
 
 from app.api.deps import AuthUser, CurrentUser, DbSession, get_repo_or_404
 from app.config import settings
@@ -57,19 +56,23 @@ async def _read_label_names(request: Request) -> list[str]:
     return fields.get("labels[]", []) + fields.get("labels", [])
 
 
-def _name_is(name: str):
-    """Match a label name the way GitHub does: case-insensitively.
+async def _find_label(db, repository_id: int, name: str, exclude_id: int | None = None) -> Label | None:
+    """The repository's label named ``name``, matched the way GitHub does:
+    case-insensitively, for any letters.
 
-    SQLite's ``lower()`` folds ASCII letters only, so a name is also matched
-    exactly: a name with non-ASCII capitals is found by its own spelling.
+    The comparison is Python's ``casefold``, as SQLite's ``lower()`` folds
+    ASCII letters only. A database written before names were compared
+    case-insensitively can hold both ``bug`` and ``BUG``; the exact spelling
+    wins, then the oldest. ``exclude_id`` leaves one label out (a rename).
     """
-    return or_(Label.name == name, sa_func.lower(Label.name) == name.lower())
-
-
-def _exact_first(name: str):
-    """Order matches so the exact spelling wins. A database written before
-    names were compared case-insensitively can hold both ``bug`` and ``BUG``."""
-    return (case((Label.name == name, 0), else_=1), Label.id)
+    labels = (await db.execute(select(Label).where(Label.repo_id == repository_id))).scalars().all()
+    folded = name.casefold()
+    matches = [
+        label for label in labels
+        if label.name.casefold() == folded and label.id != exclude_id
+    ]
+    matches.sort(key=lambda label: (label.name != name, label.id))
+    return matches[0] if matches else None
 
 
 def _label_already_exists() -> ValidationError:
@@ -81,10 +84,7 @@ def _label_already_exists() -> ValidationError:
 
 async def _get_or_create_label(db, repository_id: int, name: str) -> Label:
     """Resolve a repository label, creating it like GitHub's issue API does."""
-    result = await db.execute(
-        select(Label).where(Label.repo_id == repository_id, _name_is(name)).order_by(*_exact_first(name))
-    )
-    label = result.scalars().first()
+    label = await _find_label(db, repository_id, name)
     if label is not None:
         return label
 
@@ -150,12 +150,7 @@ async def create_label(
     """Create a label."""
     repository = await get_repo_or_404(owner, repo, db)
 
-    existing = await db.execute(
-        select(Label).where(
-            Label.repo_id == repository.id, _name_is(body.name)
-        )
-    )
-    if existing.scalars().first() is not None:
+    if await _find_label(db, repository.id, body.name) is not None:
         raise _label_already_exists()
 
     label = Label(
@@ -180,12 +175,7 @@ async def get_label(
     """Get a single label."""
     repository = await get_repo_or_404(owner, repo, db)
 
-    result = await db.execute(
-        select(Label).where(
-            Label.repo_id == repository.id, _name_is(name)
-        ).order_by(*_exact_first(name))
-    )
-    label = result.scalars().first()
+    label = await _find_label(db, repository.id, name)
     if label is None:
         raise HTTPException(status_code=404, detail="Not Found")
     return LabelResponse.from_db(label, BASE, owner, repo)
@@ -200,24 +190,12 @@ async def update_label(
     """Update a label."""
     repository = await get_repo_or_404(owner, repo, db)
 
-    result = await db.execute(
-        select(Label).where(
-            Label.repo_id == repository.id, _name_is(name)
-        ).order_by(*_exact_first(name))
-    )
-    label = result.scalars().first()
+    label = await _find_label(db, repository.id, name)
     if label is None:
         raise HTTPException(status_code=404, detail="Not Found")
 
     if body.new_name is not None:
-        clash = await db.execute(
-            select(Label).where(
-                Label.repo_id == repository.id,
-                Label.id != label.id,
-                _name_is(body.new_name),
-            )
-        )
-        if clash.scalars().first() is not None:
+        if await _find_label(db, repository.id, body.new_name, exclude_id=label.id) is not None:
             raise _label_already_exists()
         label.name = body.new_name
     if body.color is not None:
@@ -237,12 +215,7 @@ async def delete_label(
     """Delete a label."""
     repository = await get_repo_or_404(owner, repo, db)
 
-    result = await db.execute(
-        select(Label).where(
-            Label.repo_id == repository.id, _name_is(name)
-        ).order_by(*_exact_first(name))
-    )
-    label = result.scalars().first()
+    label = await _find_label(db, repository.id, name)
     if label is None:
         raise HTTPException(status_code=404, detail="Not Found")
 
@@ -368,10 +341,10 @@ async def set_issue_labels(
     label_names = await _read_label_names(request)
     labels_by_name: dict[str, Label] = {}
     for lname in dict.fromkeys(label_names):
-        if not isinstance(lname, str) or not lname or lname.lower() in labels_by_name:
+        if not isinstance(lname, str) or not lname or lname.casefold() in labels_by_name:
             continue
         label = labels_by_name.setdefault(
-            lname.lower(), await _get_or_create_label(db, repository.id, lname)
+            lname.casefold(), await _get_or_create_label(db, repository.id, lname)
         )
         db.add(IssueLabel(issue_id=issue.id, label_id=label.id))
 
@@ -425,12 +398,7 @@ async def remove_issue_label(
     if issue is None:
         raise HTTPException(status_code=404, detail="Not Found")
 
-    lbl_result = await db.execute(
-        select(Label).where(
-            Label.repo_id == repository.id, _name_is(name)
-        ).order_by(*_exact_first(name))
-    )
-    label = lbl_result.scalars().first()
+    label = await _find_label(db, repository.id, name)
     if label is None:
         raise HTTPException(status_code=404, detail="Label not found")
 

@@ -199,3 +199,26 @@ async def test_labels_differing_only_in_case_from_an_older_database(client, db_s
     assert issue.status_code == 201, issue.text
     assert [label["color"] for label in issue.json()["labels"]] == ["d73a4a"]
     assert (await client.delete(f"{API}/repos/testuser/case-legacy/labels/BUG", headers=auth_headers(test_token))).status_code == 204
+
+
+async def test_non_ascii_label_names_compare_case_insensitively(client, test_user, test_token):
+    """"Étiquette", "ÉTIQUETTE" and "étiquette" are one label, as on GitHub."""
+    from urllib.parse import quote
+
+    await _repo(client, test_token, "unicode-case")
+    assert (await _create_label(client, test_token, "unicode-case", "Étiquette")).status_code == 201
+
+    for variant in ("ÉTIQUETTE", "étiquette"):
+        got = await client.get(f"{API}/repos/testuser/unicode-case/labels/{quote(variant)}", headers=auth_headers(test_token))
+        assert got.status_code == 200, (variant, got.text)
+        assert got.json()["name"] == "Étiquette"
+        _assert_already_exists(await _create_label(client, test_token, "unicode-case", variant), "Label", "name")
+
+    issue = await client.post(
+        f"{API}/repos/testuser/unicode-case/issues", json={"title": "t", "labels": ["étiquette"]},
+        headers=auth_headers(test_token),
+    )
+    assert issue.status_code == 201, issue.text
+    assert [label["name"] for label in issue.json()["labels"]] == ["Étiquette"]
+    listed = await client.get(f"{API}/repos/testuser/unicode-case/labels", headers=auth_headers(test_token))
+    assert [label["name"] for label in listed.json()] == ["Étiquette"]

@@ -1,9 +1,9 @@
 """Team endpoints -- CRUD under /orgs/{org}/teams."""
 
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, HTTPException, Query, Request
 from sqlalchemy import select
 
-from app.api.deps import AuthUser, CurrentUser, DbSession
+from app.api.deps import AuthUser, CurrentUser, DbSession, require_installation_grant
 from app.config import settings
 from app.models.organization import Organization
 from app.models.team import Team, TeamMembership
@@ -225,22 +225,27 @@ def _team_membership_json(membership: TeamMembership, team: Team, org_login: str
 
 
 @router.get("/orgs/{org}/teams/{team_slug}/memberships/{username}")
-async def get_team_membership(org: str, team_slug: str, username: str, db: DbSession, user: AuthUser):
+async def get_team_membership(
+    org: str, team_slug: str, username: str, request: Request, db: DbSession, user: AuthUser,
+):
     """A user's membership in a team: 200 with role and state, 404 when the
-    user is not a member. The user, active members of the organization and
-    site admins can see it. A secret team is visible only to its own
-    members, org admins and site admins, as on GitHub; to anyone else it
-    does not exist."""
+    user is not a member. The user, active members of the organization, site
+    admins and an App installed on the organization with ``members: read``
+    can see it. A secret team is visible only to its own members, org admins,
+    site admins and such an App, as on GitHub; to anyone else it does not
+    exist."""
     from app.api.orgs import _get_membership, _get_org_or_404, _get_user_or_404, _is_org_admin
 
     organisation = await _get_org_or_404(org, db)
-    if user.login != username and not user.site_admin:
+    by_app = require_installation_grant(request, organisation.login, "members", write=False)
+    if not by_app and user.login != username and not user.site_admin:
         own = await _get_membership(organisation, user, db)
         if own is None or own.state != "active":
             raise HTTPException(status_code=404, detail="Not Found")
     team = await _team_by_slug_or_404(organisation, team_slug, db)
     if (
-        team.privacy == "secret"
+        not by_app
+        and team.privacy == "secret"
         and not await _is_org_admin(organisation, user, db)
         and await _team_membership(team, user, db) is None
     ):
@@ -254,7 +259,8 @@ async def get_team_membership(org: str, team_slug: str, username: str, db: DbSes
 
 @router.put("/orgs/{org}/teams/{team_slug}/memberships/{username}")
 async def set_team_membership(
-    org: str, team_slug: str, username: str, db: DbSession, user: AuthUser, body: dict | None = None,
+    org: str, team_slug: str, username: str, request: Request, db: DbSession, user: AuthUser,
+    body: dict | None = None,
 ):
     """Add a user to a team or change their team role (org admins, site
     admins and the team's maintainers).
@@ -267,7 +273,8 @@ async def set_team_membership(
 
     organisation = await _get_org_or_404(org, db)
     team = await _team_by_slug_or_404(organisation, team_slug, db)
-    await _require_team_manager(organisation, team, user, db)
+    if not require_installation_grant(request, organisation.login, "members", write=True):
+        await _require_team_manager(organisation, team, user, db)
     target = await _get_user_or_404(username, db)
     role = (body or {}).get("role", "member")
     if role not in TEAM_ROLES:
@@ -290,7 +297,9 @@ async def set_team_membership(
 
 
 @router.delete("/orgs/{org}/teams/{team_slug}/memberships/{username}", status_code=204)
-async def remove_team_membership(org: str, team_slug: str, username: str, db: DbSession, user: AuthUser):
+async def remove_team_membership(
+    org: str, team_slug: str, username: str, request: Request, db: DbSession, user: AuthUser,
+):
     """Remove a user from a team (org admins, site admins and the team's
     maintainers)."""
     from fastapi import Response
@@ -299,7 +308,8 @@ async def remove_team_membership(org: str, team_slug: str, username: str, db: Db
 
     organisation = await _get_org_or_404(org, db)
     team = await _team_by_slug_or_404(organisation, team_slug, db)
-    await _require_team_manager(organisation, team, user, db)
+    if not require_installation_grant(request, organisation.login, "members", write=True):
+        await _require_team_manager(organisation, team, user, db)
     target = await _get_user_or_404(username, db)
     membership = await _team_membership(team, target, db)
     if membership is None:

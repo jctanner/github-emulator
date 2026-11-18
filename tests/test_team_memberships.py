@@ -3,9 +3,10 @@
 import pytest
 
 from tests.conftest import API, auth_headers
+from tests.test_installation_administration import _bot_token, org  # noqa: F401
 
 
-async def _org_with_team(client, admin_token, org="acme", team="mint-status"):
+async def _org_with_team(client, admin_token, org="acme", team="mint-status"):  # noqa: F811 - not the org fixture
     created = await client.post(
         f"{API}/admin/organizations", headers=auth_headers(admin_token),
         json={"login": org, "admin": "admin"},
@@ -145,3 +146,32 @@ async def test_a_maintainer_removed_from_the_org_manages_nothing(client, admin_t
     # Rejoining the organization does not bring the maintainer role back.
     await client.put(f"{API}/orgs/acme/memberships/testuser", headers=auth_headers(admin_token), json={"role": "member"})
     assert (await client.put(url, headers=auth_headers(test_token), json={})).status_code == 403
+
+
+@pytest.mark.asyncio
+async def test_an_app_reads_and_changes_team_memberships_by_its_members_grant(
+    client, org, admin_token, test_user, test_token,  # noqa: F811 - the org fixture
+):
+    """An App's bot has no organization membership: its installation's
+    ``members`` permission decides, as for organization memberships."""
+    member_org = org
+    made = await client.post(f"{API}/orgs/{member_org}/teams", headers=auth_headers(test_token), json={"name": "crew"})
+    assert made.status_code == 201, made.text
+    slug = made.json()["slug"]
+    joined = await client.put(f"{API}/orgs/{member_org}/memberships/admin", headers=auth_headers(test_token), json={"role": "member"})
+    assert joined.status_code == 200, joined.text
+    url = f"{API}/orgs/{member_org}/teams/{slug}/memberships/admin"
+
+    reader = await _bot_token(client, admin_token, "3001", "members-reader", {"members": "read", "metadata": "read"})
+    writer = await _bot_token(client, admin_token, "3002", "members-writer", {"members": "write", "metadata": "read"})
+    other = await _bot_token(client, admin_token, "3003", "contents-only", {"contents": "write", "metadata": "read"})
+
+    assert (await client.put(url, headers=writer, json={"role": "maintainer"})).json()["role"] == "maintainer"
+    seen = await client.get(url, headers=reader)
+    assert seen.status_code == 200, seen.text
+    assert seen.json()["role"] == "maintainer"
+    refused = await client.put(url, headers=reader, json={})
+    assert refused.status_code == 403
+    assert "Resource not accessible by integration" in refused.json()["message"]
+    assert (await client.put(url, headers=other, json={})).status_code == 403
+    assert (await client.delete(url, headers=writer)).status_code == 204
