@@ -359,18 +359,26 @@ async def _check_read_access(db, repository, current_user) -> None:
 _ROLE_PERMISSIONS = {"push": {"push", "maintain", "admin"}, "admin": {"admin"}}
 
 
-async def _require_repository_role(request: Request, db, repository, user, role: str) -> None:
+async def _require_repository_role(
+    request: Request, db, repository, user, role: str, *, job_token: bool = True,
+) -> None:
     """403 unless the caller holds ``role`` ("push" or "admin") on the repository.
 
-    GitHub requires write access to dispatch, cancel or re-run a workflow and
-    to manage artifacts, and admin access (the owner, for a personal
-    repository) for Actions secrets, variables and permissions. A job's
-    GITHUB_TOKEN and an App installation token were already held to their
-    own permissions and repositories when they authenticated, so this is a
-    person's credential: a site admin, or the person's permission on the
+    GitHub requires write access to dispatch, cancel or re-run a workflow, to
+    manage artifacts and to manage Actions variables, and admin access (the
+    owner, for a personal repository) for Actions secrets and permissions.
+    A job's GITHUB_TOKEN and an App installation token were already held to
+    their own permissions and repositories when they authenticated, so this
+    is a person's credential: a site admin, or the person's permission on the
     repository.
+
+    ``job_token=False`` marks a route a GITHUB_TOKEN cannot use at all: it has
+    no permission for secrets, variables or repository administration, so
+    GitHub answers "Resource not accessible by integration".
     """
     if getattr(request.state, "workflow_job", None) is not None:
+        if not job_token:
+            raise HTTPException(status_code=403, detail="Resource not accessible by integration")
         return
     if getattr(request.state, "is_installation_token", False):
         return
@@ -845,7 +853,7 @@ async def create_or_update_secret(
 ):
     """Create or update a repository secret."""
     repository = await get_repo_or_404(owner, repo, db)
-    await _require_repository_role(request, db, repository, user, "admin")
+    await _require_repository_role(request, db, repository, user, "admin", job_token=False)
     result = await db.execute(
         select(Secret).where(Secret.repo_id == repository.id, Secret.name == secret_name)
     )
@@ -874,7 +882,7 @@ async def delete_secret(
 ):
     """Delete a repository secret."""
     repository = await get_repo_or_404(owner, repo, db)
-    await _require_repository_role(request, db, repository, user, "admin")
+    await _require_repository_role(request, db, repository, user, "admin", job_token=False)
     result = await db.execute(
         select(Secret).where(Secret.repo_id == repository.id, Secret.name == secret_name)
     )
@@ -908,7 +916,7 @@ async def set_actions_permissions(
     CI on every push.
     """
     repository = await get_repo_or_404(owner, repo, db)
-    await _require_repository_role(request, db, repository, user, "admin")
+    await _require_repository_role(request, db, repository, user, "admin", job_token=False)
     if "enabled" not in body or not isinstance(body["enabled"], bool):
         raise HTTPException(status_code=422, detail="enabled must be true or false")
     repository.actions_enabled = body["enabled"]
@@ -940,7 +948,7 @@ async def set_workflow_permissions(
 ):
     """Set the repository's default workflow permissions."""
     repository = await get_repo_or_404(owner, repo, db)
-    await _require_repository_role(request, db, repository, user, "admin")
+    await _require_repository_role(request, db, repository, user, "admin", job_token=False)
     if "default_workflow_permissions" in body:
         value = str(body["default_workflow_permissions"]).strip().lower()
         if value not in ("read", "write"):
@@ -981,7 +989,7 @@ async def create_variable(
 ):
     """Create a repository variable."""
     repository = await get_repo_or_404(owner, repo, db)
-    await _require_repository_role(request, db, repository, user, "admin")
+    await _require_repository_role(request, db, repository, user, "push", job_token=False)
     name = body.get("name", "")
     value = body.get("value", "")
     if not name:
@@ -1037,7 +1045,7 @@ async def update_variable(
 ):
     """Update a repository variable."""
     repository = await get_repo_or_404(owner, repo, db)
-    await _require_repository_role(request, db, repository, user, "admin")
+    await _require_repository_role(request, db, repository, user, "push", job_token=False)
     result = await db.execute(
         select(Variable).where(Variable.repo_id == repository.id, Variable.name == variable_name)
     )
@@ -1060,7 +1068,7 @@ async def delete_variable(
 ):
     """Delete a repository variable."""
     repository = await get_repo_or_404(owner, repo, db)
-    await _require_repository_role(request, db, repository, user, "admin")
+    await _require_repository_role(request, db, repository, user, "push", job_token=False)
     result = await db.execute(
         select(Variable).where(Variable.repo_id == repository.id, Variable.name == variable_name)
     )
