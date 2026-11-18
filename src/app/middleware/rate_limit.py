@@ -7,8 +7,8 @@ from starlette.middleware.base import BaseHTTPMiddleware, RequestResponseEndpoin
 from starlette.requests import Request
 from starlette.responses import Response
 
-# Rate limit configuration
-RATE_LIMIT = 5000
+from app.config import settings
+
 RATE_WINDOW_SECONDS = 3600  # 1 hour
 
 
@@ -45,7 +45,7 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
     """Middleware that adds GitHub-compatible rate limit headers to all API responses.
 
     Headers added:
-      - X-RateLimit-Limit: 5000
+      - X-RateLimit-Limit: <settings.RATE_LIMIT, default 5000>
       - X-RateLimit-Remaining: <remaining>
       - X-RateLimit-Reset: <unix-timestamp>
       - X-RateLimit-Used: <used>
@@ -58,17 +58,21 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
         # Determine the client key (token or IP)
         key = self._get_client_key(request)
 
-        # Increment usage
-        state = _rate_limit_state.increment(key)
+        # GET /rate_limit does not count against the limit, as on GitHub.
+        if request.url.path.rstrip("/") == "/api/v3/rate_limit":
+            state = _rate_limit_state.get_or_reset(key)
+        else:
+            state = _rate_limit_state.increment(key)
 
         response = await call_next(request)
 
         # Add rate limit headers
+        limit = settings.RATE_LIMIT
         used = state["used"]
-        remaining = max(0, RATE_LIMIT - used)
+        remaining = max(0, limit - used)
         reset_at = int(state["reset_at"])
 
-        response.headers["X-RateLimit-Limit"] = str(RATE_LIMIT)
+        response.headers["X-RateLimit-Limit"] = str(limit)
         response.headers["X-RateLimit-Remaining"] = str(remaining)
         response.headers["X-RateLimit-Reset"] = str(reset_at)
         response.headers["X-RateLimit-Used"] = str(used)

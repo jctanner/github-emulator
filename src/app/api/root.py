@@ -89,13 +89,21 @@ async def meta():
 
 
 @router.get("/api/v3/rate_limit")
-async def rate_limit():
-    """Rate-limit status -- always returns unlimited for the emulator."""
+async def rate_limit(request: Request):
+    """Rate-limit status, the same numbers as the caller's X-RateLimit headers.
+
+    Core, GraphQL and ``rate`` report ``RATE_LIMIT`` and the caller's usage
+    this hour; the emulator refuses nothing when it runs out.
+    """
+    from app.middleware.rate_limit import RateLimitMiddleware, _rate_limit_state
+
+    limit = settings.RATE_LIMIT
+    state = _rate_limit_state.get_or_reset(RateLimitMiddleware._get_client_key(request))
     resource_template = {
-        "limit": 5000,
-        "used": 0,
-        "remaining": 5000,
-        "reset": 0,
+        "limit": limit,
+        "used": state["used"],
+        "remaining": max(0, limit - state["used"]),
+        "reset": int(state["reset_at"]),
     }
     return {
         "resources": {
