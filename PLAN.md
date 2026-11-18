@@ -171,6 +171,9 @@ Actions visibility and runner evaluation.
 - `docs/bugs/fixed/job-needing-a-reusable-workflow-caller-waits-forever.md`
 - `docs/bugs/fixed/actions-in-emulator-repositories-are-fetched-upstream.md`
 - `docs/bugs/fixed/jobs-list-shows-jobs-waiting-on-needs.md`
+- `docs/bugs/fixed/indexing-a-push-holds-the-write-lock-through-the-reads.md`
+- `docs/bugs/fixed/workflow-runs-hold-the-write-lock-for-seconds.md`
+- `docs/bugs/fixed/workflow-lookups-resync-the-workflow-table-on-every-request.md`
 
 ## Decisions
 
