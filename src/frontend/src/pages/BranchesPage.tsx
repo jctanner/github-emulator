@@ -1,27 +1,19 @@
 import {FormEvent, useState} from "react";
 import {Link, useParams} from "react-router-dom";
 
+import {type Branch, loadAllBranches} from "../api/branches";
 import {api} from "../api/client";
-import type {components} from "../api/schema";
 import {Loadable} from "../components/Loadable";
 import {Octicon} from "../components/Octicon";
 import {useRepository} from "../components/RepositoryContext";
-import {requireApiData, useApiData} from "../hooks/useApiData";
-
-type Branch = components["schemas"]["BranchResponse"];
+import {useApiData} from "../hooks/useApiData";
 
 export function BranchesPage() {
   const {owner = "", repo = ""} = useParams();
   const repository = useRepository();
-  const result = useApiData<Branch[]>(`branches:${owner}/${repo}`, async () => {
-    const {data, response} = await api.GET(
-      "/api/v3/repos/{owner}/{repo}/branches",
-      {
-        params: {path: {owner, repo}, query: {per_page: 100}},
-      },
-    );
-    return requireApiData(data, response, "Could not load branches.");
-  });
+  const result = useApiData<Branch[]>(`branches:${owner}/${repo}`, () =>
+    loadAllBranches(owner, repo),
+  );
   const [name, setName] = useState("");
   const [source, setSource] = useState("");
   const [query, setQuery] = useState("");
