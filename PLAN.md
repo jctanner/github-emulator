@@ -120,6 +120,7 @@ Actions visibility and runner evaluation.
 - `docs/bugs/fixed/fullsend-installation-token-attribution-and-review-loop.md`
 - `docs/bugs/fixed/cancelled-run-leaves-active-runner-job.md`
 - `docs/bugs/fixed/branch-selector-lists-only-the-first-100-branches.md`
+- `docs/bugs/fixed/users-and-organizations-share-ids.md`
 
 ## Decisions
 
