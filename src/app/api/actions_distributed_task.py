@@ -1946,8 +1946,10 @@ async def dt_resolve_action_download_info(
             )
         # A repository on this emulator first, then upstream. GHES resolves a
         # repository it holds locally and goes to github.com only for one it
-        # lacks; this emulator also goes upstream when the repository is here
-        # but lacks the ref, so a partial local copy of a public action works.
+        # lacks; this emulator also goes upstream when a public repository is
+        # here but lacks the ref, so a partial local copy of a public action
+        # works. A private or internal repository here that lacks the ref is
+        # unresolvable, and its name is not looked up upstream.
         held, local = await _local_action_repository(name, job, db)
         if held and local is None:
             # Here, but not usable by this job's repository: as unresolvable as
@@ -1957,6 +1959,11 @@ async def dt_resolve_action_download_info(
                 f"Unable to resolve action {name}@{ref}, repository not found",
             )
         sha = await resolve_local_action_sha(local.disk_path, ref) if local else None
+        if sha is None and local is not None and not _is_public(local):
+            return _wrapped_exception(
+                404, "UnresolvableActionDownloadInfoException",
+                f"Unable to resolve action {name}@{ref}, unable to find version {ref}",
+            )
         if sha is None:
             try:
                 sha = await resolve_action_sha(name, ref)
@@ -1995,7 +2002,7 @@ async def _local_action_repository(
     )).scalars().first()
     if repository is None or not repository.disk_path:
         return False, None
-    if not repository.private and (repository.visibility or "public") == "public":
+    if _is_public(repository):
         return True, repository
     job_repository = (await db.execute(
         select(Repository)
@@ -2010,6 +2017,10 @@ async def _local_action_repository(
     return True, None
 
 
+def _is_public(repository: Repository) -> bool:
+    return not repository.private and (repository.visibility or "public") == "public"
+
+
 def _owner_login(repository: Repository) -> str:
     return repository.full_name.split("/", 1)[0].lower()
 
@@ -2020,7 +2031,8 @@ async def dt_action_archive(
     owner: str, repo: str, sha: str, fmt: str, request: Request, db: DbSession,
 ):
     """Serve an action archive: built from a repository here when it holds the
-    commit, else fetched from upstream once per SHA."""
+    commit, else fetched from upstream once per SHA. A private or internal
+    repository here that lacks the commit is 404, not fetched upstream."""
     job = await _get_job_from_download_credential(request, db)
     name = f"{owner}/{repo}"
     held, local = await _local_action_repository(name, job, db)
@@ -2031,6 +2043,8 @@ async def dt_action_archive(
     try:
         if local and await resolve_local_action_sha(local.disk_path, sha) == sha:
             path = await build_local_action_archive(local.disk_path, name, sha, fmt)
+        elif local is not None and not _is_public(local):
+            raise HTTPException(status_code=404, detail="Not Found")
         else:
             path = await fetch_action_archive(name, sha, fmt)
     except UpstreamActionError as exc:

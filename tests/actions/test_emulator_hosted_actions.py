@@ -2,8 +2,9 @@
 
 As on GHES, an action pushed to a repository here is used from here, and a
 name the emulator does not hold goes upstream. GHES goes upstream only for a
-repository it lacks; this emulator also does when the repository is here but
-lacks the ref. Before, every reference was resolved upstream, so an action in
+repository it lacks; this emulator also does when a public repository is here
+but lacks the ref. A private repository here that lacks the ref or commit is
+unresolvable, and is not looked up upstream. Before, every reference was resolved upstream, so an action in
 a repository here failed with "does not exist upstream".
 
 As on GitHub, a job may use an action from a public repository, its own
@@ -163,3 +164,36 @@ async def test_a_private_repository_with_the_jobs_owner_is_served(
 
     archive = await _archive(client, token, "testuser/own-private-action", sha)
     assert archive.status_code == 200, archive.text
+
+
+@pytest.mark.asyncio
+async def test_a_ref_missing_from_a_private_repository_here_is_not_looked_up_upstream(
+    client, uses_workflow, test_token, monkeypatch  # noqa: F811
+):
+    await _private_repository(client, test_token, "own-private-action")
+    looked_up = []
+
+    async def upstream(name, ref):
+        looked_up.append((name, ref))
+        return SHA
+    monkeypatch.setattr(dt, "resolve_action_sha", upstream)
+
+    body = await _claim_job(client, test_token)
+    token = body["variables"]["system.github.token"]["Value"]
+    resp = await _download_info(client, body, token, "testuser/own-private-action", "v1")
+    assert resp.status_code == 404
+    assert resp.json()["typeKey"] == "UnresolvableActionDownloadInfoException"
+    assert looked_up == []
+
+
+@pytest.mark.asyncio
+async def test_a_commit_missing_from_a_private_repository_here_is_not_fetched_upstream(
+    client, uses_workflow, test_token, monkeypatch  # noqa: F811
+):
+    await _private_repository(client, test_token, "own-private-action")
+    _no_upstream(monkeypatch)
+
+    body = await _claim_job(client, test_token)
+    token = body["variables"]["system.github.token"]["Value"]
+    archive = await _archive(client, token, "testuser/own-private-action", SHA)
+    assert archive.status_code == 404

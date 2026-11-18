@@ -14,9 +14,14 @@ repository it lacks. A test stack that pushes its own actions needs the same.
 
 - `actionsdownloadinfo` resolves `owner/repo@ref` against a repository on the
   emulator first. A name the emulator does not hold goes upstream.
-- Unlike GHES, a repository here that lacks the ref also goes upstream, so a
-  partial local copy of a public action (one pushed without all its tags)
-  still works.
+- Unlike GHES, a public repository here that lacks the ref also goes
+  upstream, so a partial local copy of a public action (one pushed without
+  all its tags) still works.
+- A private or internal repository here that lacks the ref is unresolvable
+  (`404` `UnresolvableActionDownloadInfoException`), and the archive URL for a
+  commit it lacks is `404`. Neither is looked up upstream under the same name,
+  so a private action's name never resolves to a different upstream
+  repository's code.
 - As on GitHub, a job may use a repository here as an action only when it is
   public, is the job's own repository, or is private with the same owner as
   the job's repository. GitHub also requires that owner to allow access to
