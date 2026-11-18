@@ -100,6 +100,7 @@ Actions visibility and runner evaluation.
 
 ## Fixed Bugs
 
+- `docs/bugs/fixed/graphql-app-authors-are-typed-as-users.md`
 - `docs/bugs/fixed/close-issue-ignores-the-state-reason.md`
 - `docs/bugs/fixed/issue-closed-by-pull-requests-references-is-empty.md`
 - `docs/bugs/fixed/graphql-repository-visibility.md`
