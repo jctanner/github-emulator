@@ -134,6 +134,7 @@ def _request_base(request: Request) -> str:
     return _runner_reachable_base_url(configured)
 
 
+from app.api.actions_dispatch import _claim_queued_job
 from app.api.actions_runners import normalise_runner_os
 from app.api.actions_runner_protocol import (
     EMULATOR_INSTANCE_ID,
@@ -869,27 +870,19 @@ async def _claim_next_job(
         job_query = job_query.where(WorkflowRun.repo_id == runner.repo_id)
     job_result = await db.execute(job_query)
     runner_labels = {str(label).lower() for label in (runner.labels or [])}
-    job = next(
-        (
-            candidate
-            for candidate in job_result.scalars().all()
-            if {
-                str(label).lower()
-                for label in (candidate.labels or ["self-hosted"])
-            }.issubset(runner_labels)
-        ),
-        None,
-    )
+    job = None
+    for candidate in job_result.scalars().all():
+        if not {
+            str(label).lower()
+            for label in (candidate.labels or ["self-hosted"])
+        }.issubset(runner_labels):
+            continue
+        # Another runner's poll may have claimed this job since it was read.
+        if await _claim_queued_job(db, candidate, runner):
+            job = candidate
+            break
     if job is None:
         return Response(status_code=204)
-
-    job.status = "in_progress"
-    job.runner_id = runner.id
-    job.runner_name = runner.name
-    job.started_at = datetime.now(timezone.utc)
-    runner.busy = True
-    runner.status = "busy"
-    await db.commit()
 
     run_result = await db.execute(
         select(WorkflowRun).where(WorkflowRun.id == job.run_id)
@@ -1197,6 +1190,20 @@ async def dt_delete_pool_session(
     return await dt_delete_session(session_id, request, db)
 
 
+def _job_request_not_found(request_id: int) -> JSONResponse:
+    """The job request is gone or held by another runner.
+
+    The runner stops renewing its lock, and abandons the job, only on
+    TaskAgentJobNotFoundException. A bare 404 is retried, so a runner that
+    lost the job would keep renewing instead of polling for another one.
+    """
+    return _wrapped_exception(
+        404,
+        "TaskAgentJobNotFoundException",
+        f"Job request {request_id} was not found or is assigned to another runner.",
+    )
+
+
 @router.post("/_apis/distributedtask/pools/{pool_id}/jobrequests/{request_id}")
 @router.post("/{owner}/{repo}/_apis/distributedtask/pools/{pool_id}/jobrequests/{request_id}")
 async def dt_accept_pool_job_request(
@@ -1209,7 +1216,7 @@ async def dt_accept_pool_job_request(
     )
     job = result.scalar_one_or_none()
     if job is None:
-        raise HTTPException(status_code=404, detail="Job request not found")
+        return _job_request_not_found(request_id)
     return _job_request_response(job, runner)
 
 
@@ -1226,7 +1233,7 @@ async def dt_update_pool_job_request(
     )
     job = result.scalar_one_or_none()
     if job is None:
-        raise HTTPException(status_code=404, detail="Job request not found")
+        return _job_request_not_found(request_id)
 
     query_result = request.query_params.get("result")
     if "result" in body and body["result"] is not None:
@@ -1252,7 +1259,7 @@ async def dt_delete_pool_job_request(
     )
     job = result.scalar_one_or_none()
     if job is None:
-        raise HTTPException(status_code=404, detail="Job request not found")
+        return _job_request_not_found(request_id)
 
     await _complete_job(job, runner, request.query_params.get("result", "Succeeded"), db)
     await db.commit()

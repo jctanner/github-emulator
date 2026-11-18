@@ -10,7 +10,7 @@ from urllib.parse import parse_qs
 
 from fastapi import APIRouter, HTTPException, Query, Request
 from fastapi.responses import Response
-from sqlalchemy import select
+from sqlalchemy import select, update
 
 from app.api.deps import AuthUser, DbSession, get_repo_or_404
 from app.config import settings
@@ -467,6 +467,38 @@ async def poll_for_site_wide_jobs(
     )
 
 
+async def _claim_queued_job(db, job: WorkflowJob, runner: Runner) -> bool:
+    """Assign a queued *job* to *runner*, unless another runner got it first.
+
+    Concurrent polls in separate sessions can all read the same job as
+    queued. The assignment is a conditional UPDATE, so only the poll whose
+    write still finds the job queued owns it; the runner is marked busy only
+    then. A poll that loses returns False and moves on to the next candidate.
+    """
+    claimed = await db.execute(
+        update(WorkflowJob)
+        .where(WorkflowJob.id == job.id, WorkflowJob.status == "queued")
+        .values(
+            status="in_progress",
+            runner_id=runner.id,
+            runner_name=runner.name,
+            started_at=datetime.now(timezone.utc),
+        )
+        .execution_options(synchronize_session=False)
+    )
+    if claimed.rowcount != 1:
+        # End the write transaction the UPDATE opened. Commit rather than
+        # rollback: a rollback would expire the runner the caller still uses.
+        await db.commit()
+        return False
+
+    runner.busy = True
+    runner.status = "busy"
+    await db.commit()
+    await db.refresh(job)
+    return True
+
+
 async def _poll_for_jobs(
     runner: Runner,
     db,
@@ -503,14 +535,8 @@ async def _poll_for_jobs(
                 if str(label).strip()
             }
             if job_labels.issubset(runner_labels):
-                job.status = "in_progress"
-                job.runner_id = runner.id
-                job.runner_name = runner.name
-                job.started_at = datetime.now(timezone.utc)
-
-                runner.busy = True
-                runner.status = "busy"
-                await db.commit()
+                if not await _claim_queued_job(db, job, runner):
+                    continue
 
                 run_result = await db.execute(
                     select(WorkflowRun).where(WorkflowRun.id == job.run_id)
