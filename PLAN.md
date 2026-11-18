@@ -109,6 +109,7 @@ Actions visibility and runner evaluation.
 - `docs/bugs/fixed/runner-agent-routes-are-not-scoped-to-the-runner.md`
 - `docs/bugs/fixed/actions-write-routes-do-not-check-the-repository-role.md`
 - `docs/bugs/fixed/job-server-routes-do-not-validate-the-job-token.md`
+- `docs/bugs/fixed/python-runner-uses-a-fixed-bash.md`
 - `docs/bugs/fixed/gh-in-upstream-runner-steps-calls-github-com.md`
 - `docs/bugs/fixed/upstream-runner-logs-land-on-the-wrong-job.md`
 - `docs/bugs/fixed/upstream-runner-job-outputs-are-empty.md`
