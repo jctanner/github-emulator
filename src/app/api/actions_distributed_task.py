@@ -986,11 +986,6 @@ def _complete_queued_steps(job: WorkflowJob, result_str: str | int) -> None:
     flag_modified(job, "steps")
 
 
-# Jobs a JobCancellation message has been sent for, so the long-poll sends it
-# once. In memory: after a restart the runner may get it again, and a runner
-# ignores a cancellation for a job it no longer runs.
-_cancellations_sent: set[int] = set()
-
 # The job each runner was last handed: runner id -> (job id, job guid). Kept
 # apart from the job row, because deleting a repository deletes its runs and
 # jobs while runners may still be executing them.
@@ -1006,14 +1001,25 @@ _IDLE_GRACE = timedelta(minutes=2)
 # job, and hand-outs and the settling of a runner's state are serialised per
 # runner.
 _poll_generation: dict[int, int] = {}
-# Job messages a runner acknowledged (DELETE of the message, which the runner
-# sends once it has dispatched the job, before its next poll). A job in here
-# was received for certain, whatever lastMessageId a late poll carries. Kept
-# for good (job ids are never reused): dropping an id when its report arrived
-# opened a gap, before that report committed, in which the job looked
-# unreceived and was requeued after it had run.
-_acknowledged: set[int] = set()
+# The job message each runner last acknowledged (DELETE of the message, which
+# the runner sends once it has dispatched the job, before its next poll): that
+# job was received for certain, whatever lastMessageId a late poll carries.
+# One entry per runner, replaced only by the runner's next acknowledgement,
+# which follows a hand-out that needed the previous job's report committed.
+# Dropping the entry when the report arrived opened a gap, before that report
+# committed, in which the job looked unreceived and was requeued after it ran.
+_acknowledged: dict[int, int] = {}
+# The job whose JobCancellation each runner last acknowledged. Until then the
+# cancellation is sent again on every live poll, so a response the runner
+# abandoned or never got does not lose it. In memory: after a restart the
+# runner may get it once more, and it ignores a cancellation for a job it no
+# longer runs.
+_cancellation_acknowledged: dict[int, int] = {}
 _runner_locks: dict[tuple[int, int], asyncio.Lock] = {}
+
+# JobCancellation message ids, apart from job message ids (the job id), so a
+# DELETE of one is not taken for the other.
+_CANCELLATION_MESSAGE_BASE = 1 << 40
 
 # How long a handed-out job may stay unacknowledged before a poll that does
 # not name it counts as proof the runner never received it.
@@ -1026,11 +1032,21 @@ _POLL_INTERVAL_SECONDS = 2.0
 
 def _runner_lock(runner_id: int) -> asyncio.Lock:
     # Keyed by event loop too: a lock is bound to the loop it first waits on.
-    key = (id(asyncio.get_running_loop()), runner_id)
+    loop = id(asyncio.get_running_loop())
+    key = (loop, runner_id)
     lock = _runner_locks.get(key)
     if lock is None:
+        # Locks of a loop that has gone (tests run one loop each) are dead.
+        for stale in [k for k, held in _runner_locks.items() if k[0] != loop and not held.locked()]:
+            del _runner_locks[stale]
         lock = _runner_locks[key] = asyncio.Lock()
     return lock
+
+
+def _reset_broker_state() -> None:
+    """Forget every runner's in-memory broker state (tests; ids restart at 1)."""
+    for state in (_holding, _poll_generation, _acknowledged, _cancellation_acknowledged, _runner_locks):
+        state.clear()
 
 
 async def _pending_cancellation(runner: Runner, db) -> dict | None:
@@ -1075,20 +1091,29 @@ async def _pending_cancellation(runner: Runner, db) -> dict | None:
         if job is None or job.conclusion != "cancelled":
             return None
         job_id, job_guid = job.id, _workflow_guid("job", job.id)
-    if job_id in _cancellations_sent:
+    if _cancellation_acknowledged.get(runner.id) == job_id:
         return None
-    _cancellations_sent.add(job_id)
     # The shape the runner's JobCancelMessage reads; the timeout is how long
     # its steps get to stop before they are killed.
     body = json.dumps({"jobId": job_guid, "timeout": "00:05:00"}, separators=(",", ":"))
+    message_id = _CANCELLATION_MESSAGE_BASE + job_id
     return {
-        "messageId": job_id,
+        "messageId": message_id,
         "messageType": "JobCancellation",
         "body": body,
-        "MessageId": job_id,
+        "MessageId": message_id,
         "MessageType": "JobCancellation",
         "Body": body,
     }
+
+
+def _age(started: datetime | None, now: datetime) -> timedelta:
+    """How long ago a job was handed out; a job with no start time counts as old."""
+    if started is None:
+        return _IDLE_GRACE
+    if started.tzinfo is None:
+        started = started.replace(tzinfo=timezone.utc)
+    return now - started
 
 
 def _job_started(job: WorkflowJob) -> bool:
@@ -1115,29 +1140,45 @@ async def _settle_idle_runner(runner: Runner, status: str, last_message_id: str,
     await db.refresh(runner, attribute_names=["busy", "status"])
     if not (runner.busy or runner.status == "busy"):
         return
+    now = datetime.now(timezone.utc)
+    held = _holding.get(runner.id)
+    if held is not None and _cancellation_acknowledged.get(runner.id) != held[0]:
+        # The held job was cancelled and its cancellation is not yet
+        # acknowledged. An Online poll the runner sent before it took the job
+        # can still arrive; freeing the runner on it would drop the
+        # cancellation while the job runs. Keep it busy within the grace
+        # period, so the cancellation is sent.
+        held_job = (await db.execute(
+            select(WorkflowJob)
+            .where(WorkflowJob.id == held[0])
+            .execution_options(populate_existing=True)
+        )).scalar_one_or_none()
+        if (
+            held_job is not None
+            and held_job.conclusion == "cancelled"
+            and _age(held_job.started_at, now) < _IDLE_GRACE
+        ):
+            await db.commit()
+            return
     jobs = (await db.execute(
         select(WorkflowJob)
         .where(WorkflowJob.runner_id == runner.id, WorkflowJob.status == "in_progress")
         .execution_options(populate_existing=True)
     )).scalars().all()
-    now = datetime.now(timezone.utc)
     for job in jobs:
-        started = job.started_at
-        if started is not None and started.tzinfo is None:
-            started = started.replace(tzinfo=timezone.utc)
-        age = now - started if started is not None else _IDLE_GRACE
+        age = _age(job.started_at, now)
         # Never received: the runner names another message as its last, or
         # (a runner that has had no message since it connected) names none
         # and the job never started a step. A poll the runner gave up on
         # before the hand-out came back looks like that; failing the job
-        # then lost a run the runner never saw (bt-f2, run 43740835949).
+        # then lost a run the runner never saw.
         # A runner restarted mid-job also sends no last message, but its
         # job has started steps, so it still fails below.
         never_received = (
             (last_message_id and last_message_id != str(job.id))
             or (not last_message_id and not _job_started(job))
         )
-        if never_received and job.id not in _acknowledged:
+        if never_received and _acknowledged.get(runner.id) != job.id:
             if age < _ACK_WINDOW:
                 # A request the runner sent before it got the job can still
                 # reach us after the hand-out; the acknowledgement follows
@@ -1219,6 +1260,17 @@ async def _complete_job(job: WorkflowJob, runner: Runner, result_str: str, db) -
     await db.flush()
 
 
+async def _report_job_end(job: WorkflowJob, runner: Runner, result_str: str, db) -> None:
+    """A runner's report of a job's end, serialised with its polls.
+
+    Under the runner's lock, so the report sees a job a poll handed the
+    runner meanwhile and does not free the runner while it runs that job.
+    """
+    async with _runner_lock(runner.id):
+        await _complete_job(job, runner, result_str, db)
+        await db.commit()
+
+
 @router.post("/_apis/distributedtask/connect")
 @router.post("/{owner}/{repo}/_apis/distributedtask/connect")
 async def dt_connect(request: Request, db: DbSession):
@@ -1290,8 +1342,21 @@ async def dt_get_messages(
             await db.commit()
             cancellation = await _pending_cancellation(runner, db)
             if cancellation is not None:
-                logger.info("Runner %s sent cancellation of job %s", runner.name, cancellation["messageId"])
+                logger.info(
+                    "Runner %s sent cancellation of job %s",
+                    runner.name, cancellation["messageId"] - _CANCELLATION_MESSAGE_BASE,
+                )
                 return cancellation
+            # Again, right before a hand-out: a newer poll can start while
+            # this one awaited the database above, and the runner abandoned
+            # this one when it did.
+            if _poll_generation.get(runner_id) != generation or await request.is_disconnected():
+                return Response(status_code=204)
+            # This poll loaded the runner before it waited for the lock; an
+            # older poll may have handed it a job since (_claim_next_job
+            # hands nothing to a busy runner).
+            await db.refresh(runner, attribute_names=["busy", "status"])
+            await db.commit()
             message = await _claim_next_job(runner, db, _request_base(request))
             if not isinstance(message, Response):
                 body = json.loads(message["body"])
@@ -1372,9 +1437,7 @@ async def dt_complete_job(
     if job is None:
         raise HTTPException(status_code=404, detail="Job not found")
 
-    await _complete_job(job, runner, body.get("result", "Succeeded"), db)
-    await db.commit()
-
+    await _report_job_end(job, runner, body.get("result", "Succeeded"), db)
     return {"status": "completed"}
 
 
@@ -1424,9 +1487,16 @@ async def dt_delete_pool_message(
 ):
     """Acknowledge removal of a delivered message from the queue."""
     runner = await _get_runner_from_token(request, db)
-    if _holding.get(runner.id, (None,))[0] == message_id:
-        _acknowledged.add(message_id)
-        logger.info("Runner %s acknowledged job %s", runner.name, message_id)
+    # Under the runner's lock: a poll deciding whether the runner received
+    # its job must not miss an acknowledgement landing mid-decision.
+    async with _runner_lock(runner.id):
+        if message_id >= _CANCELLATION_MESSAGE_BASE:
+            job_id = message_id - _CANCELLATION_MESSAGE_BASE
+            _cancellation_acknowledged[runner.id] = job_id
+            logger.info("Runner %s acknowledged cancellation of job %s", runner.name, job_id)
+        elif _holding.get(runner.id, (None,))[0] == message_id:
+            _acknowledged[runner.id] = message_id
+            logger.info("Runner %s acknowledged job %s", runner.name, message_id)
     return {"messageId": message_id, "status": "deleted"}
 
 
@@ -1486,12 +1556,15 @@ async def dt_update_pool_job_request(
 
     query_result = request.query_params.get("result")
     if "result" in body and body["result"] is not None:
-        await _complete_job(job, runner, body["result"], db)
+        result_str = body["result"]
     elif query_result is not None:
-        await _complete_job(job, runner, query_result, db)
+        result_str = query_result
     elif str(body.get("state", "")).lower() == "completed":
-        await _complete_job(job, runner, body.get("result", "Succeeded"), db)
-
+        result_str = body.get("result", "Succeeded")
+    else:
+        result_str = None
+    if result_str is not None:
+        await _report_job_end(job, runner, result_str, db)
     await db.commit()
     return _job_request_response(job, runner, body.get("result"))
 
@@ -1510,8 +1583,7 @@ async def dt_delete_pool_job_request(
     if job is None:
         return _job_request_not_found(request_id)
 
-    await _complete_job(job, runner, request.query_params.get("result", "Succeeded"), db)
-    await db.commit()
+    await _report_job_end(job, runner, request.query_params.get("result", "Succeeded"), db)
     return Response(status_code=204)
 
 

@@ -41,7 +41,15 @@ although the runner never saw it.
   lost hand-out is still requeued within seconds.
 - The requeue is a conditional `UPDATE` that matches only a job still in
   progress on that runner, so a report that committed meanwhile wins.
-  Acknowledgements are kept for good (job ids are never reused).
+  An acknowledgement is replaced only by the runner's next one.
+- A poll checks again, right before a hand-out, that no newer poll has
+  replaced it, and reads the runner's busy state fresh, so a poll that
+  loaded the runner before an older poll's claim committed does not give
+  it a second job.
+- Acknowledgements and job-end reports take the runner's lock, so a poll
+  deciding receipt or freeing does not miss one landing mid-decision.
+  Acknowledgements are kept one per runner, so memory grows with runners,
+  not jobs.
 - The poll commits after settling the runner and before the claim: under
   WAL, a write in a transaction that began by reading fails at once when
   another writer committed meanwhile.
@@ -55,6 +63,9 @@ Tests: `tests/actions/test_runner_lost_handout.py`.
 - A job its runner never received is requeued, not failed.
 - A job handed to an abandoned first poll is requeued.
 - A newer poll replaces an older one before the older can claim.
+- `tests/actions/test_runner_broker_races.py`: a superseded poll hands out
+  nothing; a runner an older poll made busy gets no second job; an
+  acknowledgement and a report wait for the runner's lock.
 - Stress: 4 runners, 12 jobs, half the polls abandoned with the server
   left to answer them. Every job reaches a live poll exactly once and
   completes.

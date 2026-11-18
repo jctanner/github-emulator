@@ -21,11 +21,9 @@ from tests.actions.test_uses_steps import _claim_job, uses_workflow  # noqa: F40
 @pytest.fixture(autouse=True)
 def _fresh_runner_state():
     # Module state keyed by ids; each test's database starts ids at 1.
-    dt._holding.clear()
-    dt._cancellations_sent.clear()
+    dt._reset_broker_state()
     yield
-    dt._holding.clear()
-    dt._cancellations_sent.clear()
+    dt._reset_broker_state()
 
 
 async def _claimed(client, db_session, test_token):

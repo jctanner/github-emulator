@@ -20,11 +20,9 @@ from tests.actions.test_uses_steps import _claim_job, uses_workflow  # noqa: F40
 @pytest.fixture(autouse=True)
 def _fresh_runner_state():
     # Module state keyed by ids; each test's database starts ids at 1.
-    dt._holding.clear()
-    dt._cancellations_sent.clear()
+    dt._reset_broker_state()
     yield
-    dt._holding.clear()
-    dt._cancellations_sent.clear()
+    dt._reset_broker_state()
 
 
 async def _job_and_runner(db_session):
@@ -55,7 +53,9 @@ async def test_the_runner_gets_a_cancellation_for_its_cancelled_job(
     body = json.loads(message["body"])
     assert body == {"jobId": _workflow_guid("job", job.id), "timeout": "00:05:00"}
 
-    # Once per job.
+    # Sent again until the runner acknowledges it, then no more.
+    assert (await dt._pending_cancellation(runner, db_session))["messageId"] == message["messageId"]
+    dt._cancellation_acknowledged[runner.id] = job.id
     assert await dt._pending_cancellation(runner, db_session) is None
 
 

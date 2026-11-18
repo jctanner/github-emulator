@@ -29,12 +29,9 @@ def _fast_broker(monkeypatch):
     monkeypatch.setattr(dt, "_POLL_SECONDS", 1.0)
     monkeypatch.setattr(dt, "_POLL_INTERVAL_SECONDS", 0.02)
     monkeypatch.setattr(dt, "_ACK_WINDOW", dt.timedelta(seconds=0.2))
-    states = (dt._holding, dt._cancellations_sent, dt._poll_generation, dt._runner_locks, dt._acknowledged)
-    for state in states:
-        state.clear()
+    dt._reset_broker_state()
     yield
-    for state in states:
-        state.clear()
+    dt._reset_broker_state()
 
 
 async def _workflow(client, db_session, test_user, test_token, jobs: int):
@@ -130,7 +127,7 @@ def _first_poll(client, headers, session_id, status="Online"):
 async def test_a_job_handed_to_an_abandoned_first_poll_is_requeued(
     client, db_session, test_user, test_token
 ):
-    """bt-f2, run 43740835949: the runner's first long-poll timed out on its
+    """Seen under load: the runner's first long-poll timed out on its
     side; the emulator handed the job to it anyway. The runner reconnected and
     polled Online with no lastMessageId, and the job was failed after the grace
     period though the runner never saw it."""
