@@ -101,3 +101,35 @@ def test_a_bound_string_quotes_a_quote_the_actions_way():
 def test_ref_protected_is_a_boolean():
     assert CONTEXT["github"]["ref_protected"] is False
     assert evaluate_job_if("${{ github.ref_protected }}", CONTEXT) is False
+
+
+def test_working_directory_and_shell_leave_runner_values_for_it():
+    steps = build_steps_data(
+        [{"run": "make", "working-directory": "${{ github.workspace }}/app"}], {}, CONTEXT,
+    )
+    assert steps[0]["working-directory"] == "${{ github.workspace }}/app"
+
+
+def test_an_object_bound_beside_a_runner_value_stays_an_object():
+    steps = build_steps_data(
+        [{"run": "echo ${{ format('{0} {1}', toJSON(github.event), github.workspace) }}"}], {}, CONTEXT,
+    )
+    assert "toJSON(fromJSON('{\"pull_request\":{\"merged\":false}}')), github.workspace" in steps[0]["run"]
+
+
+def _emulator_runner():
+    import importlib.util
+
+    spec = importlib.util.spec_from_file_location("runner_for_parity", "src/runners/emulator/runner.py")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def test_the_emulator_runner_finishes_what_the_server_leaves():
+    runner = _emulator_runner()
+    render = runner._render_local_action
+    assert render("${{ format('{0}', 'Don''t') }}", {}, {}) == "Don't"
+    assert render("${{ github.workspace == 'nowhere' }}", {}, {}) == "false"
+    assert render("echo ${{ job.status }}", {}, {}) == "echo success"
+    assert render("echo ${{ job.status }}", {}, {}, job_status="failure") == "echo failure"

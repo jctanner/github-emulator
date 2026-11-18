@@ -812,7 +812,7 @@ def build_steps_data(steps: list, job_env: dict, context: dict) -> list[dict]:
             step_data["if"] = _resolve_step_condition(step["if"], context)
         for key in ("run", "shell", "working-directory", "uses", "with"):
             if key in step:
-                step_data[key] = render_expressions(step[key], context, for_runner=key in ("run", "with"))
+                step_data[key] = render_expressions(step[key], context, for_runner=key in ("run", "with", "working-directory", "shell"))
         if "continue-on-error" in step:
             # Evaluated to its value, so the runner sees a boolean: rendered
             # as text, an input false became "False". One that reads
@@ -930,11 +930,27 @@ async def github_identity_context(db: AsyncSession, run: WorkflowRun) -> dict:
         "run_attempt": str(getattr(run, "run_attempt", None) or 1),
         "workflow": workflow.name if workflow else "",
         "workflow_ref": f"{full_name}/{workflow.path}@{ref}" if workflow and full_name else "",
-        **static_github_facts(ref, getattr(run, "head_sha", None) or "", full_name, repo.private if repo else None),
+        **static_github_facts(
+            ref, getattr(run, "head_sha", None) or "", full_name, repo.private if repo else None,
+            await _branch_protected(db, repo_id, ref),
+        ),
     }
 
 
-def static_github_facts(ref: str, sha: str, full_name: str, private: bool | None) -> dict:
+async def _branch_protected(db: AsyncSession, repo_id: int | None, ref: str) -> bool:
+    """Whether ``ref`` is a protected branch of the repository."""
+    if not repo_id or not (ref or "").startswith("refs/heads/"):
+        return False
+    from app.models.branch import Branch
+
+    return bool((await db.execute(
+        select(Branch.protected).where(Branch.repo_id == repo_id, Branch.name == ref[len("refs/heads/"):])
+    )).scalar_one_or_none())
+
+
+def static_github_facts(
+    ref: str, sha: str, full_name: str, private: bool | None, protected: bool = False,
+) -> dict:
     """The github context values derived from the ref, sha and repository.
 
     GitHub sets each on every run, and the runner exports them as GITHUB_REF_NAME,
@@ -946,9 +962,8 @@ def static_github_facts(ref: str, sha: str, full_name: str, private: bool | None
     host = urlparse(settings.BASE_URL).netloc or "localhost"
     return {
         **ref_facts(ref),
-        # A boolean, as on GitHub. Branch protection does not change what a
-        # job may do here.
-        "ref_protected": False,
+        # A boolean, as on GitHub: whether the branch is protected.
+        "ref_protected": bool(protected),
         "workflow_sha": sha,
         "repository_visibility": "" if private is None else ("private" if private else "public"),
         "repositoryUrl": f"git://{host}/{full_name}.git" if full_name else "",
@@ -1277,7 +1292,7 @@ async def create_workflow_run(
                     job_config.get("runs_on", ["ubuntu-latest"]) if needs
                     else render_job_labels(job_config.get("runs_on", ["ubuntu-latest"]), job_expression_context)
                 ),
-                run_attempt=1,
+                run_attempt=run_attempt,
                 needs=needs,
                 permissions=job_config.get("permissions") or {},
                 job_key=job_config.get("key"),
@@ -1680,6 +1695,7 @@ async def process_push_event(
         "deleted": deleted,
         "forced": forced,
         "commits": commits,
+        "head_commit": await _head_commit(repository.disk_path, head_sha, deleted),
         "repository": _repository_payload(repository),
         "pusher": {"name": user.login, "email": user.email or ""},
         "sender": _user_payload(user),
@@ -1816,6 +1832,16 @@ async def _get_head_sha(repo_disk_path: str) -> str:
     )
     stdout, _ = await proc.communicate()
     return stdout.decode().strip() if proc.returncode == 0 else ""
+
+
+async def _head_commit(disk_path: str, head_sha: str, deleted: bool) -> dict | None:
+    """The push payload's head_commit: null for a deleted branch, as on GitHub."""
+    if deleted or not head_sha or set(head_sha) == {"0"}:
+        return None
+    from app.git.bare_repo import get_commit_info
+
+    info = await get_commit_info(disk_path, head_sha)
+    return {"id": head_sha, "message": (info or {}).get("message", "")}
 
 
 async def _get_changed_files_between(

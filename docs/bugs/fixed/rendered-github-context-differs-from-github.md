@@ -36,7 +36,7 @@ Two authentication answers differed as well:
 
 - A false result renders `false`, a null one stays empty, and `a || b` is the
   first truthy alternative, else the last.
-- The ref, sha and repository facts are filled (`ref_protected` as a boolean) for rendering and in the job
+- The ref, sha and repository facts are filled (`ref_protected` as a boolean: whether the branch is protected) for rendering and in the job
   message's github context. `RUNNER_ENVIRONMENT` is `github-hosted`.
 - An expression that reads a value only the runner knows is left for the
   runner, with the server's own contexts bound in, in `run:`, `with:` and
@@ -44,7 +44,13 @@ Two authentication answers differed as well:
   it still renders empty. `job.workflow_*` stay the server's: the runner has
   no job context for them.
 - A server value bound into an expression left for the runner quotes a quote
-  the Actions way (`''`), not with a backslash, which the runner rejects.
+  the Actions way (`''`), not with a backslash, which the runner rejects. An
+  object or array passed as a function argument is bound whole
+  (`fromJSON('...')`).
+- `working-directory` and `shell` are left for the runner the same way as
+  `run`.
+- The emulator's own runner finishes what the server leaves: it reads `''`
+  inside a string, writes a false result as `false`, and knows `job.status`.
 - `GET /installation/repositories` with a job token lists the run's
   repository with `repository_selection: selected`. A personal access token
   still gets 403.

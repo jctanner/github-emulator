@@ -460,8 +460,11 @@ async def list_token_installation_repositories(
         # A job's GITHUB_TOKEN is an installation token for the run's one
         # repository. Answering 403 made clients that probe this route
         # (fullsend's IsInstallationToken) take a job token for a PAT.
-        own = await db.get(Repository, workflow_run.repo_id)
-        repos = [own] if own is not None else []
+        # Columns only: the entity eagerly loads issues, labels, branches ...
+        repos = (await db.execute(
+            select(Repository.id, Repository.full_name, Repository.name, Repository.private)
+            .where(Repository.id == workflow_run.repo_id)
+        )).all()
         return {
             "total_count": len(repos),
             "repository_selection": "selected",

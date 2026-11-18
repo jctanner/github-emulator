@@ -24,10 +24,10 @@ or `head_branch`.
 - Server-side rendering and the job message's github context carry the nine
   values. Ids and `run_attempt` are strings, as GitHub gives them.
 - Runs report `run_started_at` and `display_title`: the head commit's first
-  line, the pull request's or issue's title, or the workflow name.
+  line (a push payload now carries `head_commit`), the pull request's or issue's title, or the workflow name.
 - Jobs report `created_at`, `head_sha` and `head_branch`.
 - A re-run renders its own `github.run_attempt`: the attempt is set before the
-  steps render.
+  steps render, and the re-run's jobs report it too.
 
 ## Known gaps
 
@@ -40,4 +40,5 @@ Tests: `tests/actions/test_github_identity_context.py`
 (`test_step_env_renders_the_identity_values`,
 `test_the_job_message_carries_them_for_the_runner`,
 `test_run_and_job_fields_github_fills`,
-`test_a_rerun_renders_its_own_attempt`).
+`test_a_rerun_renders_its_own_attempt`,
+`test_a_push_run_is_titled_by_its_commit_and_knows_branch_protection`).

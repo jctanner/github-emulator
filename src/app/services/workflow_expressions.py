@@ -513,7 +513,7 @@ class _IfExpressionParser:
 
         kind, token = self._take()
         if kind == "string":
-            return token[1:-1].replace("\\'", "'").replace('\\"', '"')
+            return token[1:-1].replace("''", "'").replace("\\'", "'").replace('\\"', '"')
         if kind == "number":
             return float(token) if "." in token else int(token)
         if kind != "name":
@@ -736,7 +736,13 @@ def bind_server_context(expression: str, context: dict) -> str:
                 out.append((start, tokens[last][3], literal))
                 skip_until = last
                 continue
-        out.append((start, end, _as_literal(_lookup_context_value(context, text))))
+        value = _lookup_context_value(context, text)
+        # As a function argument (``toJSON(github.event)``) an object or array
+        # is passed whole; elsewhere it is a truthiness test.
+        is_argument = expression[:start].rstrip().endswith(("(", ","))
+        out.append((start, end, (
+            _json_literal(value) if is_argument and isinstance(value, (dict, list)) else _as_literal(value)
+        )))
 
     if not out:
         return expression

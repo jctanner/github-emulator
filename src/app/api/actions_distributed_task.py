@@ -705,7 +705,13 @@ def _job_request_message(
                 "workspace": "",
                 # ref_name, ref_type, ref_protected, workflow_sha and the
                 # rest: the runner exports the first four as GITHUB_* env.
-                **static_github_facts(ref, sha, repo_full_name, repo.private if repo else None),
+                **static_github_facts(
+                    ref, sha, repo_full_name, repo.private if repo else None,
+                    ref.startswith("refs/heads/") and any(
+                        branch.name == ref[len("refs/heads/"):] and branch.protected
+                        for branch in (repo.branches if repo else [])
+                    ),
+                ),
             }),
         },
         "resources": {

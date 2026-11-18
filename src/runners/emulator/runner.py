@@ -338,7 +338,7 @@ _EXPRESSION_RE = _ExpressionScanner()
 # did not run. The parser raises on one rather than quietly yielding empty,
 # which leaves the expression visible as literal text instead of turning a
 # missing renderer into a silently wrong value.
-_RUNNER_CONTEXT_ROOTS = ("steps", "inputs", "github", "runner")
+_RUNNER_CONTEXT_ROOTS = ("steps", "inputs", "github", "runner", "job")
 
 
 def _lookup_context_path(context: dict, path: str):
@@ -490,6 +490,7 @@ def _runner_context(
     step_outputs: dict[str, dict[str, str]] | None,
     github_token: str = "",
     job: dict | None = None,
+    job_status: str = "success",
 ) -> dict:
     """Build the context the runner can resolve expressions against.
 
@@ -507,6 +508,8 @@ def _runner_context(
         },
         "inputs": {str(k): v for k, v in (inputs or {}).items()},
         "github": _github_context(job, github_token),
+        # job.status is the runner's to know: the server leaves it for us.
+        "job": {"status": job_status},
         # The runner context describes this machine, so only the runner can
         # resolve it. The server leaves it alone for that reason, which is why
         # a composite action's ``${{ runner.temp }}`` arrives here unrendered.
@@ -524,7 +527,7 @@ class _StepIfParser:
 
     _TOKEN_RE = re.compile(
         r"(?P<space>\s+)|(?P<op>\|\||&&|==|!=|[!(),])|"
-        r"(?P<string>'(?:\\.|[^'])*'|\"(?:\\.|[^\"])*\")|"
+        r"(?P<string>'(?:''|\\.|[^'])*'|\"(?:\\.|[^\"])*\")|"
         r"(?P<number>\d+(?:\.\d+)?)|(?P<name>[A-Za-z_][A-Za-z0-9_.-]*)"
     )
 
@@ -619,7 +622,9 @@ class _StepIfParser:
 
         kind, token = self._take()
         if kind == "string":
-            return token[1:-1].replace("\\'", "'").replace('\\"', '"')
+            # Actions doubles a quote inside a string (``'it''s'``); the
+            # backslash form is kept for older step records.
+            return token[1:-1].replace("''", "'").replace("\\'", "'").replace('\\"', '"')
         if kind == "number":
             return float(token) if "." in token else int(token)
         if kind != "name":
@@ -796,7 +801,7 @@ def _evaluate_step_if(
 _NEEDS_PARSER_RE = re.compile(r"\|\||&&|==|!=|\(|'|\"")
 
 
-def _render_local_action(value, inputs, step_outputs, github_token="", job=None):
+def _render_local_action(value, inputs, step_outputs, github_token="", job=None, job_status="success"):
     """Render the expressions the runner resolves at execution time.
 
     ``github.token`` is resolved here rather than on the server so the
@@ -817,7 +822,7 @@ def _render_local_action(value, inputs, step_outputs, github_token="", job=None)
             if expression == "github.token":
                 return github_token
             if _NEEDS_PARSER_RE.search(expression):
-                context = _runner_context(inputs, step_outputs, github_token, job)
+                context = _runner_context(inputs, step_outputs, github_token, job, job_status)
                 try:
                     resolved = _StepIfParser(expression, context).evaluate()
                 except ValueError as exc:
@@ -825,16 +830,17 @@ def _render_local_action(value, inputs, step_outputs, github_token="", job=None)
                         "Could not render expression %r: %s", expression, exc
                     )
                     return match.group(0)
-                if resolved is None or resolved is False:
+                # Actions writes a false result as "false" and a null one as "".
+                if resolved is None:
                     return ""
-                if resolved is True:
-                    return "true"
+                if isinstance(resolved, bool):
+                    return "true" if resolved else "false"
                 if isinstance(resolved, (dict, list)):
                     return json.dumps(resolved, separators=(",", ":"))
                 return str(resolved)
             try:
                 resolved = _lookup_context_path(
-                    _runner_context(inputs, step_outputs, github_token, job),
+                    _runner_context(inputs, step_outputs, github_token, job, job_status),
                     expression,
                 )
             except ValueError:
@@ -846,12 +852,12 @@ def _render_local_action(value, inputs, step_outputs, github_token="", job=None)
         return _EXPRESSION_RE.sub(replace, value)
     if isinstance(value, dict):
         return {
-            key: _render_local_action(item, inputs, step_outputs, github_token, job)
+            key: _render_local_action(item, inputs, step_outputs, github_token, job, job_status)
             for key, item in value.items()
         }
     if isinstance(value, list):
         return [
-            _render_local_action(item, inputs, step_outputs, github_token, job)
+            _render_local_action(item, inputs, step_outputs, github_token, job, job_status)
             for item in value
         ]
     return value
@@ -1076,7 +1082,9 @@ class RunnerClient:
             step["status"] = "in_progress"
             self._report_progress(job_repository, job_id, steps)
 
-            rendered_step = _render_local_action(step, {}, step_outputs, job_token, job)
+            rendered_step = _render_local_action(
+                step, {}, step_outputs, job_token, job, "success" if all_passed else "failure",
+            )
             result, _step_log, step_updates = self._run_step(
                 rendered_step, job, runtime_env, log_callback=append_log,
             )

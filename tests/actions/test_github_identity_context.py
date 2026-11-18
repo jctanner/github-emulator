@@ -98,3 +98,28 @@ async def test_a_rerun_renders_its_own_attempt(client, db_session, test_user, te
     job = (await db_session.execute(
         select(WorkflowJob).where(WorkflowJob.run_id == resp.json()["id"]))).scalar_one()
     assert job.steps[0]["run"] == "echo attempt 2"
+    assert job.run_attempt == 2
+
+
+@pytest.mark.asyncio
+async def test_a_push_run_is_titled_by_its_commit_and_knows_branch_protection(
+    client, db_session, test_user, test_token,
+):
+    from app.models.branch import Branch
+    from app.services.workflow_service import github_identity_context, process_push_event
+    from tests.actions.test_consolidation_bug_fixes import _repo_with_workflow
+    from tests.conftest import API, auth_headers
+
+    repository = await _repo_with_workflow(
+        client, test_token, db_session, name="title-repo", workflow=ATTEMPT_WORKFLOW)
+    run = (await process_push_event(db_session, repository, test_user, ref_name="main"))[0]
+    got = (await client.get(
+        f"{API}/repos/{repository.full_name}/actions/runs/{run.id}", headers=auth_headers(test_token))).json()
+    assert got["display_title"] == "add workflow"  # the head commit's first line
+
+    assert (await github_identity_context(db_session, run))["ref_protected"] is False
+    branch = (await db_session.execute(
+        select(Branch).where(Branch.repo_id == repository.id, Branch.name == "main"))).scalar_one()
+    branch.protected = True
+    await db_session.commit()
+    assert (await github_identity_context(db_session, run))["ref_protected"] is True

@@ -66,7 +66,7 @@ def test_comparisons_render_as_actions_spells_them():
     outputs = {"detect": {"install-method": "source"}}
     assert render(
         "${{ steps.detect.outputs.install-method == 'vendored' }}", {}, outputs
-    ) == ""
+    ) == "false"  # Actions writes a false result as "false"
     assert render(
         "${{ steps.detect.outputs.install-method != 'vendored' }}", {}, outputs
     ) == "true"
@@ -112,7 +112,7 @@ def test_the_runner_context_resolves_because_only_the_runner_knows_it():
 
 
 def test_runner_context_works_inside_a_compound_expression():
-    assert render("${{ runner.os == 'Linux' }}", {}, {}) in ("true", "")
+    assert render("${{ runner.os == 'Linux' }}", {}, {}) in ("true", "false")
     assert render("${{ runner.arch }}", {}, {}) in ("X64", "ARM64")
 
 

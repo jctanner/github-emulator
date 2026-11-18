@@ -533,7 +533,8 @@ def test_literal_binding_escapes_quotes():
         "github.event.issue.title == 'x'",
         {"github": {"event": {"issue": {"title": "it's here"}}}},
     )
-    assert bound.startswith("'it\\'s here'")
+    # Actions doubles a quote inside a string; the runner rejects a backslash.
+    assert bound.startswith("'it''s here'")
 
 
 def test_runner_parser_consumes_both_operands_of_and_or():
