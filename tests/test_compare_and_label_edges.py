@@ -350,3 +350,39 @@ async def test_control_characters_in_a_message_stay_in_the_message(client, db_se
     assert [(c["sha"], c["commit"]["message"]) for c in commits] == [(first, message), (second, "plain")]
     assert commits[0]["parents"][0]["sha"] == main
     assert commits[0]["commit"]["tree"]["sha"] == _git(git_dir, "rev-parse", f"{first}^{{tree}}")
+
+
+async def test_cross_fork_file_urls_lead_to_the_head_commit(client, db_session, test_token, admin_token):
+    """The head commit of a cross-fork compare is in the fork, so the files'
+    URLs point at the fork, and following contents_url works for the caller."""
+    admin = auth_headers(admin_token)
+    await client.post(f"{API}/user/repos", json={"name": "link-base", "auto_init": True}, headers=auth_headers(test_token))
+    assert (await client.post(f"{API}/repos/testuser/link-base/forks", json={}, headers=admin)).status_code == 202
+    main = await _main_sha(client, admin_token, "admin/link-base")
+    await _branch(client, admin_token, "admin/link-base", "work", main)
+    head = await _put(client, admin_token, "admin/link-base", "notes.txt", "from the fork\n", "work")
+    assert (await client.patch(f"{API}/repos/admin/link-base", json={"private": True}, headers=admin)).status_code == 200
+
+    resp = await client.get(f"{API}/repos/testuser/link-base/compare/main...admin:work", headers=admin)
+
+    assert resp.status_code == 200, resp.text
+    (changed,) = resp.json()["files"]
+    assert "/admin/link-base/" in changed["raw_url"] and head in changed["raw_url"]
+    contents_path = changed["contents_url"].split("/api/v3", 1)[1]
+    followed = await client.get(f"{API}{contents_path}", headers=admin)
+    assert followed.status_code == 200, followed.text
+    assert base64.b64decode(followed.json()["content"]) == b"from the fork\n"
+
+
+async def test_an_object_view_leaves_out_a_path_with_a_line_break(tmp_path):
+    from app.services import cross_repo_pulls
+
+    good = str(tmp_path / "good.git")
+    subprocess.run(["git", "init", "--bare", "-q", good], check=True)
+    odd = SimpleNamespace(disk_path=str(tmp_path / "odd\nname.git"))
+
+    async with cross_repo_pulls.object_view(SimpleNamespace(disk_path=good), odd) as view:
+        with open(f"{view}/objects/info/alternates") as handle:
+            lines = handle.read().splitlines()
+
+    assert lines == [f"{good}/objects"]

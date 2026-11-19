@@ -294,7 +294,7 @@ async def compare_commits(
     if not base_sha or not head_sha:
         raise HTTPException(status_code=404, detail="Not Found")
 
-    args = (repository, owner, repo, basehead, base_sha, head_sha, page, per_page, request)
+    args = (repository, owner, repo, basehead, base_sha, head_sha, head_fork, page, per_page, request)
     forks = [fork for fork in (base_fork, head_fork) if fork is not None]
     if not forks:
         return await _build_compare(repository.disk_path, *args)
@@ -307,9 +307,14 @@ async def compare_commits(
 
 async def _build_compare(
     git_dir: str, repository, owner: str, repo: str, basehead: str, base_sha: str, head_sha: str,
-    page: int | None, per_page: int | None, request: Request,
+    head_fork, page: int | None, per_page: int | None, request: Request,
 ):
-    """The compare response, with every git read made in ``git_dir``."""
+    """The compare response, with every git read made in ``git_dir``.
+
+    The files' URLs point at the repository that holds the head commit: the
+    head fork when the head side is one, since its commits are not in the
+    base repository.
+    """
 
     merge_base = await get_merge_base(git_dir, base_sha, head_sha)
     if not merge_base:
@@ -353,8 +358,9 @@ async def _build_compare(
 
     files = []
     if first_page:
+        file_owner, file_repo = head_fork.full_name.split("/", 1) if head_fork is not None else (owner, repo)
         files = _with_file_urls(
-            owner, repo, head_sha,
+            file_owner, file_repo, head_sha,
             await get_compare_files(git_dir, base_sha, head_sha),
         )
 

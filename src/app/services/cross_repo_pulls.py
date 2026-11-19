@@ -134,6 +134,9 @@ async def object_view(*repositories: Repository):
         )
         await process.wait()
         alternates = [os.path.join(os.path.abspath(repo.disk_path), "objects") for repo in repositories]
+        # One path per line: a path holding a line break or other control
+        # character would add a line of its own, so it is left out.
+        alternates = [path for path in alternates if path.isprintable()]
         with open(os.path.join(path, "objects", "info", "alternates"), "w") as handle:
             handle.write("\n".join(alternates) + "\n")
         yield path

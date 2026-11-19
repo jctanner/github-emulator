@@ -23,17 +23,19 @@ Fullsend's behaviour tests read `merge_base_commit.sha`.
 
 ## Fix
 
-The endpoint now resolves both sides in the repository and uses new git
-helpers in `src/app/git/bare_repo.py` (`get_merge_base`,
-`get_ahead_behind`), plus the existing `get_compare_diff` for files.
+The endpoint resolves both sides and uses new git helpers in
+`src/app/git/bare_repo.py`: `get_merge_base`, `get_ahead_behind` and
+`get_compare_files`.
 
 - An `owner:branch` side for another owner is resolved to that owner's fork
-  in the network, if the caller can read it. Its branch's objects are fetched
-  into the base repository, without a ref, so the comparison runs there
-  (`cross_repo_pulls.fetch_branch_objects`).
-- Without `page` or `per_page`, up to 250 commits are listed. With them, the
-  commits are paginated and `files` appear on the first page only, as on
-  GitHub.
+  in the network, if the caller can read it, and its branch is read in the
+  fork (`cross_repo_pulls.branch_commit`). The comparison then runs in a
+  temporary view that borrows the base's and the fork's objects
+  (`cross_repo_pulls.object_view`); nothing is fetched into the base
+  repository. The files' URLs point at the fork, which holds the head commit.
+- Without `page` or `per_page`, the most recent 250 commits are listed. With
+  them, the commits are paginated and `files` appear on the first page only,
+  as on GitHub.
 - An unknown ref, or a path without `...`, is `404 Not Found`. Unrelated
   histories are `404 No common ancestor between base and head.`
 - `get_commit` and compare share one helper for the per-file URLs.
@@ -47,10 +49,6 @@ More detail, as on GitHub:
 - Compare reads repository contents, so an App installation or job token
   needs `contents: read` for it (`compare` maps to `contents` in the shared
   permission map).
-- A fork side is resolved in the fork and compared in a temporary view that
-  borrows both repositories' objects (git alternates), so no fork object is
-  copied into the base repository.
-- Unpaged, `commits` are the most recent 250, oldest first.
 - `files` come from NUL-delimited `--raw` and `--numstat` output: names are
   kept exactly (any encoding, spaces), each carries its blob `sha`, a
   removed file is `removed`, and `patch` is the hunks.
