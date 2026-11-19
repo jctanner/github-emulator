@@ -7,8 +7,7 @@ import pytest
 from sqlalchemy import select
 
 from app.config import settings
-from app.models.actions import Runner
-from app.models.actions import Workflow, WorkflowJob, WorkflowRun
+from app.models.actions import Runner, Workflow, WorkflowJob, WorkflowRun
 from app.models.repository import Repository
 from app.services.workflow_service import create_workflow_run
 from tests.conftest import API, auth_headers
@@ -684,6 +683,13 @@ async def test_pool_distributed_task_protocol_flow(
         headers=runner_headers,
     )
     assert agent_delete_resp.status_code == 200
+    # The job it ran no longer points at the deleted runner (a foreign key
+    # SQLite does not enforce; PostgreSQL refused the delete with 500).
+    db_session.expire_all()
+    dangling = (await db_session.execute(
+        select(WorkflowJob).where(WorkflowJob.runner_id == register_resp.json()["id"])
+    )).scalars().all()
+    assert dangling == []
 
 
 @pytest.mark.asyncio

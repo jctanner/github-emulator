@@ -5,9 +5,12 @@ JobCompleted plan event. The emulator neither advertised that resource nor
 served it, so ``needs.<job>.outputs.<name>`` rendered empty on this path.
 """
 
-import pytest
-from sqlalchemy import select
+import asyncio
 
+import pytest
+from sqlalchemy import select, update
+
+from app.api import actions_distributed_task as dt
 from app.api.actions_runner_protocol import _workflow_guid
 from app.models.actions import Workflow, WorkflowJob
 from app.models.repository import Repository
@@ -241,3 +244,73 @@ async def test_an_event_for_another_plan_is_not_found(client, db_session, uses_w
     db_session.expire_all()
     job = (await db_session.execute(select(WorkflowJob))).scalars().first()
     assert job.status == "in_progress"
+
+
+@pytest.mark.asyncio
+async def test_job_completed_for_a_cancelled_job_frees_the_runner(
+    client, db_session, uses_workflow, test_token  # noqa: F811
+):
+    """A job cancelled while it ran keeps its conclusion and outputs, and the
+    runner that reports its end is free for the next job."""
+    from app.models.actions import Runner
+
+    body = await _claim_job(client, test_token)
+    token = body["variables"]["system.github.token"]["Value"]
+    job = (await db_session.execute(select(WorkflowJob))).scalars().first()
+    job.status, job.conclusion = "completed", "cancelled"
+    await db_session.commit()
+
+    resp = await _raise(client, body, token, _event(body["jobId"], {"stage": {"value": "late"}}))
+    assert resp.status_code == 200, resp.text
+
+    db_session.expire_all()
+    job = (await db_session.execute(select(WorkflowJob))).scalars().first()
+    assert (job.status, job.conclusion) == ("completed", "cancelled")
+    assert not job.outputs
+    runner = (await db_session.execute(select(Runner).where(Runner.id == job.runner_id))).scalar_one()
+    assert runner.busy is False
+
+
+async def _cancel_job(db_session, job_id):
+    await db_session.execute(
+        update(WorkflowJob).where(WorkflowJob.id == job_id)
+        .values(status="completed", conclusion="cancelled")
+    )
+    await db_session.commit()
+
+
+async def _requeue_job(db_session, job_id):
+    await db_session.execute(
+        update(WorkflowJob).where(WorkflowJob.id == job_id)
+        .values(status="queued", runner_id=None, runner_name=None, started_at=None)
+    )
+    await db_session.commit()
+
+
+@pytest.mark.parametrize("move", [_cancel_job, _requeue_job], ids=["cancelled", "requeued"])
+async def test_outputs_of_an_event_that_waited_on_the_lock_are_not_kept(
+    client, db_session, uses_workflow, test_token, move  # noqa: F811
+):
+    """The event loads the running job, then waits for the runner's lock;
+    the job is cancelled or requeued meanwhile. Its outputs stay unset."""
+    body = await _claim_job(client, test_token)
+    token = body["variables"]["system.github.token"]["Value"]
+    job = (await db_session.execute(select(WorkflowJob))).scalars().first()
+    job_id, runner_id = job.id, job.runner_id
+
+    lock = dt._runner_lock(runner_id)
+    await lock.acquire()
+    event = asyncio.create_task(
+        _raise(client, body, token, _event(body["jobId"], {"stage": {"value": "late"}}))
+    )
+    try:
+        await asyncio.sleep(0.2)
+        assert not event.done()
+        await move(db_session, job_id)
+    finally:
+        lock.release()
+    assert (await event).status_code == 200
+
+    db_session.expire_all()
+    job = (await db_session.execute(select(WorkflowJob).where(WorkflowJob.id == job_id))).scalar_one()
+    assert not job.outputs

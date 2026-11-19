@@ -1,25 +1,24 @@
 """Custom runner job dispatch protocol -- long-poll, progress, completion."""
 
 import asyncio
-import hashlib
-import os
 import copy
+import os
 import secrets
 from datetime import datetime, timedelta, timezone
 from urllib.parse import parse_qs
 
 from fastapi import APIRouter, HTTPException, Query, Request
 from fastapi.responses import Response
-from sqlalchemy import select
+from sqlalchemy import select, update
 
+from app.api.actions_runners import normalise_runner_os
 from app.api.deps import AuthUser, DbSession, get_repo_or_404
 from app.config import settings
-from app.models.actions import EnterpriseRunnerRegistrationToken, Runner, RegistrationToken, WorkflowJob, WorkflowRun
+from app.models.actions import EnterpriseRunnerRegistrationToken, RegistrationToken, Runner, WorkflowJob, WorkflowRun
 from app.models.repository import Repository
 from app.services.auth_service import hash_token
 from app.services.job_token_service import issue_job_token
 from app.services.workflow_service import check_run_completion, dispatch_ready_jobs, resolve_job_outputs
-from app.api.actions_runners import normalise_runner_os
 
 router = APIRouter(tags=["actions-dispatch"])
 
@@ -467,6 +466,38 @@ async def poll_for_site_wide_jobs(
     )
 
 
+async def _claim_queued_job(db, job: WorkflowJob, runner: Runner) -> bool:
+    """Assign a queued *job* to *runner*, unless another runner got it first.
+
+    Concurrent polls in separate sessions can all read the same job as
+    queued. The assignment is a conditional UPDATE, so only the poll whose
+    write still finds the job queued owns it; the runner is marked busy only
+    then. A poll that loses returns False and moves on to the next candidate.
+    """
+    claimed = await db.execute(
+        update(WorkflowJob)
+        .where(WorkflowJob.id == job.id, WorkflowJob.status == "queued")
+        .values(
+            status="in_progress",
+            runner_id=runner.id,
+            runner_name=runner.name,
+            started_at=datetime.now(timezone.utc),
+        )
+        .execution_options(synchronize_session=False)
+    )
+    if claimed.rowcount != 1:
+        # End the write transaction the UPDATE opened. Commit rather than
+        # rollback: a rollback would expire the runner the caller still uses.
+        await db.commit()
+        return False
+
+    runner.busy = True
+    runner.status = "busy"
+    await db.commit()
+    await db.refresh(job)
+    return True
+
+
 async def _poll_for_jobs(
     runner: Runner,
     db,
@@ -503,14 +534,8 @@ async def _poll_for_jobs(
                 if str(label).strip()
             }
             if job_labels.issubset(runner_labels):
-                job.status = "in_progress"
-                job.runner_id = runner.id
-                job.runner_name = runner.name
-                job.started_at = datetime.now(timezone.utc)
-
-                runner.busy = True
-                runner.status = "busy"
-                await db.commit()
+                if not await _claim_queued_job(db, job, runner):
+                    continue
 
                 run_result = await db.execute(
                     select(WorkflowRun).where(WorkflowRun.id == job.run_id)
@@ -552,10 +577,19 @@ async def _poll_for_jobs(
                     "repository": repository.full_name if repository else "",
                 }
 
-        await asyncio.sleep(2)
-        # AsyncSession.expire_all is synchronous; awaiting it raises a
-        # TypeError whenever the runner has no queued job during long-polling.
+        # End the read transaction before waiting. Under PostgreSQL's
+        # REPEATABLE READ or SERIALIZABLE a transaction keeps the snapshot of
+        # its first read, so the next pass would never see a job queued
+        # meanwhile; SQLite's driver happened not to hold reads in a
+        # transaction. The session does not expire objects on commit, so
+        # expire them too: the next pass reads fresh rows, not the objects
+        # the identity map kept from this one. That expires the runner too,
+        # and an AsyncSession cannot load an expired attribute on access, so
+        # reload it after the wait, inside the next pass's read.
+        await db.commit()
         db.expire_all()
+        await asyncio.sleep(2)
+        await db.refresh(runner)
 
     return Response(status_code=204)
 

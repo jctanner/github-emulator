@@ -12,9 +12,27 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 
 from app.config import settings
-from app.database import init_db, async_session, get_db
+from app.database import async_session, get_db, init_db
 
 logger = logging.getLogger("github_emulator")
+# Nothing else gives the app's own loggers a handler, so their INFO lines
+# (runner job hand-outs, for one) never reached the server log.
+if not logger.handlers:
+    _handler = logging.StreamHandler()
+    _handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(name)s: %(message)s"))
+    logger.addHandler(_handler)
+
+
+def _log_level(name: str) -> int:
+    """The level named by GITHUB_EMULATOR_LOG_LEVEL; INFO if logging does not know it."""
+    level = logging.getLevelName(name.strip().upper())
+    if isinstance(level, int):
+        return level
+    logger.warning("Unknown GITHUB_EMULATOR_LOG_LEVEL %r; using INFO", name)
+    return logging.INFO
+
+
+logger.setLevel(_log_level(os.environ.get("GITHUB_EMULATOR_LOG_LEVEL", "INFO")))
 
 
 @asynccontextmanager
@@ -50,7 +68,7 @@ async def lifespan(app: FastAPI):
     if ssh_server is not None:
         try:
             ssh_server.close()
-        except Exception:
+        except Exception:  # noqa: S110 - shutting down; nothing to do if close fails
             pass
 
     logger.info("GitHub Emulator shutting down")
@@ -58,10 +76,10 @@ async def lifespan(app: FastAPI):
 
 async def _ensure_admin_user():
     """Ensure the seeded admin user has a default personal access token."""
-    from app.models.user import User
-    from app.models.token import PersonalAccessToken
-    from sqlalchemy import select, func
+    from sqlalchemy import func, select
 
+    from app.models.token import PersonalAccessToken
+    from app.models.user import User
     from app.services.auth_service import hash_password, hash_token
 
     async with async_session() as db:
@@ -87,11 +105,8 @@ async def _ensure_admin_user():
             await db.commit()
             await db.refresh(admin)
 
-            logger.info(
-                "Created admin user: %s (password: %s)",
-                settings.ADMIN_USERNAME,
-                settings.ADMIN_PASSWORD,
-            )
+            # Never the password: this line reaches the server log.
+            logger.info("Created admin user: %s", settings.ADMIN_USERNAME)
 
         token_hash = hash_token(settings.DEFAULT_ADMIN_TOKEN)
         result = await db.execute(
@@ -140,13 +155,13 @@ def create_app() -> FastAPI:
     )
 
     # -- Middleware (applied in reverse order) --------------------------------
-    from app.middleware.rate_limit import RateLimitMiddleware
     from app.middleware.api_version import ApiVersionMiddleware
+    from app.middleware.error_handler import register_error_handlers
     from app.middleware.etag import ETagMiddleware
+    from app.middleware.head_method import HeadMethodMiddleware
+    from app.middleware.rate_limit import RateLimitMiddleware
     from app.middleware.request_id import RequestIdMiddleware
     from app.middleware.security_headers import SecurityHeadersMiddleware
-    from app.middleware.head_method import HeadMethodMiddleware
-    from app.middleware.error_handler import register_error_handlers
 
     # Outermost, so the rewritten method reaches every other middleware and
     # the router as a GET.
@@ -166,57 +181,57 @@ def create_app() -> FastAPI:
     register_error_handlers(app)
 
     # -- REST API routers -----------------------------------------------------
-    from app.api.root import router as root_router
-    from app.api.users import router as users_router
-    from app.api.repos import router as repos_router
-    from app.api.issues import router as issues_router
-    from app.api.pulls import router as pulls_router
-    from app.api.comments import router as comments_router
-    from app.api.labels import router as labels_router
-    from app.api.milestones import router as milestones_router
-    from app.api.branches import router as branches_router
-    from app.api.commits import router as commits_router
-    from app.api.contents import router as contents_router
-    from app.api.git_refs import router as git_refs_router
-    from app.api.git_commits import router as git_commits_router
-    from app.api.git_trees import router as git_trees_router
-    from app.api.git_blobs import router as git_blobs_router
-    from app.api.git_tags import router as git_tags_router
-    from app.api.webhooks import router as webhooks_router
-    from app.api.statuses import router as statuses_router
-    from app.api.check_runs import router as check_runs_router
-    from app.api.releases import router as releases_router
-    from app.api.releases import download_router as release_download_router
-    from app.api.collaborators import router as collaborators_router
-    from app.api.forks import router as forks_router
-    from app.api.reactions import router as reactions_router
-    from app.api.events import router as events_router
-    from app.api.issue_events import router as issue_events_router
-    from app.api.search import router as search_router
-    from app.api.orgs import router as orgs_router
-    from app.api.teams import router as teams_router
-    from app.api.notifications import router as notifications_router
-    from app.api.gists import router as gists_router
-    from app.api.starring import router as starring_router
-    from app.api.reviews import router as reviews_router
-    from app.api.oauth import router as oauth_router
     from app.api.actions import router as actions_router
-    from app.api.org_variables import router as org_variables_router
-    from app.api.actions_runners import router as actions_runners_router
     from app.api.actions_dispatch import router as actions_dispatch_router
-    from app.api.markdown import router as markdown_router
-    from app.api.emojis import router as emojis_router
-    from app.api.gitignore import router as gitignore_router
-    from app.api.licenses import router as licenses_router
-    from app.api.user_keys import router as user_keys_router
-    from app.api.deploy_keys import router as deploy_keys_router
-    from app.api.review_comments import router as review_comments_router
-    from app.api.apps import router as apps_router
+    from app.api.actions_runners import router as actions_runners_router
     from app.api.admin_apps import router as admin_apps_router
     from app.api.admin_frontend import router as admin_frontend_router
-    from app.api.oidc import router as oidc_router
-    from app.api.browser_session import router as browser_session_router
+    from app.api.apps import router as apps_router
+    from app.api.branches import router as branches_router
     from app.api.browser_repositories import router as browser_repositories_router
+    from app.api.browser_session import router as browser_session_router
+    from app.api.check_runs import router as check_runs_router
+    from app.api.collaborators import router as collaborators_router
+    from app.api.comments import router as comments_router
+    from app.api.commits import router as commits_router
+    from app.api.contents import router as contents_router
+    from app.api.deploy_keys import router as deploy_keys_router
+    from app.api.emojis import router as emojis_router
+    from app.api.events import router as events_router
+    from app.api.forks import router as forks_router
+    from app.api.gists import router as gists_router
+    from app.api.git_blobs import router as git_blobs_router
+    from app.api.git_commits import router as git_commits_router
+    from app.api.git_refs import router as git_refs_router
+    from app.api.git_tags import router as git_tags_router
+    from app.api.git_trees import router as git_trees_router
+    from app.api.gitignore import router as gitignore_router
+    from app.api.issue_events import router as issue_events_router
+    from app.api.issues import router as issues_router
+    from app.api.labels import router as labels_router
+    from app.api.licenses import router as licenses_router
+    from app.api.markdown import router as markdown_router
+    from app.api.milestones import router as milestones_router
+    from app.api.notifications import router as notifications_router
+    from app.api.oauth import router as oauth_router
+    from app.api.oidc import router as oidc_router
+    from app.api.org_variables import router as org_variables_router
+    from app.api.orgs import router as orgs_router
+    from app.api.pulls import router as pulls_router
+    from app.api.reactions import router as reactions_router
+    from app.api.releases import download_router as release_download_router
+    from app.api.releases import router as releases_router
+    from app.api.repos import router as repos_router
+    from app.api.review_comments import router as review_comments_router
+    from app.api.reviews import router as reviews_router
+    from app.api.root import router as root_router
+    from app.api.search import router as search_router
+    from app.api.starring import router as starring_router
+    from app.api.statuses import router as statuses_router
+    from app.api.teams import router as teams_router
+    from app.api.user_keys import router as user_keys_router
+    from app.api.users import router as users_router
+    from app.api.webhooks import router as webhooks_router
 
     # -- REST API routers (under /api/v3/ prefix) ----------------------------
     api_routers = [
@@ -256,11 +271,12 @@ def create_app() -> FastAPI:
 
     # -- GraphQL API ----------------------------------------------------------
     try:
-        from strawberry.fastapi import GraphQLRouter
-        from app.graphql.schema import schema
-
-        from fastapi import Depends, Request as FastAPIRequest
+        from fastapi import Depends
+        from fastapi import Request as FastAPIRequest
         from sqlalchemy.ext.asyncio import AsyncSession
+        from strawberry.fastapi import GraphQLRouter
+
+        from app.graphql.schema import schema
 
         async def get_graphql_context(
             request: FastAPIRequest,
@@ -272,7 +288,7 @@ def create_app() -> FastAPI:
             user = None
             try:
                 user = await get_current_user(request, db)
-            except Exception:
+            except Exception:  # noqa: S110 - an anonymous request resolves with no user
                 pass
             return {"db": db, "user": user, "request": request}
 
@@ -301,8 +317,8 @@ def create_app() -> FastAPI:
         logger.warning("Strawberry not installed; GraphQL endpoint disabled")
 
     # -- GHES-internal Actions endpoints (root-level, not under /api/v3/) -----
-    from app.api.actions_pipelines import router as pipelines_router
     from app.api.actions_distributed_task import router as dt_router
+    from app.api.actions_pipelines import router as pipelines_router
     from app.api.actions_results import router as results_router
     app.include_router(pipelines_router)
     app.include_router(dt_router)

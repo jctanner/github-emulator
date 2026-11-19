@@ -142,6 +142,13 @@ Actions visibility and runner evaluation.
 - `docs/bugs/fixed/contents-reads-run-several-git-processes.md`
 - `docs/bugs/fixed/contents-ignore-the-raw-media-type-and-the-1-mib-limit.md`
 - `docs/bugs/fixed/upload-artifact-v4-has-no-results-service.md`
+- `docs/bugs/fixed/two-runners-claim-the-same-job.md`
+- `docs/bugs/fixed/upstream-runner-keeps-running-a-cancelled-job.md`
+- `docs/bugs/fixed/runner-stays-busy-after-its-job-is-deleted.md`
+- `docs/bugs/fixed/cancellation-never-reaches-a-runner-that-moved-on.md`
+- `docs/bugs/fixed/job-handed-to-an-abandoned-runner-poll.md`
+- `docs/bugs/fixed/runner-self-delete-leaves-jobs-pointing-at-it.md`
+- `docs/bugs/fixed/app-logs-silenced-after-the-startup-migration.md`
 
 ## Decisions
 
