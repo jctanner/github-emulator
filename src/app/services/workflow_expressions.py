@@ -848,8 +848,9 @@ def evaluate_expression_value(value: object, context: dict) -> object:
     return render_expressions(value, context)
 
 
-# Marks an expression render_expressions leaves for the runner on purpose.
-_DEFERRED = "\x00deferred\x00"
+class _Deferred(str):
+    """An expression render_expressions leaves for the runner on purpose. A
+    type, not a marker in the text, so resolved data can never pose as one."""
 
 
 def render_expressions(
@@ -868,31 +869,33 @@ def render_expressions(
     if isinstance(value, str):
         def replace(match):
             text = resolve(match)
-            if text.startswith(_DEFERRED):
-                return text[len(_DEFERRED):]
-            if for_runner and "${{" in text:
+            if isinstance(text, _Deferred):
+                return str(text)
+            if for_runner and any(char in text for char in "${}"):
                 # The runner renders this value again, so text the server
-                # resolved (an issue title, say) must not hold an expression:
-                # it goes as an expression that yields the text itself.
+                # resolved (an issue title, say) must not hold an expression,
+                # nor a piece of one that the text next to it could complete
+                # (``$`` then ``{{ github.token }}``). It goes as an
+                # expression that yields the text itself.
                 return "${{ " + _json_literal(text) + " }}"
             return text
 
         def resolve(match):
             expression = match.group(1).strip()
             if for_runner and _RUNNER_FILLED_RE.search(expression):
-                return _DEFERRED + "${{ " + bind_server_context(_runner_index_to_dot(expression), context) + " }}"
+                return _Deferred("${{ " + bind_server_context(_runner_index_to_dot(expression), context) + " }}")
             # Step outputs only exist after a prior step has run. Preserve the
             # expression for the runner's runtime renderer.
             if expression == "github.token":
-                return _DEFERRED + match.group(0)
+                return _Deferred(match.group(0))
             if expression.startswith("steps.") and not resolve_steps:
-                return _DEFERRED + match.group(0)
+                return _Deferred(match.group(0))
             # The runner context describes the machine a job lands on, so
             # only the runner can resolve it. Rendering it here produced an
             # empty string: ``${{ runner.temp }}/fullsend-cache`` reached the
             # runner as ``/fullsend-cache`` and actions/cache saved nothing.
             if _RUNNER_CONTEXT_RE.search(expression):
-                return _DEFERRED + match.group(0)
+                return _Deferred(match.group(0))
             # Anything with an operator, a literal, or a call needs the real
             # parser. A job's ``outputs:`` routinely combines several step
             # outputs, as in

@@ -906,7 +906,9 @@ def _evaluate_step_if(
         return False
     try:
         return _StepIfParser(
-            expression, _runner_context(inputs, step_outputs, job=job), failed
+            expression,
+            _runner_context(inputs, step_outputs, job=job, job_status="failure" if failed else "success"),
+            failed,
         ).parse()
     except ValueError as exc:
         # Treating an unevaluable condition as false silently drops the step,
@@ -947,7 +949,7 @@ def _render_local_action(
             if _NEEDS_PARSER_RE.search(expression):
                 context = _runner_context(inputs, step_outputs, github_token, job, job_status, step_number)
                 try:
-                    resolved = _StepIfParser(expression, context).evaluate()
+                    resolved = _StepIfParser(expression, context, failed=job_status == "failure").evaluate()
                 except ValueError as exc:
                     log.warning(
                         "Could not render expression %r: %s", expression, exc

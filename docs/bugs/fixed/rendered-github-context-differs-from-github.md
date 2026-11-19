@@ -52,9 +52,10 @@ Two authentication answers differed as well:
 - `working-directory` and `shell` are left for the runner the same way as
   `run`.
 - In `run:`, `with:`, `env:`, `working-directory` and `shell`, which the runner
-  renders again, a value the server resolved that holds `${{` (an issue title,
-  say) is sent as an expression that yields the text itself, so the runner
-  never evaluates it.
+  renders again, a value the server resolved that holds `$`, `{` or `}` (an
+  issue title, say) is sent as an expression that yields the text itself, so
+  the runner never evaluates it, even where two values or a value and the
+  text beside it would together spell `${{`.
 - Index notation (`github['workspace']`) is recognised like dot notation and
   sent to the runner in dot form.
 - A `'...'` literal's only escape is a doubled quote, as in Actions, in the

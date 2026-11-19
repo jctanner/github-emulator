@@ -254,3 +254,36 @@ def test_the_emulator_runner_reads_accessors_and_compares_like_actions():
     render = _emulator_runner()._render_local_action
     assert render(steps[0]["run"], {}, {}) == "echo yes"
     assert render(steps[0]["env"]["PROD"], {}, {}) == "true"
+
+
+def test_resolved_data_cannot_pose_as_a_deferred_expression():
+    from app.services import workflow_expressions
+
+    context = {**CONTEXT, "inputs": {"title": "\x00deferred\x00${{ github.token }}"}}
+    steps = build_steps_data([{"run": "echo ok", "env": {"T": "${{ inputs.title }}"}}], {}, context)
+    rendered = _emulator_runner()._render_local_action(steps[0]["env"]["T"], {}, {}, github_token="SENTINEL-TOKEN")
+    assert rendered == context["inputs"]["title"]
+    assert not hasattr(workflow_expressions, "_DEFERRED")
+
+
+def test_adjacent_resolved_fragments_cannot_assemble_an_expression():
+    render = _emulator_runner()._render_local_action
+    context = {**CONTEXT, "inputs": {"a": "$", "b": "{{ github.token }}", "c": "x$"}}
+    steps = build_steps_data(
+        [{"run": "echo ok", "env": {
+            "AB": "${{ inputs.a }}${{ inputs.b }}",
+            "C": "${{ inputs.c }}{{ github.token }}",
+        }}], {}, context,
+    )
+    env = steps[0]["env"]
+    assert render(env["AB"], {}, {}, github_token="SENTINEL-TOKEN") == "${{ github.token }}"
+    assert render(env["C"], {}, {}, github_token="SENTINEL-TOKEN") == "x${{ github.token }}"
+
+
+def test_a_deferred_expression_sees_an_earlier_failure():
+    runner = _emulator_runner()
+    assert runner._render_local_action(
+        "${{ github.workspace != '' && failure() }}", {}, {}, job_status="failure") == "true"
+    assert runner._render_local_action(
+        "${{ github.workspace != '' && success() }}", {}, {}, job_status="failure") == "false"
+    assert runner._evaluate_step_if("failure() && job.status == 'failure'", {}, None, True) is True
