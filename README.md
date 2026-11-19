@@ -101,6 +101,8 @@ All settings are driven by environment variables with the `GITHUB_EMULATOR_` pre
 | `GITHUB_EMULATOR_ADMIN_PASSWORD` | `admin` | Admin user password |
 | `GITHUB_EMULATOR_DEFAULT_ADMIN_TOKEN` | `ghp_admin_default_token` | Default admin PAT seeded at startup |
 | `GITHUB_EMULATOR_HOSTNAME` | `ghemu.local` | Hostname for Caddy TLS certificate |
+| `GITHUB_EMULATOR_ARTIFACT_MAX_BYTES` | `10737418240` (10 GiB) | Largest artifact upload-artifact v4+ may send, and the most its zip may expand to |
+| `GITHUB_EMULATOR_ARTIFACT_MAX_BLOCKS` | `50000` | Most blocks in one upload's block list |
 | `GITHUB_EMULATOR_APP_JWT_PERMISSIVE` | `true` | Skip App JWT signature verification; set `false` for strict verification |
 | `GITHUB_EMULATOR_SSH_ENABLED` | `true` | Enable/disable the SSH transport |
 | `GITHUB_EMULATOR_SSH_PORT` | `2222` | SSH server listen port |
@@ -258,6 +260,11 @@ make up
 make actions-runner-env
 docker compose up -d actions-runner
 ```
+
+This runner reaches the emulator as `ghemu.local`, so `actions/upload-artifact`
+and `actions/download-artifact` v4+ don't work on it: they accept only a
+`github.com`, `*.ghe.com` or `*.localhost` server host. To run them, serve the
+emulator under a `*.localhost` name (ADR-0004).
 
 By default the runner watches `admin/test-repo`. Override it with:
 

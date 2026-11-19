@@ -1,8 +1,6 @@
 """Actions endpoints -- workflows, runs, jobs, secrets, variables."""
 
-import io
 import os
-import shutil
 import zipfile
 
 from fastapi import APIRouter, HTTPException, Query, Request
@@ -11,7 +9,7 @@ from sqlalchemy import select, func, or_
 
 from app.api.deps import AuthUser, CurrentUser, DbSession, get_repo_or_404
 from app.api.pagination import pagination_links
-from app.services import repository_access
+from app.services import artifact_storage, repository_access
 from app.config import settings
 from app.models.actions import Workflow, WorkflowRun, WorkflowJob, Secret, Variable
 from app.models.artifact import WorkflowArtifact
@@ -107,29 +105,11 @@ def _job_log_path(job_id: int) -> str:
     return os.path.join(settings.DATA_DIR, "logs", "jobs", f"{job_id}.log")
 
 
-def _artifact_dir(artifact_id: int) -> str:
-    """Where an artifact's bytes live.
-
-    Alongside logs/jobs, which is the same pattern: the database row indexes
-    the upload and the filesystem holds it. DATA_DIR is a mounted volume, so
-    this survives a restart.
-    """
-    return os.path.join(settings.DATA_DIR, "artifacts", str(artifact_id))
-
-
 def _artifact_member_path(artifact_id: int, relative: str) -> str:
-    """Resolve a path inside an artifact, refusing anything that escapes it.
-
-    An artifact's member paths come from whoever uploaded it, so "../" and
-    absolute paths have to be rejected rather than normalised away: a stored
-    path that resolves outside the artifact directory would let an upload
-    write over, or read back, unrelated emulator data.
-    """
-    base = os.path.realpath(_artifact_dir(artifact_id))
-    target = os.path.realpath(os.path.join(base, relative))
-    if target != base and not target.startswith(base + os.sep):
-        raise HTTPException(status_code=400, detail=f"Invalid artifact path: {relative}")
-    return target
+    try:
+        return artifact_storage.member_path(artifact_id, relative)
+    except artifact_storage.ArtifactPathError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 def _artifact_json(artifact: WorkflowArtifact, owner: str, repo: str) -> dict:
@@ -229,11 +209,7 @@ async def upload_artifact(
             raise HTTPException(status_code=422, detail="name query parameter is required for a zip upload")
         raw = await request.body()
         try:
-            with zipfile.ZipFile(io.BytesIO(raw)) as archive:
-                for member in archive.infolist():
-                    if member.is_dir():
-                        continue
-                    payload[member.filename] = archive.read(member)
+            payload = artifact_storage.zip_members(raw)
         except zipfile.BadZipFile as exc:
             raise HTTPException(status_code=422, detail=f"Invalid zip archive: {exc}") from exc
     else:
@@ -247,32 +223,12 @@ async def upload_artifact(
         for path, content in files.items():
             payload[str(path)] = content.encode() if isinstance(content, str) else bytes(content)
 
-    artifact = WorkflowArtifact(run_id=run_id, repo_id=repository.id, name=artifact_name, files={}, size_in_bytes=0)
-    db.add(artifact)
-    await db.commit()
-    await db.refresh(artifact)
-
-    index: dict[str, int] = {}
-    total = 0
     try:
-        for relative, content in payload.items():
-            target = _artifact_member_path(artifact.id, relative)
-            os.makedirs(os.path.dirname(target), exist_ok=True)
-            with open(target, "wb") as handle:
-                handle.write(content)
-            index[relative] = len(content)
-            total += len(content)
-    except Exception:
-        # Do not leave a row pointing at a half-written directory.
-        shutil.rmtree(_artifact_dir(artifact.id), ignore_errors=True)
-        await db.delete(artifact)
-        await db.commit()
-        raise
-
-    artifact.files = index
-    artifact.size_in_bytes = total
-    await db.commit()
-    await db.refresh(artifact)
+        artifact = await artifact_storage.store_artifact(
+            db, run_id=run_id, repo_id=repository.id, name=artifact_name, payload=payload,
+        )
+    except artifact_storage.ArtifactPathError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
     return _artifact_json(artifact, owner, repo)
 
 
@@ -318,15 +274,8 @@ async def download_artifact(owner: str, repo: str, artifact_id: int, archive_for
     if artifact.expired:
         raise HTTPException(status_code=410, detail="Artifact expired")
 
-    buffer = io.BytesIO()
-    with zipfile.ZipFile(buffer, "w", zipfile.ZIP_DEFLATED) as archive:
-        for relative in sorted((artifact.files or {}).keys()):
-            source = _artifact_member_path(artifact_id, relative)
-            if os.path.isfile(source):
-                archive.write(source, arcname=relative)
-    buffer.seek(0)
     return StreamingResponse(
-        buffer,
+        artifact_storage.zip_artifact(artifact),
         media_type="application/zip",
         headers={"Content-Disposition": f'attachment; filename="{artifact.name}.zip"'},
     )
@@ -337,9 +286,7 @@ async def delete_artifact(owner: str, repo: str, artifact_id: int, user: AuthUse
     repository = await get_repo_or_404(owner, repo, db)
     await _require_repository_role(request, db, repository, user, "push")
     artifact = await _get_artifact_or_404(owner, repo, artifact_id, db)
-    shutil.rmtree(_artifact_dir(artifact_id), ignore_errors=True)
-    await db.delete(artifact)
-    await db.commit()
+    await artifact_storage.delete_artifact(db, artifact)
 
 
 async def _check_read_access(db, repository, current_user) -> None:

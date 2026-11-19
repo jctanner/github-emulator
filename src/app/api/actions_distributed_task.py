@@ -662,6 +662,13 @@ def _job_request_message(
                             "AccessToken": access_token,
                         },
                     },
+                    # The runner exports ResultsServiceUrl to node actions as
+                    # ACTIONS_RESULTS_URL (NodeScriptActionHandler), where
+                    # upload-artifact@v4+ and download-artifact@v4+ find the
+                    # results service (src/app/api/actions_results.py).
+                    "data": {
+                        "ResultsServiceUrl": f"{runner_base_url}/",
+                    },
                     "isReady": True,
                 }
             ],
