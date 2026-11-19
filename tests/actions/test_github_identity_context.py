@@ -156,3 +156,26 @@ async def test_the_job_message_never_loads_the_repositorys_branches(db_session, 
     body = json.loads(message["body"]) if "body" in message else message
     github = {item["k"]: item["v"] for item in body["contextData"]["github"]["d"]}
     assert github["ref_protected"] is True
+
+
+@pytest.mark.asyncio
+async def test_a_new_run_reads_its_identity_before_the_insert(
+    client, db_session, test_user, test_token, monkeypatch,
+):
+    """The identity reads stay out of the run's write: the run is not in the
+    session yet when they happen."""
+    from app.services import workflow_service
+    from tests.actions.test_consolidation_bug_fixes import _repo_with_workflow
+
+    repository = await _repo_with_workflow(
+        client, test_token, db_session, name="identity-order-repo", workflow=ATTEMPT_WORKFLOW)
+    real = workflow_service.github_identity_context
+    seen = []
+
+    async def recording(db, run):
+        seen.append(run in db)
+        return await real(db, run)
+
+    monkeypatch.setattr(workflow_service, "github_identity_context", recording)
+    runs = await workflow_service.process_push_event(db_session, repository, test_user, ref_name="main")
+    assert runs and seen and seen[0] is False

@@ -1105,6 +1105,9 @@ async def create_workflow_run(
         actor_id=actor.id,
         trigger_payload=payload,
     )
+    # Read before the run's INSERT, not inside the write that follows it:
+    # the run's own fields are all it needs.
+    identity = await github_identity_context(db, run)
     db.add(run)
     await db.flush()
 
@@ -1136,7 +1139,7 @@ async def create_workflow_run(
             "run_number": run.run_number,
             "sha": head_sha,
             "server_url": settings.BASE_URL,
-            **await github_identity_context(db, run),
+            **identity,
         },
     }
 
