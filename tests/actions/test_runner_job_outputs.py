@@ -227,3 +227,17 @@ def test_job_token_lifetime(timeout_minutes, seconds):
     from app.services.job_token_service import job_token_lifetime
 
     assert job_token_lifetime(SimpleNamespace(timeout_minutes=timeout_minutes)) == seconds
+
+
+@pytest.mark.asyncio
+async def test_an_event_for_another_plan_is_not_found(client, db_session, uses_workflow, test_token):  # noqa: F811
+    body = await _claim_job(client, test_token)
+    token = body["variables"]["system.github.token"]["Value"]
+    other = {**body, "plan": {**body["plan"], "planId": _workflow_guid("run", 999999)}}
+
+    resp = await _raise(client, other, token, _event(body["jobId"], {"stage": {"value": "x"}}))
+
+    assert resp.status_code == 404
+    db_session.expire_all()
+    job = (await db_session.execute(select(WorkflowJob))).scalars().first()
+    assert job.status == "in_progress"

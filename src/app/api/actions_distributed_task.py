@@ -1361,8 +1361,6 @@ async def dt_raise_plan_event(
     leaves it out. The event completes a job and sets the outputs the jobs
     that need it read, so the job token's signature and expiry are checked.
     """
-    from app.services.job_token_service import validate_job_token
-
     auth = request.headers.get("Authorization", "")
     validated = await validate_job_token(db, auth[7:]) if auth.startswith("Bearer ") else None
     if validated is None:
@@ -1370,6 +1368,9 @@ async def dt_raise_plan_event(
             status_code=401, detail="Authentication required", headers={"WWW-Authenticate": "Bearer"}
         )
     job, _run = validated
+    # The plan in the path is the job's own run, as on every job-server route.
+    if plan_id != _workflow_guid("run", job.run_id):
+        raise HTTPException(status_code=404, detail="Plan not found")
     body = await request.json()
     name = body.get("name", body.get("Name", ""))
     if name != "JobCompleted":

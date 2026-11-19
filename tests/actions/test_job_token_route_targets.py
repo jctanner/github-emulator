@@ -11,7 +11,7 @@ import os
 import pytest
 from sqlalchemy import select
 
-from app.api.actions_distributed_task import _job_log_path
+from app.api.actions_distributed_task import _job_log_path, _step_log_dir
 from app.api.actions_runner_protocol import _workflow_guid
 from app.models.actions import Workflow, WorkflowJob
 from app.models.repository import Repository
@@ -78,8 +78,13 @@ async def _send(client, method, path, kwargs, token):
 
 
 def _log_size(job: WorkflowJob) -> int:
+    """Bytes written for the job: its console log plus its uploaded step logs."""
     path = _job_log_path(job.id)
-    return os.path.getsize(path) if os.path.exists(path) else 0
+    size = os.path.getsize(path) if os.path.exists(path) else 0
+    steps = _step_log_dir(job.id)
+    if os.path.isdir(steps):
+        size += sum(os.path.getsize(os.path.join(steps, name)) for name in os.listdir(steps))
+    return size
 
 
 @pytest.mark.asyncio
