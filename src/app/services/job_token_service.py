@@ -18,7 +18,10 @@ def _base64url_json(value: dict) -> str:
 
 def _decode_json(value: str) -> dict:
     padded = value + "=" * (-len(value) % 4)
-    return json.loads(base64.urlsafe_b64decode(padded.encode("ascii")))
+    decoded = json.loads(base64.urlsafe_b64decode(padded.encode("ascii")))
+    if not isinstance(decoded, dict):
+        raise TypeError("JWT header and payload must be JSON objects")
+    return decoded
 
 
 def issue_job_token(job: WorkflowJob) -> str:
