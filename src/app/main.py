@@ -7,7 +7,7 @@ Git Smart HTTP protocol handler.
 
 import logging
 import os
-from contextlib import asynccontextmanager, suppress
+from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 
@@ -66,8 +66,10 @@ async def lifespan(app: FastAPI):
         memory_watch.stop()
     # Stop SSH server
     if ssh_server is not None:
-        with suppress(Exception):
+        try:
             ssh_server.close()
+        except Exception:  # noqa: S110 - shutting down; nothing to do if close fails
+            pass
 
     logger.info("GitHub Emulator shutting down")
 
@@ -284,9 +286,10 @@ def create_app() -> FastAPI:
             from app.api.deps import get_current_user
 
             user = None
-            # An anonymous request resolves with no user.
-            with suppress(Exception):
+            try:
                 user = await get_current_user(request, db)
+            except Exception:  # noqa: S110 - an anonymous request resolves with no user
+                pass
             return {"db": db, "user": user, "request": request}
 
         class GitHubGraphQLRouter(GraphQLRouter):

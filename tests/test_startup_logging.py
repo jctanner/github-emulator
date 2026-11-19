@@ -55,9 +55,9 @@ def test_the_alembic_command_line_keeps_existing_loggers(tmp_path):
     # not disable the loggers that exist already.
     from pathlib import Path
 
+    from alembic import command
     from alembic.config import Config
 
-    from alembic import command
     from app import main as app_main
 
     root = Path(__file__).resolve().parents[1]
