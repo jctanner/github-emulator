@@ -4,8 +4,9 @@ import base64
 import hashlib
 import time
 import uuid
-from cryptography.hazmat.primitives.asymmetric import rsa
+
 from cryptography.hazmat.primitives import serialization
+from cryptography.hazmat.primitives.asymmetric import rsa
 from jose import jwt
 
 from app.config import settings
@@ -50,7 +51,8 @@ def issue_for_job(claims: dict, audience: str) -> str:
         "iss": issuer(),
         "aud": audience,
         "iat": now,
-        "nbf": now - 5,
+        # GitHub's tokens are valid from five minutes before issue.
+        "nbf": now - 300,
         "exp": now + 300,
         "jti": uuid.uuid4().hex,
         **claims,

@@ -15,8 +15,7 @@ from sqlalchemy import select
 from app.models.actions import Workflow, WorkflowJob, WorkflowRun
 from app.models.repository import Repository
 from app.services.job_token_service import issue_job_token
-from tests.conftest import auth_headers  # noqa: F401 - keeps fixture import style
-
+from tests.conftest import API, auth_headers  # noqa: F401 - keeps fixture import style
 
 TRIAGE_PERMISSIONS = {
     "actions": "write",
@@ -110,6 +109,83 @@ async def test_claims_describe_the_run_not_the_request(
     )
     # The subject is derived, so a caller cannot choose it.
     assert claims["sub"] == f"repo:{repo['full_name']}:ref:refs/heads/main"
+    # The owner's id, as the REST API reports it for the repository's owner.
+    assert claims["repository_owner_id"] == str(repo["owner"]["id"])
+    # The claims GitHub adds for a branch push or dispatch, all strings.
+    assert claims["ref_type"] == "branch"
+    assert claims["ref_protected"] == "false"
+    assert claims["head_ref"] == ""
+    assert claims["base_ref"] == ""
+    assert claims["repository_visibility"] == ("private" if repository.private else "public")
+    assert claims["check_run_id"] == str(job.id)
+    # Valid from five minutes before issue, for five minutes after.
+    assert claims["iat"] - claims["nbf"] == 300
+    assert claims["exp"] - claims["iat"] == 300
+
+
+@pytest.mark.asyncio
+async def test_discovery_matches_githubs_document(client):
+    configuration = (await client.get("/.well-known/openid-configuration")).json()
+    assert configuration["jwks_uri"] == "http://testserver/.well-known/jwks"
+    assert configuration["response_types_supported"] == ["id_token"]
+    assert configuration["subject_types_supported"] == ["public", "pairwise"]
+    assert configuration["scopes_supported"] == ["openid"]
+    for claim in ("sub", "repository_owner_id", "ref_type", "check_run_id", "job_workflow_ref"):
+        assert claim in configuration["claims_supported"]
+
+
+@pytest.mark.asyncio
+async def test_pull_request_claims_carry_head_and_base_refs(client, db_session, test_repo_with_init):
+    _owner, _name, repo = test_repo_with_init
+    _repository, run, job = await _seed_job(
+        db_session, repo["full_name"], TRIAGE_PERMISSIONS, event="pull_request"
+    )
+    run.trigger_payload = {"ref": "refs/pull/3/merge",
+                           "pull_request": {"head": {"ref": "feature"}, "base": {"ref": "main"}}}
+    await db_session.commit()
+    response = await client.get(
+        "/actions/oidc/token?api-version=2.0&audience=x",
+        headers={"Authorization": f"Bearer {issue_job_token(job)}"},
+    )
+    assert response.status_code == 200, response.text
+    claims = jwt.get_unverified_claims(response.json()["value"])
+    assert claims["head_ref"] == "feature"
+    assert claims["base_ref"] == "main"
+    assert claims["ref"] == "refs/pull/3/merge"
+
+
+@pytest.mark.asyncio
+async def test_repository_owner_id_is_the_organizations_id(client, db_session, admin_token):
+
+    made = await client.post(
+        f"{API}/admin/organizations", headers=auth_headers(admin_token),
+        json={"login": "pool-org", "admin": "admin"},
+    )
+    assert made.status_code == 201, made.text
+    created = await client.post(
+        f"{API}/orgs/pool-org/repos", headers=auth_headers(admin_token),
+        json={"name": "test-repo-01", "auto_init": True},
+    )
+    assert created.status_code == 201, created.text
+    org = (await client.get(f"{API}/orgs/pool-org", headers=auth_headers(admin_token))).json()
+    _repository, _run, job = await _seed_job(db_session, "pool-org/test-repo-01", TRIAGE_PERMISSIONS)
+
+    response = await client.get(
+        "/actions/oidc/token?audience=fullsend-e2e-gateway",
+        headers={"Authorization": f"Bearer {issue_job_token(job)}"},
+    )
+    assert response.status_code == 200, response.text
+    claims = jwt.get_unverified_claims(response.json()["value"])
+    assert claims["repository_owner"] == "pool-org"
+    assert claims["repository_owner_id"] == str(org["id"])
+    assert claims["repository_owner_id"] == str(created.json()["owner"]["id"])
+
+
+@pytest.mark.asyncio
+async def test_keys_are_also_served_at_githubs_jwks_path(client):
+    github_path = await client.get("/.well-known/jwks")
+    assert github_path.status_code == 200
+    assert github_path.json() == (await client.get("/.well-known/jwks.json")).json()
 
 
 @pytest.mark.asyncio
