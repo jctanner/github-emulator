@@ -11,8 +11,9 @@ Two runner bugs that a PostgreSQL run surfaced. Both also hold on SQLite.
   left the jobs it ran pointing at the deleted row. SQLite does not
   enforce the foreign key; PostgreSQL refused the delete with a 500. The
   admin route already detached the history.
-- **Stale pool poll.** The pool long-poll ran every pass in one
-  transaction. A database that keeps one read snapshot per transaction
+- **Stale job poll.** The custom runner's job long-poll (`_poll_for_jobs`
+  in `actions_dispatch.py`, behind `GET .../actions/runner/jobs`) ran
+  every pass in one transaction. A database that keeps one read snapshot per transaction
   did not see a job queued during the poll.
 
 ## Fix
@@ -23,8 +24,9 @@ Two runner bugs that a PostgreSQL run surfaced. Both also hold on SQLite.
 - A runner removing itself while it holds a job is removed, and the job
   fails: the runner will not finish it. The admin route still refuses to
   delete a runner that is running a job.
-- The pool long-poll commits before each wait, as the distributedtask poll
-  does.
+- The custom runner's job long-poll commits before each wait, as the
+  distributedtask message poll (`dt_get_messages` in
+  `actions_distributed_task.py`) does.
 
 Tests: `tests/actions/test_execution.py::test_pool_distributed_task_protocol_flow`
 now checks that no job points at the runner after the agent delete. It
