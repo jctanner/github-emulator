@@ -286,3 +286,66 @@ async def test_pull_request_heads_replay_through_a_brief_lock(
     db_session.expire_all()
     row = (await db_session.execute(select(PullRequest).where(PullRequest.repo_id == repo_id))).scalar_one()
     assert row.head_sha == moved
+
+
+async def _open_pull_request(client, test_token, name, head):
+    """A topic branch at ``head`` with one commit, and an open pull request from it."""
+    h = auth_headers(test_token)
+    url = f"{API}/repos/testuser/{name}"
+    assert (await client.post(f"{url}/git/refs", json={"ref": "refs/heads/topic", "sha": head}, headers=h)).status_code == 201
+    body = {"message": "t", "content": base64.b64encode(b"t\n").decode(), "branch": "topic"}
+    first = (await client.put(f"{url}/contents/t.txt", json=body, headers=h)).json()["commit"]["sha"]
+    pr = await client.post(f"{url}/pulls", json={"title": "p", "head": "topic", "base": "main"}, headers=h)
+    assert pr.status_code == 201, pr.text
+    return url, first, pr.json()["number"]
+
+
+@pytest.mark.asyncio
+async def test_an_obsolete_api_commit_leaves_newer_pull_request_heads(client, test_token, db_session, locked_commits):
+    """The branch moves on during the record's lock wait: neither the branch
+    record nor the pull request's head goes back to the older commit."""
+    name, head = await _repo(client, test_token, "lock-pr-newer")
+    url, first, number = await _open_pull_request(client, test_token, name, head)
+    disk_path, _ = await _branch_row_sha(db_session, name, "topic")
+
+    async def other_writer():
+        # Another request moves topic back to ``first`` (its own newer push).
+        await _git_in(disk_path, "update-ref", "refs/heads/topic", first)
+
+    body = {"message": "u", "content": base64.b64encode(b"u\n").decode(), "branch": "topic",
+            "sha": (await client.get(f"{url}/contents/t.txt?ref=topic", headers=auth_headers(test_token))).json()["sha"]}
+    locked_commits.update(fail=1, armed=True, on_fail=other_writer)
+    resp = await client.put(f"{url}/contents/t.txt", json=body, headers=auth_headers(test_token))
+    locked_commits["armed"] = False
+    assert resp.status_code == 200, resp.text
+    obsolete = resp.json()["commit"]["sha"]
+
+    _, recorded = await _branch_row_sha(db_session, name, "topic")
+    assert recorded != obsolete
+    from sqlalchemy import select
+
+    from app.models.pull_request import PullRequest
+
+    db_session.expire_all()
+    head_sha = (await db_session.execute(select(PullRequest.head_sha).where(PullRequest.head_ref == "topic"))).scalar_one()
+    assert head_sha != obsolete
+
+
+@pytest.mark.asyncio
+async def test_a_failed_push_event_still_answers_the_api_commit(client, test_token, monkeypatch):
+    """A dispatch failure after the commit rolls back; the request still succeeds."""
+    from app.services import workflow_service
+
+    name, head = await _repo(client, test_token, "push-event-fails")
+    url, _first, number = await _open_pull_request(client, test_token, name, head)
+
+    async def failing_push_event(*_args, **_kwargs):
+        raise RuntimeError("dispatch failed")
+
+    monkeypatch.setattr(workflow_service, "process_push_event", failing_push_event)
+    sha = (await client.get(f"{url}/contents/t.txt?ref=topic", headers=auth_headers(test_token))).json()["sha"]
+    body = {"message": "v", "content": base64.b64encode(b"v\n").decode(), "branch": "topic", "sha": sha}
+    resp = await client.put(f"{url}/contents/t.txt", json=body, headers=auth_headers(test_token))
+    assert resp.status_code == 200, resp.text
+    pull = (await client.get(f"{url}/pulls/{number}", headers=auth_headers(test_token))).json()
+    assert pull["head"]["sha"] == resp.json()["commit"]["sha"]

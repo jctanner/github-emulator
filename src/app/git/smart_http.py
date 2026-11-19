@@ -31,6 +31,8 @@ from app.models.repository import Repository
 from app.models.user import User
 from app.services.cross_repo_pulls import same_repository_head
 
+logger = logging.getLogger(__name__)
+
 router = APIRouter()
 
 
@@ -272,8 +274,6 @@ async def _run_git_command_from_file(
         await stdin_task
     return exit_code, stdout, stderr
 
-
-logger = logging.getLogger(__name__)
 
 
 async def _recover_after_failed_step(db, step: str, repo_id: int, repository, user) -> None:

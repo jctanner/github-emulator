@@ -39,12 +39,22 @@ async def after_api_commit(
     from app.services.merge_readiness_service import reevaluate_auto_merges
     from app.services.workflow_service import process_push_event
 
-    repository_id = repository.id
+    repository_id, user_id = repository.id, user.id
     # The route resolved the repository without its relationships (raiseload);
     # push processing reads its owner and organization, so load it afresh.
     repository = (await db.execute(
         select(Repository).where(Repository.id == repository_id).execution_options(populate_existing=True)
     )).scalar_one()
+    # Read now: a rollback below expires the loaded objects.
+    disk_path, full_name = repository.disk_path, repository.full_name
+
+    # The branch record follows the same rule (record_moved_branch): once
+    # another writer has moved the branch past ``after``, that writer's own
+    # push moves the pull request heads, and this older commit must not move
+    # them back.
+    if await ref_sha(disk_path, full_ref(branch)) != after:
+        logger.info("%s:%s moved past %s before its push was processed", full_name, branch, after)
+        return
     try:
         await process_push_event(
             db, repository, user,
@@ -54,17 +64,13 @@ async def after_api_commit(
     except Exception:
         # The commit is made; a dispatch failure must not leave the pull
         # request heads below unrecorded (as after a git push).
-        logger.exception("push activity for %s:%s failed", repository.full_name, branch)
+        logger.exception("push activity for %s:%s failed", full_name, branch)
         await db.rollback()
-    disk_path = repository.disk_path
 
-    async def stage_heads(replay: bool = False) -> None:
-        if replay:
-            await db.refresh(user)
-            # The same rule as the branch record: a replay after a lock wait
-            # leaves the heads to a writer that has moved the branch since.
-            if await ref_sha(disk_path, full_ref(branch)) != after:
-                return
+    async def stage_heads() -> None:
+        # Checked on every attempt, the replay after a lock wait included.
+        if await ref_sha(disk_path, full_ref(branch)) != after:
+            return
         heads = (await db.execute(
             select(PullRequest).join(Issue, PullRequest.issue_id == Issue.id).where(
                 PullRequest.repo_id == repository_id,
@@ -75,12 +81,10 @@ async def after_api_commit(
         )).scalars().all()
         for pull_request in heads:
             pull_request.head_sha = after
-            pull_request.last_push_by_id = user.id
+            pull_request.last_push_by_id = user_id
 
     await stage_heads()
-    await commit_with_sqlite_retry(
-        db, label=f"pull request heads for {branch}", before_retry=lambda: stage_heads(replay=True),
-    )
+    await commit_with_sqlite_retry(db, label=f"pull request heads for {branch}", before_retry=stage_heads)
     try:
         await reevaluate_auto_merges(db, repository_id)
     except Exception:

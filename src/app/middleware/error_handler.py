@@ -1,5 +1,6 @@
 """Exception handlers that return GitHub-format error JSON responses."""
 
+import logging
 from typing import Any, Optional
 
 from fastapi import FastAPI, Request
@@ -192,8 +193,6 @@ async def stale_row_handler(request: Request, exc: Exception) -> JSONResponse:
     runner reports the end of a job there. The resource is gone, so 404,
     not 500.
     """
-    import logging
-
     logging.getLogger("github_emulator").info(
         "%s %s updated a row another request deleted: %s", request.method,
         request.url.path.encode("unicode_escape").decode("ascii"), exc

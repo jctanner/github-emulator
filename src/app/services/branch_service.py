@@ -3,6 +3,9 @@
 Callers commit these updates together with their repository metadata.
 """
 
+import asyncio
+import logging
+
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -133,8 +136,6 @@ def full_ref(branch: str) -> str:
 
 async def ref_sha(disk_path: str, ref: str) -> str | None:
     """The sha ``ref`` points at on disk, or None if it does not exist."""
-    import asyncio
-
     proc = await asyncio.create_subprocess_exec(
         "git", "rev-parse", "--verify", "--quiet", ref, cwd=disk_path,
         stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.DEVNULL,
@@ -150,9 +151,6 @@ async def _move_ref_back(disk_path: str, branch: str, before: str | None, after:
 
     ``branch`` is a branch name or a full ``refs/...`` name.
     """
-    import asyncio
-    import logging
-
     ref = full_ref(branch)
     args = ["update-ref", ref, before, after] if before else ["update-ref", "-d", ref, after]
     proc = await asyncio.create_subprocess_exec(
