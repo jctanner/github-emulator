@@ -104,7 +104,7 @@ async def pipelines_deregister_enterprise_runner(
 @router.get("/_services/pipelines/enterprises/{enterprise}/_apis/pipelines/runs")
 async def pipelines_list_enterprise_runners(enterprise: str, db: DbSession):
     result = await db.execute(
-        select(Runner).where(Runner.enterprise_slug == enterprise)
+        select(Runner).where(Runner.enterprise_slug == enterprise, Runner.remove_only.is_not(True))
     )
     runners = result.scalars().all()
     return {
@@ -201,7 +201,7 @@ async def pipelines_list_runners(
     """List runners via GHES pipelines protocol."""
     repository = await get_repo_or_404(owner, repo, db)
     result = await db.execute(
-        select(Runner).where(Runner.repo_id == repository.id)
+        select(Runner).where(Runner.repo_id == repository.id, Runner.remove_only.is_not(True))
     )
     runners = result.scalars().all()
     return {

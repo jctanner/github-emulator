@@ -9,8 +9,8 @@
 
 Existing rows keep their behaviour.
 
-Revision ID: 0018_enterprise_remove_tokens
-Revises: 0017_org_role_assignments
+Revision ID: 0019_enterprise_remove_tokens
+Revises: 0018_shared_account_ids
 Create Date: 2026-11-18
 """
 
@@ -18,8 +18,8 @@ import sqlalchemy as sa
 from alembic import op
 from sqlalchemy import inspect
 
-revision = "0018_enterprise_remove_tokens"
-down_revision = "0017_org_role_assignments"
+revision = "0019_enterprise_remove_tokens"
+down_revision = "0018_shared_account_ids"
 branch_labels = None
 depends_on = None
 

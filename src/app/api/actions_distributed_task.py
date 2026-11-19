@@ -468,9 +468,16 @@ async def dt_list_pool_agents(
     db: DbSession,
     agentName: str | None = Query(None),
 ):
-    """List registered pool agents."""
-    caller = await _get_runner_from_token(request, db)
-    query = select(Runner).where(_same_scope_as(caller)).order_by(Runner.id)
+    """List registered pool agents in the caller's scope.
+
+    config.sh remove looks its agent up here before deleting it, so the
+    remove-only credential may list too. Remove-only credentials are never
+    listed: they are not runners.
+    """
+    caller = await _get_runner_from_token(request, db, allow_remove_only=True)
+    query = select(Runner).where(
+        _same_scope_as(caller), Runner.remove_only.is_not(True),
+    ).order_by(Runner.id)
     if agentName:
         query = query.where(Runner.name == agentName)
     result = await db.execute(query)

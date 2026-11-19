@@ -39,7 +39,7 @@ single token the second and third registrations get 401.
   token in the body, and the repository and enterprise pipelines register.
 - An enterprise remove token serves `config.sh remove` only: a
   `runner-registration` call with `runner_event` `remove`. It registers no
-  runner on any route (migration `0018_enterprise_remove_tokens` adds
+  runner on any route (migration `0019_enterprise_remove_tokens` adds
   `for_remove` to tell it apart).
 - Issuing a registration or remove token drops the tokens past their expiry.
 - A `runner-registration` call with `runner_event` `remove` (what

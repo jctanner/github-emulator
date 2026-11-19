@@ -205,3 +205,54 @@ async def test_a_remove_exchange_gives_a_credential_that_only_removes(client, ad
         f"{API}/enterprises/breadboard/actions/runners", headers=auth_headers(admin_token))).json()["runners"]
     assert [r["name"] for r in runners if r["id"] == kept_id] == ["kept"]
     assert "unnamed-runner" not in {r["name"] for r in runners}
+
+
+@pytest.mark.asyncio
+async def test_config_sh_remove_full_flow_with_the_exchanged_credential(client, admin_token, test_token):
+    """config.sh remove: exchange the remove token, look the agent up by name,
+    then delete it, all with the exchanged credential."""
+    resp = await client.post(f"{API}/user/repos", json={"name": "elsewhere"}, headers=auth_headers(test_token))
+    assert resp.status_code == 201, resp.text
+    await _config_sh_register(
+        client, await _registration_token(client, "/repos/testuser/elsewhere", test_token), "going")
+    reg_token = await _registration_token(client, "/enterprises/breadboard", admin_token)
+    _, agent_id = await _config_sh_register(client, reg_token, "going")
+
+    remove = await client.post(
+        f"{API}/actions/runner-registration", json={"url": "http://test/x", "runner_event": "remove"},
+        headers={"Authorization": f"RemoteAuth {await _remove_token(client, admin_token)}"},
+    )
+    assert remove.status_code == 200, remove.text
+    bearer = {"Authorization": f"Bearer {remove.json()['token']}"}
+    found = await client.get("/_apis/distributedtask/pools/1/agents", params={"agentName": "going"}, headers=bearer)
+    assert found.status_code == 200, found.text
+    # Only the enterprise's runner: the repository's runner of the same name is not its to see.
+    assert [agent["id"] for agent in found.json()["value"]] == [agent_id]
+    deleted = await client.delete(f"/_apis/distributedtask/pools/1/agents/{agent_id}", headers=bearer)
+    assert deleted.status_code == 200, deleted.text
+    gone = (await client.get(
+        f"{API}/enterprises/breadboard/actions/runners", headers=auth_headers(admin_token))).json()["runners"]
+    assert agent_id not in {r["id"] for r in gone}
+
+
+@pytest.mark.asyncio
+async def test_an_abandoned_remove_exchange_is_listed_nowhere(client, admin_token):
+    reg_token = await _registration_token(client, "/enterprises/breadboard", admin_token)
+    kept_credential, kept_id = await _config_sh_register(client, reg_token, "kept-listing")
+    remove = await client.post(
+        f"{API}/actions/runner-registration", json={"url": "http://test/x", "runner_event": "remove"},
+        headers={"Authorization": f"RemoteAuth {await _remove_token(client, admin_token)}"},
+    )
+    assert remove.status_code == 200, remove.text  # and never followed by a delete
+
+    pool = await client.get(
+        "/_apis/distributedtask/pools/1/agents", headers={"Authorization": f"Bearer {kept_credential}"})
+    pipelines = await client.get("/_services/pipelines/enterprises/breadboard/_apis/pipelines/runs")
+    rest = await client.get(f"{API}/enterprises/breadboard/actions/runners", headers=auth_headers(admin_token))
+    for names in (
+        [a["name"] for a in pool.json()["value"]],
+        [r["name"] for r in pipelines.json()["value"]],
+        [r["name"] for r in rest.json()["runners"]],
+    ):
+        assert "kept-listing" in names
+        assert "unnamed-runner" not in names
