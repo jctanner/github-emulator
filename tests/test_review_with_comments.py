@@ -11,10 +11,19 @@ that the client had been told were attached.
 """
 
 import pytest
+import pytest_asyncio
 
 from tests.conftest import auth_headers
+from tests.test_org_memberships_api import _make_user
 
 API = "/api/v3"
+
+
+@pytest_asyncio.fixture
+async def reviewer_token(db_session):
+    """Someone other than the pull request's author, who GitHub refuses to
+    let approve or request changes on their own pull request."""
+    return await _make_user(db_session, "reviewer")
 
 
 async def _create_pr(client, token, repo_name):
@@ -35,7 +44,7 @@ async def _create_pr(client, token, repo_name):
 
 
 @pytest.mark.asyncio
-async def test_review_comments_are_created_and_readable(client, test_user, test_token):
+async def test_review_comments_are_created_and_readable(client, test_user, test_token, reviewer_token):
     """The comments arrive, are attached to the review, and are listed."""
     pr = await _create_pr(client, test_token, "rwc-create")
     number = pr["number"]
@@ -50,9 +59,9 @@ async def test_review_comments_are_created_and_readable(client, test_user, test_
                 {"path": "scripts/retry.py", "position": 14, "body": "Bare except."},
             ],
         },
-        headers=auth_headers(test_token),
+        headers=auth_headers(reviewer_token),
     )
-    assert resp.status_code == 201, resp.text
+    assert resp.status_code == 200, resp.text
     review = resp.json()
     assert review["state"] == "CHANGES_REQUESTED"
 
@@ -81,16 +90,16 @@ async def test_review_comments_are_created_and_readable(client, test_user, test_
 
 
 @pytest.mark.asyncio
-async def test_review_without_comments_is_unchanged(client, test_user, test_token):
+async def test_review_without_comments_is_unchanged(client, test_user, test_token, reviewer_token):
     """The common case keeps working: no array, no comments, no error."""
     pr = await _create_pr(client, test_token, "rwc-none")
     number = pr["number"]
     resp = await client.post(
         f"{API}/repos/testuser/rwc-none/pulls/{number}/reviews",
         json={"body": "Looks good.", "event": "APPROVE"},
-        headers=auth_headers(test_token),
+        headers=auth_headers(reviewer_token),
     )
-    assert resp.status_code == 201
+    assert resp.status_code == 200
     assert resp.json()["state"] == "APPROVED"
     listed = await client.get(
         f"{API}/repos/testuser/rwc-none/pulls/{number}/comments",
@@ -136,7 +145,7 @@ async def test_a_malformed_comment_rejects_the_whole_request(
 
 
 @pytest.mark.asyncio
-async def test_a_file_level_comment_needs_no_line(client, test_user, test_token):
+async def test_a_file_level_comment_needs_no_line(client, test_user, test_token, reviewer_token):
     """Fullsend's own payload shape, which an anchor requirement would reject.
 
     internal/forge/github/github.go omits `line` when it is 0 and sets
@@ -160,9 +169,9 @@ async def test_a_file_level_comment_needs_no_line(client, test_user, test_token)
                  "body": "Mutable default argument."},
             ],
         },
-        headers=auth_headers(test_token),
+        headers=auth_headers(reviewer_token),
     )
-    assert resp.status_code == 201, resp.text
+    assert resp.status_code == 200, resp.text
 
     comments = (await client.get(
         f"{API}/repos/testuser/rwc-file/pulls/{number}/comments",

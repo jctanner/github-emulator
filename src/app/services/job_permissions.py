@@ -53,6 +53,8 @@ _SCOPE_BY_SEGMENT = {
     "releases": "contents",
     "tags": "contents",
     "merges": "contents",
+    # A comparison returns commits and file patches: repository contents.
+    "compare": "contents",
     "actions": "actions",
     "check-runs": "checks",
     "check-suites": "checks",

@@ -2,15 +2,24 @@
 
 import asyncio
 import os
+from urllib.parse import quote
 
 from fastapi import APIRouter, HTTPException, Query, Request
-from sqlalchemy import select
+from fastapi.encoders import jsonable_encoder
+from fastapi.responses import JSONResponse
 
 from app.api.deps import CurrentUser, DbSession, get_repo_or_404
+from app.api.pagination import pagination_links
 from app.config import settings
-from app.git.bare_repo import get_commit_diff
+from app.git.bare_repo import (
+    get_ahead_behind,
+    get_commit_diff,
+    get_compare_files,
+    get_merge_base,
+    resolve_ref,
+)
 from app.schemas.browse import CommitResponse
-from app.schemas.user import _fmt_dt, _make_node_id
+from app.schemas.user import _make_node_id
 
 router = APIRouter(tags=["commits"])
 
@@ -81,6 +90,26 @@ def _parse_commit_line(
     }
 
 
+def _with_file_urls(owner: str, repo: str, sha: str, files: list[dict]) -> list[dict]:
+    """Add GitHub's per-file URLs, at commit ``sha``, to changed-file records."""
+    for file in files:
+        # Percent-encode the path's own bytes, which may not be UTF-8.
+        path = file.pop("path_bytes", None)
+        filename = quote(path if path is not None else file.get("filename", ""), safe="/")
+        file.update(
+            {
+                "sha": file.get("sha", ""),
+                "blob_url": f"{BASE}/{owner}/{repo}/blob/{sha}/{filename}",
+                "raw_url": f"{BASE}/{owner}/{repo}/raw/{sha}/{filename}",
+                "contents_url": (
+                    f"{BASE}/api/v3/repos/{owner}/{repo}/contents/{filename}"
+                    f"?ref={sha}"
+                ),
+            }
+        )
+    return files
+
+
 @router.get("/repos/{owner}/{repo}/commits", response_model=list[CommitResponse])
 async def list_commits(
     owner: str,
@@ -145,7 +174,7 @@ async def get_commit(
     try:
         out = await _git(repository.disk_path, "log", f"--format={fmt}", "-1", sha)
     except RuntimeError:
-        raise HTTPException(status_code=404, detail="Not Found")
+        raise HTTPException(status_code=404, detail="Not Found") from None
 
     line = out.strip()
     if not line:
@@ -158,20 +187,10 @@ async def get_commit(
         BASE,
         bool(getattr(request.state, "is_installation_token", False)),
     )
-    files = await get_commit_diff(repository.disk_path, commit["sha"])
-    for file in files:
-        filename = file.get("filename", "")
-        file.update(
-            {
-                "sha": file.get("sha", ""),
-                "blob_url": f"{BASE}/{owner}/{repo}/blob/{commit['sha']}/{filename}",
-                "raw_url": f"{BASE}/{owner}/{repo}/raw/{commit['sha']}/{filename}",
-                "contents_url": (
-                    f"{BASE}/api/v3/repos/{owner}/{repo}/contents/{filename}"
-                    f"?ref={commit['sha']}"
-                ),
-            }
-        )
+    files = _with_file_urls(
+        owner, repo, commit["sha"],
+        await get_commit_diff(repository.disk_path, commit["sha"]),
+    )
     additions = sum(file.get("additions", 0) for file in files)
     deletions = sum(file.get("deletions", 0) for file in files)
     commit["stats"] = {
@@ -183,31 +202,181 @@ async def get_commit(
     return commit
 
 
-@router.get("/repos/{owner}/{repo}/compare/{basehead}")
+
+
+# NUL between every field (git log -z ends each record with one too), and the
+# full message (%B) last: a commit message cannot hold NUL, so any other
+# byte in it, newlines and control characters alike, stays in its field.
+_COMMIT_FORMAT = "%H%x00%an%x00%ae%x00%aI%x00%cn%x00%ce%x00%cI%x00%P%x00%T%x00%B"
+_COMMIT_FIELDS = 10
+
+
+async def _resolve_compare_side(ref: str, repository, db, user, request: Request):
+    """Resolve one side of ``base...head`` to ``(commit SHA, fork)``.
+
+    The side is a branch, tag or SHA, or ``owner:ref``. An owner other than
+    the repository's names a repository in its fork network: its branch is
+    resolved there, and the fork is returned so the comparison can read its
+    objects without copying them into ``repository``. ``(None, None)`` when
+    the side does not resolve or the caller cannot read the fork.
+    """
+    if not ref or ref.startswith("-"):
+        return None, None
+    repo_owner = repository.full_name.split("/", 1)[0]
+    owner_login, sep, branch = ref.partition(":")
+    if sep and owner_login != repo_owner:
+        from app.api.deps import installation_token_covers
+        from app.services import cross_repo_pulls
+        from app.services.repository_access import can_read
+
+        fork = await cross_repo_pulls.resolve_fork_for_owner(db, repository, owner_login)
+        if (
+            fork is None
+            or not await can_read(db, fork, user)
+            or not installation_token_covers(request, fork.full_name)
+        ):
+            return None, None
+        return await cross_repo_pulls.branch_commit(fork, branch), fork
+    if sep:
+        ref = branch
+    return await resolve_ref(repository.disk_path, f"{ref}^{{commit}}"), None
+
+
+async def _commit_objects(
+    git_dir: str, owner: str, repo: str, shas: list[str], verified: bool
+) -> list[dict]:
+    if not shas:
+        return []
+    out = await _git(
+        git_dir, "log", "-z", "--no-walk=unsorted", f"--format={_COMMIT_FORMAT}", *shas
+    )
+    fields = out.split("\0")
+    commits = []
+    for i in range(0, len(fields) - _COMMIT_FIELDS + 1, _COMMIT_FIELDS):
+        sha, an, ae, ad, cn, ce, cd, parents, tree, message = fields[i:i + _COMMIT_FIELDS]
+        line = "\x1f".join((sha.lstrip("\n"), an, ae, ad, cn, ce, cd, "", parents, tree))
+        commit = _parse_commit_line(line, owner, repo, BASE, verified)
+        # GitHub's message has no trailing newline.
+        commit["commit"]["message"] = message.rstrip("\n")
+        commits.append(commit)
+    return commits
+
+
+# ``basehead`` is a path: either side may be a branch with "/" in it.
+@router.get("/repos/{owner}/{repo}/compare/{basehead:path}")
 async def compare_commits(
-    owner: str, repo: str, basehead: str, db: DbSession, current_user: CurrentUser
+    owner: str,
+    repo: str,
+    basehead: str,
+    db: DbSession,
+    current_user: CurrentUser,
+    request: Request,
+    page: int | None = Query(None, ge=1),
+    per_page: int | None = Query(None, ge=1, le=100),
 ):
-    """Compare two commits (stub returning minimal data)."""
+    """Compare two commits: GitHub's ``base...head`` comparison.
+
+    ``commits`` are those on head since the merge base, oldest first (up to
+    250, the most recent, unless paginated); ``files`` compare the merge base with head and
+    appear on the first page only.
+    """
     repository = await get_repo_or_404(owner, repo, db)
 
     if "..." not in basehead:
-        raise HTTPException(status_code=422, detail="basehead must be base...head")
+        raise HTTPException(status_code=404, detail="Not Found")
+    if not repository.disk_path or not os.path.isdir(repository.disk_path):
+        raise HTTPException(status_code=404, detail="Not Found")
 
     base_ref, _, head_ref = basehead.partition("...")
-    api = f"{BASE}/api/v3"
+    base_sha, base_fork = await _resolve_compare_side(base_ref, repository, db, current_user, request)
+    head_sha, head_fork = await _resolve_compare_side(head_ref, repository, db, current_user, request)
+    if not base_sha or not head_sha:
+        raise HTTPException(status_code=404, detail="Not Found")
 
-    return {
+    args = (repository, owner, repo, basehead, base_sha, head_sha, head_fork, page, per_page, request)
+    forks = [fork for fork in (base_fork, head_fork) if fork is not None]
+    if not forks:
+        return await _build_compare(repository.disk_path, *args)
+    from app.services import cross_repo_pulls
+
+    # A fork side: read both repositories' objects, copy none of them.
+    async with cross_repo_pulls.object_view(repository, *forks) as git_dir:
+        return await _build_compare(git_dir, *args)
+
+
+async def _build_compare(
+    git_dir: str, repository, owner: str, repo: str, basehead: str, base_sha: str, head_sha: str,
+    head_fork, page: int | None, per_page: int | None, request: Request,
+):
+    """The compare response, with every git read made in ``git_dir``.
+
+    The files' URLs point at the repository that holds the head commit: the
+    head fork when the head side is one, since its commits are not in the
+    base repository.
+    """
+
+    merge_base = await get_merge_base(git_dir, base_sha, head_sha)
+    if not merge_base:
+        raise HTTPException(
+            status_code=404, detail="No common ancestor between base and head."
+        )
+
+    ahead_by, behind_by = await get_ahead_behind(git_dir, base_sha, head_sha)
+    if ahead_by and behind_by:
+        status = "diverged"
+    elif ahead_by:
+        status = "ahead"
+    elif behind_by:
+        status = "behind"
+    else:
+        status = "identical"
+
+    verified = bool(getattr(request.state, "is_installation_token", False))
+    base_commit = (await _commit_objects(git_dir, owner, repo, [base_sha], verified))[0]
+    merge_base_commit = (
+        base_commit if merge_base == base_sha
+        else (await _commit_objects(git_dir, owner, repo, [merge_base], verified))[0]
+    )
+
+    commit_shas = (
+        await _git(git_dir, "rev-list", "--reverse", f"{base_sha}..{head_sha}")
+    ).split()
+    link = ""
+    if page is None and per_page is None:
+        # Unpaged, GitHub returns the most recent 250 commits, oldest first.
+        commit_shas = commit_shas[-250:]
+        first_page = True
+    else:
+        size = per_page or 30
+        start = ((page or 1) - 1) * size
+        # GitHub links the other pages of the commit list, as for any list.
+        link = pagination_links(request, page or 1, size, len(commit_shas))
+        commit_shas = commit_shas[start:start + size]
+        first_page = (page or 1) == 1
+    commits = await _commit_objects(git_dir, owner, repo, commit_shas, verified)
+
+    files = []
+    if first_page:
+        file_owner, file_repo = head_fork.full_name.split("/", 1) if head_fork is not None else (owner, repo)
+        files = _with_file_urls(
+            file_owner, file_repo, head_sha,
+            await get_compare_files(git_dir, base_sha, head_sha),
+        )
+
+    api = f"{BASE}/api/v3"
+    body = {
         "url": f"{api}/repos/{owner}/{repo}/compare/{basehead}",
         "html_url": f"{BASE}/{owner}/{repo}/compare/{basehead}",
-        "permalink_url": f"{BASE}/{owner}/{repo}/compare/{basehead}",
+        "permalink_url": f"{BASE}/{owner}/{repo}/compare/{base_sha}...{head_sha}",
         "diff_url": f"{BASE}/{owner}/{repo}/compare/{basehead}.diff",
         "patch_url": f"{BASE}/{owner}/{repo}/compare/{basehead}.patch",
-        "base_commit": {},
-        "merge_base_commit": {},
-        "status": "ahead",
-        "ahead_by": 0,
-        "behind_by": 0,
-        "total_commits": 0,
-        "commits": [],
-        "files": [],
+        "base_commit": base_commit,
+        "merge_base_commit": merge_base_commit,
+        "status": status,
+        "ahead_by": ahead_by,
+        "behind_by": behind_by,
+        "total_commits": ahead_by,
+        "commits": commits,
+        "files": files,
     }
+    return JSONResponse(content=jsonable_encoder(body), headers={"Link": link} if link else None)

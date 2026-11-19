@@ -15,6 +15,7 @@ from app.models.repository import Repository
 from app.services import webhook_service
 from app.services.workflow_service import process_push_event
 from tests.conftest import API, auth_headers
+from tests.test_org_memberships_api import _make_user
 
 SECRET = "hook-secret"
 
@@ -360,7 +361,7 @@ async def test_closing_a_pull_request_through_the_issues_api_is_a_pull_request_e
 
 @pytest.mark.asyncio
 async def test_a_review_event_reports_its_state_in_lowercase(
-    client, test_user, test_token, webhook_requests
+    client, test_user, test_token, webhook_requests, db_session
 ):
     """``pull_request_review`` sends ``changes_requested``; REST says
     ``CHANGES_REQUESTED``. Fullsend's fix stage compares with the former."""
@@ -375,9 +376,10 @@ async def test_a_review_event_reports_its_state_in_lowercase(
     resp = await client.post(
         f"{API}/repos/testuser/reviewstate/pulls/{number}/reviews",
         json={"body": "needs work", "event": "REQUEST_CHANGES"},
-        headers=auth_headers(test_token),
+        # The author cannot request changes on their own pull request.
+        headers=auth_headers(await _make_user(db_session, "reviewer")),
     )
-    assert resp.status_code in (200, 201), resp.text
+    assert resp.status_code == 200, resp.text
     assert resp.json()["state"] == "CHANGES_REQUESTED"
 
     requests = await _settle(webhook_requests)

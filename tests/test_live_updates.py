@@ -87,7 +87,7 @@ async def test_a_review_wakes_its_pull_request(
             json={"event": "COMMENT", "body": "looks fine"},
             headers=auth_headers(test_token),
         )
-        assert resp.status_code == 201
+        assert resp.status_code == 200
         assert await _changed(watched)
 
 

@@ -1,4 +1,5 @@
 import os
+
 from pydantic_settings import BaseSettings
 
 
@@ -13,16 +14,21 @@ class Settings(BaseSettings):
     DATABASE_URL: str = ""
     SQLITE_BUSY_TIMEOUT_MS: int = 5000
     SQLITE_WRITE_RETRY_ATTEMPTS: int = 2
+    # Requests per token (or client address) per hour that the rate-limit
+    # headers and GET /rate_limit report, as github.com does. Nothing is
+    # refused at zero, but a client that paces itself on the headers waits
+    # for the reset; a large value keeps a busy test suite from doing that.
+    RATE_LIMIT: int = 5000
     SQLITE_WRITE_RETRY_DELAY_MS: int = 100
 
     # Secret key for JWT/session signing
-    SECRET_KEY: str = "change-me-in-production"
+    SECRET_KEY: str = "change-me-in-production"  # noqa: S105 - documented development default; deployments set it
 
     # Admin credentials (created on first startup)
     SEED_DATA: bool = True
     ADMIN_USERNAME: str = "admin"
-    ADMIN_PASSWORD: str = "admin"
-    DEFAULT_ADMIN_TOKEN: str = "ghp_admin_default_token"
+    ADMIN_PASSWORD: str = "admin"  # noqa: S105 - documented development default; deployments set it
+    DEFAULT_ADMIN_TOKEN: str = "ghp_admin_default_token"  # noqa: S105 - documented development default; deployments set it
 
     # Hostname for Caddy TLS / gh CLI integration
     HOSTNAME: str = "ghemu.local"
@@ -78,7 +84,7 @@ class Settings(BaseSettings):
     # Resettable Actions OIDC issuer.  The key is generated in-process by the
     # emulator; this is intentionally not a production identity provider.
     OIDC_ISSUER: str = ""
-    ACTIONS_OIDC_REQUEST_TOKEN: str = "fullsend-action-request"
+    ACTIONS_OIDC_REQUEST_TOKEN: str = "fullsend-action-request"  # noqa: S105 - documented development default; deployments set it
 
     # Jobs assigned to a runner that stops heartbeating are returned to the
     # queue after this interval so a replacement runner can claim them.

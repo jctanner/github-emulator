@@ -1,22 +1,24 @@
 """Issue endpoints -- list, create, get, update issues."""
 
+import json
 from datetime import datetime, timezone
 from typing import Optional
 
 from fastapi import APIRouter, HTTPException, Query, Request
 from fastapi.responses import JSONResponse
-from sqlalchemy import select, func as sa_func
+from sqlalchemy import func as sa_func
+from sqlalchemy import select
 
 from app.api.deps import AuthUser, CurrentUser, DbSession, get_repo_or_404
+from app.api.labels import _get_or_create_label
 from app.api.pagination import pagination_links
 from app.config import settings
-from app.models.issue import Issue, IssueLabel, IssueAssignee
+from app.models.issue import Issue, IssueAssignee, IssueLabel
 from app.models.label import Label
-from app.models.repository import Repository
 from app.models.user import User
-from app.schemas.user import SimpleUser, _fmt_dt, _make_node_id
-from app.schemas.label import LabelResponse
 from app.schemas.issue import IssueResponse
+from app.schemas.label import LabelResponse
+from app.schemas.user import SimpleUser, _fmt_dt, _make_node_id
 
 router = APIRouter(tags=["issues"])
 
@@ -168,7 +170,7 @@ async def list_issues(
 
     # Filter by labels (comma-separated)
     if labels:
-        label_names = [l.strip() for l in labels.split(",")]
+        label_names = [name.strip() for name in labels.split(",")]
         for label_name in label_names:
             label_subq = (
                 select(IssueLabel.issue_id)
@@ -208,6 +210,29 @@ async def list_issues(
     )
 
 
+async def _resolve_labels(db, repository_id: int, values) -> list[Label]:
+    """Resolve an issue's ``labels`` field, creating any that do not exist.
+
+    GitHub creates a missing label (color ``ededed``) and applies it, as
+    ``POST /issues/{n}/labels`` does. Entries may be names or objects with a
+    ``name``; repeats are applied once.
+    """
+    if values is not None and not isinstance(values, list):
+        # GitHub validates the shape: a bare string is not an array of labels.
+        raise HTTPException(
+            status_code=422,
+            detail=f"Invalid request.\n\nFor 'properties/labels', {json.dumps(values)} is not an array.",
+        )
+    labels: dict[int, Label] = {}
+    for value in values or []:
+        name = value.get("name") if isinstance(value, dict) else value
+        if not isinstance(name, str) or not name:
+            continue
+        label = await _get_or_create_label(db, repository_id, name)
+        labels.setdefault(label.id, label)
+    return list(labels.values())
+
+
 @router.post(
     "/repos/{owner}/{repo}/issues",
     status_code=201,
@@ -241,17 +266,8 @@ async def create_issue(
     await db.flush()
 
     # Labels
-    label_names = body.get("labels", [])
-    if label_names:
-        for lname in label_names:
-            result = await db.execute(
-                select(Label).where(
-                    Label.repo_id == repository.id, Label.name == lname
-                )
-            )
-            label = result.scalar_one_or_none()
-            if label:
-                db.add(IssueLabel(issue_id=issue.id, label_id=label.id))
+    for label in await _resolve_labels(db, repository.id, body.get("labels")):
+        db.add(IssueLabel(issue_id=issue.id, label_id=label.id))
 
     # Assignees
     assignee_logins = body.get("assignees", [])
@@ -360,6 +376,11 @@ async def update_issue(
             repository.open_issues_count += 1
     if "state_reason" in body:
         issue.state_reason = body["state_reason"]
+    elif "state" in body and body["state"] != old_state:
+        # GitHub sets the reason on every transition the request does not
+        # explain: a close is "completed", a reopen is "reopened". Keeping the
+        # old one made a reopened issue still read as not_planned.
+        issue.state_reason = "completed" if body["state"] == "closed" else "reopened"
     if "milestone" in body:
         if body["milestone"] is None:
             issue.milestone_id = None
@@ -387,16 +408,9 @@ async def update_issue(
         await db.execute(
             delete(IssueLabel).where(IssueLabel.issue_id == issue.id)
         )
-        for lname in body["labels"]:
-            lbl_result = await db.execute(
-                select(Label).where(
-                    Label.repo_id == repository.id, Label.name == lname
-                )
-            )
-            label = lbl_result.scalar_one_or_none()
-            if label:
-                replacement_labels[label.name] = label
-                db.add(IssueLabel(issue_id=issue.id, label_id=label.id))
+        for label in await _resolve_labels(db, repository.id, body["labels"]):
+            replacement_labels[label.name] = label
+            db.add(IssueLabel(issue_id=issue.id, label_id=label.id))
 
     # Assignees
     if "assignees" in body:

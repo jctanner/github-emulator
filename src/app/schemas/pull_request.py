@@ -131,6 +131,10 @@ class PRResponse(BaseModel):
     # persisted, the serializer emitted it, and the response model removed it.
     assignee: Optional[SimpleUser] = None
     assignees: list[SimpleUser] = []
+    labels: list[dict] = []
+    requested_reviewers: list[dict] = []
+    requested_teams: list[dict] = []
+    milestone: Optional[dict] = None
 
     model_config = ConfigDict(from_attributes=True)
 
