@@ -1,0 +1,135 @@
+name: hygiene
+
+# Lint what a change touches, scan the whole history for secrets, audit the
+# dependencies, and check the frontend. Actions are pinned by commit.
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: hygiene-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  pre-commit:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: "3.12"
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: "22"
+      - name: Install the frontend's tools (for its local hooks)
+        run: npm --prefix src/frontend ci --no-audit --no-fund
+      - name: Install pre-commit
+        run: python -m pip install --quiet "pre-commit==4.7.0"
+      # The change is what a pull request adds to its base, or what a push
+      # adds to the commit it replaced. A new branch, or a force-push that
+      # dropped that commit, falls back to the merge base with main. Linting
+      # the change rather than the branch keeps a long-lived branch from
+      # owing every finding in every file it has ever touched.
+      - name: Run the hooks on the files this change touches
+        env:
+          PR_BASE: ${{ github.event.pull_request.base.sha }}
+          PUSH_BEFORE: ${{ github.event.before }}
+        run: |
+          base="$PR_BASE"
+          if [ -z "$base" ] && [ -n "$PUSH_BEFORE" ] && [ "$PUSH_BEFORE" != 0000000000000000000000000000000000000000 ] \
+            && git cat-file -e "$PUSH_BEFORE^{commit}" 2>/dev/null; then
+            base="$PUSH_BEFORE"
+          fi
+          base="${base:-$(git merge-base origin/main HEAD)}"
+          echo "checking $base..HEAD"
+          pre-commit run --show-diff-on-failure --color=always --from-ref "$base" --to-ref HEAD
+
+  # The gitleaks pre-commit hook scans staged changes only; this covers every
+  # commit in the history.
+  secrets:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    env:
+      GITLEAKS_VERSION: 8.30.1
+      GITLEAKS_SHA256: 551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Install gitleaks
+        run: |
+          curl -fsSL -o /tmp/gitleaks.tgz \
+            "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz"
+          echo "${GITLEAKS_SHA256}  /tmp/gitleaks.tgz" | sha256sum -c -
+          tar -xzf /tmp/gitleaks.tgz -C /usr/local/bin gitleaks
+      # A pull request does not choose its own allowlist: the scan reads the
+      # base commit's .gitleaks.toml, and ignores .gitleaksignore files and
+      # gitleaks:allow comments. Until the base has the file (the change
+      # that adds it), the change's own copy is used.
+      - name: Scan the full history
+        env:
+          PR_BASE: ${{ github.event.pull_request.base.sha }}
+        run: |
+          config=.gitleaks.toml
+          if [ -n "$PR_BASE" ] && git cat-file -e "$PR_BASE:.gitleaks.toml" 2>/dev/null; then
+            git show "$PR_BASE:.gitleaks.toml" > /tmp/gitleaks-base.toml
+            config=/tmp/gitleaks-base.toml
+          fi
+          echo "config: $config"
+          mkdir -p /tmp/no-gitleaksignore
+          gitleaks git --no-banner --redact --config "$config" \
+            --gitleaks-ignore-path /tmp/no-gitleaksignore --ignore-gitleaks-allow .
+
+  audit:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@e92bafb6253dcd438e0484186d7669ea7a8ca1cc # v6.4.3
+        with:
+          enable-cache: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: "22"
+      # Reviewed, no fixed release, not reachable here:
+      #   PYSEC-2026-4298 python-jose HMAC key confusion: every jwt.decode
+      #     and jws.verify pins its algorithm (apps.py, browser sessions).
+      #   PYSEC-2026-1325 ecdsa Minerva timing: nothing signs with ECDSA.
+      - name: Audit the locked Python dependencies
+        run: |
+          uv lock --locked
+          uv export --frozen --all-extras --no-emit-project --format requirements-txt > /tmp/locked.txt
+          uvx --from "pip-audit==2.10.1" pip-audit -r /tmp/locked.txt --disable-pip --progress-spinner off \
+            --ignore-vuln PYSEC-2026-4298 --ignore-vuln PYSEC-2026-1325
+      - name: Audit the frontend dependencies
+        run: npm --prefix src/frontend audit --audit-level=high
+
+  frontend:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: src/frontend
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: "22"
+      - run: npm ci --no-audit --no-fund
+      - run: npm run lint
+      - run: npm run typecheck
+      - run: npm run format
+      - run: npm test

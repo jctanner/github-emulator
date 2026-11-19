@@ -9,18 +9,29 @@ RUN npm run build
 FROM python:3.12-slim
 
 # Install git, supervisor, and Caddy
+# Caddy from a pinned GitHub release, checked against the SHA-512 its
+# release publishes (caddy_<version>_checksums.txt).
+ARG CADDY_VERSION=2.11.7
+ARG CADDY_SHA512=a7a433a1b133efc3c8d10eb0b99d52a24b5ef5c322dc77f5282182b1c0402139ab83f3a99f0c52409df77d20123fb0b523edad8a66d8f5e49136197bf61ef0e7
 RUN apt-get update && \
-    apt-get install -y --no-install-recommends git supervisor curl && \
-    curl -sL "https://caddyserver.com/api/download?os=linux&arch=amd64" -o /usr/local/bin/caddy && \
+    apt-get install -y --no-install-recommends git supervisor curl ca-certificates && \
+    curl -fsSL -o /tmp/caddy.tar.gz "https://github.com/caddyserver/caddy/releases/download/v${CADDY_VERSION}/caddy_${CADDY_VERSION}_linux_amd64.tar.gz" && \
+    echo "${CADDY_SHA512}  /tmp/caddy.tar.gz" | sha512sum -c - && \
+    tar -xzf /tmp/caddy.tar.gz -C /usr/local/bin caddy && \
     chmod +x /usr/local/bin/caddy && \
-    rm -rf /var/lib/apt/lists/*
+    rm -rf /tmp/caddy.tar.gz /var/lib/apt/lists/*
 
 # Set working directory
 WORKDIR /app
 
-# Copy requirements and install dependencies
-COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
+# Install the locked dependencies, every package checked against the hash
+# in uv.lock. uv only exports the lock; pip installs. supervisord comes from
+# the Debian package above.
+COPY --from=ghcr.io/astral-sh/uv:0.12.4@sha256:d0a6eca6c669dc7e9c51218707b8438a3d30402733d739dcc00adb3e213e8f5c /uv /bin/uv
+COPY pyproject.toml uv.lock ./
+RUN uv export --frozen --no-dev --no-emit-project --format requirements-txt -o /tmp/requirements.txt && \
+    pip install --no-cache-dir --require-hashes -r /tmp/requirements.txt && \
+    rm /tmp/requirements.txt
 
 # Copy application code
 COPY . .

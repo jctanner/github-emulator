@@ -11,21 +11,24 @@ Environment variables:
   RUNNER_NAME           - Runner name (default: hostname)
   RUNNER_LABELS         - Comma-separated labels (default: self-hosted,linux)
   RUNNER_WORKDIR        - Working directory for job execution (default: /tmp/runner-work)
+  RUNNER_TLS_VERIFY     - false to skip verifying the emulator's certificate
+                          (default true: httpx's certifi bundle, or the CA
+                          bundle SSL_CERT_FILE or SSL_CERT_DIR names instead;
+                          not the OS trust store)
 """
 
 import glob
-import io
-import logging
-import json
-import os
 import hashlib
+import io
+import json
+import logging
+import os
 import platform
 import re
+import selectors
 import shutil
 import signal
-import selectors
 import subprocess
-import sys
 import threading
 import time
 import zipfile
@@ -61,7 +64,7 @@ class JobCancelled(Exception):
         self.job_id = job_id
 RUNNER_NAME = os.environ.get("RUNNER_NAME", platform.node())
 LABELS = os.environ.get("RUNNER_LABELS", "self-hosted,linux").split(",")
-WORKDIR = os.environ.get("RUNNER_WORKDIR", "/tmp/runner-work")
+WORKDIR = os.environ.get("RUNNER_WORKDIR", "/tmp/runner-work")  # noqa: S108 - the runner image owns /tmp
 API = f"{EMULATOR_URL}/api/v3"
 
 # GitHub keeps the per-job temp directory beside the workspace, not inside it.
@@ -916,7 +919,13 @@ class RunnerClient:
     def __init__(self):
         self.runner_id = None
         self.runner_token = None
-        self.client = httpx.Client(verify=False, timeout=60.0)
+        # Verify the emulator's certificate. httpx checks it against certifi's
+        # bundle, or against SSL_CERT_FILE (or SSL_CERT_DIR) instead when set;
+        # it does not read the OS trust store, so a private CA is passed with
+        # SSL_CERT_FILE. RUNNER_TLS_VERIFY=false turns it off for a
+        # deployment whose certificate nothing here can check.
+        verify = os.environ.get("RUNNER_TLS_VERIFY", "true").strip().lower() not in ("0", "false", "no")
+        self.client = httpx.Client(verify=verify, timeout=60.0)
         self._heartbeat_stop = threading.Event()
         self._heartbeat_thread = None
         # Set by SIGTERM. The pod's grace period is what a rolling update
@@ -1109,7 +1118,7 @@ class RunnerClient:
         try:
             shutil.rmtree(WORKDIR, ignore_errors=True)
             shutil.rmtree(RUNNER_TEMP, ignore_errors=True)
-        except Exception:
+        except Exception:  # noqa: S110 - best-effort cleanup between jobs
             pass
 
     def _execute_job_guarded(self, job: dict) -> None:
@@ -1335,7 +1344,7 @@ class RunnerClient:
         try:
             shell_name = str(step.get("shell") or "bash")
             executable = "/bin/bash" if shell_name.split()[0] == "bash" else None
-            proc = subprocess.Popen(
+            proc = subprocess.Popen(  # noqa: S602 - a run: step is a shell script by definition
                 command,
                 shell=True,
                 executable=executable,
@@ -1348,7 +1357,8 @@ class RunnerClient:
                 start_new_session=True,
             )
             self._current_proc = proc
-            assert proc.stdout is not None
+            if proc.stdout is None:  # Popen was given stdout=PIPE; never None
+                raise RuntimeError("step process has no stdout pipe")
             selector.register(proc.stdout, selectors.EVENT_READ)
             deadline = time.monotonic() + int(job.get("timeout_seconds") or 3600)
             pending = b""
@@ -1385,7 +1395,7 @@ class RunnerClient:
                 if proc.poll() is None:
                     proc.kill()
                     proc.wait(timeout=5)
-            except Exception:  # noqa: BLE001 - best effort; the job is over either way
+            except Exception:  # noqa: BLE001, S110 - best effort; the job is over either way
                 pass
             raise
         except subprocess.TimeoutExpired as exc:
@@ -2190,8 +2200,8 @@ class RunnerClient:
             self._note_cancellation(resp, job_id)
         except JobCancelled:
             raise
-        except Exception:
-            pass
+        except Exception as e:
+            log.warning("Failed to upload logs for job %d: %s", job_id, e)
 
     def _terminate(self, proc) -> None:
         """SIGTERM the step's process group, then SIGKILL what is left.
