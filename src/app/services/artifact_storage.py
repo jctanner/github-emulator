@@ -15,6 +15,8 @@ import os
 import shutil
 import zipfile
 
+from sqlalchemy import select
+
 from app.config import settings
 from app.models.artifact import WorkflowArtifact
 
@@ -63,6 +65,10 @@ class ArtifactTooLarge(ValueError):
     """An artifact over ``settings.ARTIFACT_MAX_BYTES``."""
 
 
+class ArtifactNameTakenError(ValueError):
+    """The run already has an artifact of this name, stored first."""
+
+
 def _blobs_dir() -> str:
     return os.path.join(settings.DATA_DIR, "artifact-blobs")
 
@@ -95,16 +101,38 @@ async def delete_artifact(db, artifact: WorkflowArtifact) -> None:
     await db.commit()
 
 
-async def _store(db, *, run_id: int, repo_id: int, name: str, write) -> WorkflowArtifact:
+async def _store(
+    db, *, run_id: int, repo_id: int, name: str, write,
+    size: int | None = None, unique_name: bool = False,
+) -> WorkflowArtifact:
     """Create the row, write the files with ``write(artifact_id)``, record its index.
 
     A failed write removes both the files and the row rather than leaving an
-    index pointing at a partial upload.
+    index pointing at a partial upload. ``size`` is the artifact's size when
+    it is not the files' total. With ``unique_name``, the row stored first
+    keeps the run's name. SQLite runs one write transaction at a time, so
+    ids rise in commit order: a row with a lower id for the same run and
+    name was committed earlier, and this one is dropped. Every concurrent
+    store agrees on that one winner.
     """
     artifact = WorkflowArtifact(run_id=run_id, repo_id=repo_id, name=name, files={}, size_in_bytes=0)
     db.add(artifact)
     await db.commit()
     await db.refresh(artifact)
+
+    if unique_name:
+        earlier = (await db.execute(
+            select(WorkflowArtifact.id).where(
+                WorkflowArtifact.run_id == run_id,
+                WorkflowArtifact.name == name,
+                WorkflowArtifact.expired.is_(False),
+                WorkflowArtifact.id < artifact.id,
+            ).limit(1)
+        )).first()
+        if earlier is not None:
+            await db.delete(artifact)
+            await db.commit()
+            raise ArtifactNameTakenError(f"an artifact named {name} already exists for this run")
 
     try:
         index = write(artifact.id)
@@ -115,7 +143,7 @@ async def _store(db, *, run_id: int, repo_id: int, name: str, write) -> Workflow
         raise
 
     artifact.files = index
-    artifact.size_in_bytes = sum(index.values())
+    artifact.size_in_bytes = sum(index.values()) if size is None else size
     await db.commit()
     await db.refresh(artifact)
     return artifact
@@ -167,11 +195,14 @@ async def store_blob_artifact(
     """Store a results-service upload: the blob as sent, and an index for REST.
 
     The blob at ``source`` is moved into place unchanged, so a download
-    returns the bytes the client uploaded. The REST routes read the files
-    under the artifact directory: an archived upload's zip members, or the
-    one unarchived file under the artifact's name.
+    returns the bytes the client uploaded, and its size is the artifact's
+    size, as GitHub reports it. The REST routes read the files under the
+    artifact directory: an archived upload's zip members, or the one
+    unarchived file under the artifact's name. Raises ArtifactNameTakenError
+    if another upload stored this run's name first.
     """
     limit = settings.ARTIFACT_MAX_BYTES
+    blob_size = os.path.getsize(source)
 
     def write(artifact_id: int) -> dict[str, int]:
         index = None
@@ -195,7 +226,10 @@ async def store_blob_artifact(
             }, handle)
         return index
 
-    return await _store(db, run_id=run_id, repo_id=repo_id, name=name, write=write)
+    return await _store(
+        db, run_id=run_id, repo_id=repo_id, name=name, write=write,
+        size=blob_size, unique_name=True,
+    )
 
 
 def zip_artifact(artifact: WorkflowArtifact) -> io.BytesIO:

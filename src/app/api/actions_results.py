@@ -258,6 +258,10 @@ async def _finalize_artifact(body, job, run, request, db) -> dict:
         raise TwirpError("invalid_argument", str(exc)) from exc
     except artifact_storage.ArtifactTooLarge as exc:
         raise TwirpError("resource_exhausted", str(exc)) from exc
+    except artifact_storage.ArtifactNameTakenError as exc:
+        # Another job of this run stored the name first.
+        _end_upload(run.id, job.id, name)
+        raise TwirpError("already_exists", str(exc)) from exc
     _end_upload(run.id, job.id, name)
     return {"ok": True, "artifact_id": str(artifact.id)}
 

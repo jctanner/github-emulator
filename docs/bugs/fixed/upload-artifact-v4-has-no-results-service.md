@@ -38,6 +38,8 @@ The actions still refuse any server host but `github.com`, `*.ghe.com` and
 - byte-for-byte downloads of a zip, an unarchived file and an unarchived `.zip`;
 - `overwrite: true` (delete, then create the same name);
 - a retried `CreateArtifact` and a retried `FinalizeArtifact`;
-- a duplicate name, a hash mismatch, a missing or mismatched runtime token;
+- the uploaded size of a compressed artifact;
+- a duplicate name, including two finalizes that race for one name;
+- a hash mismatch, a missing or mismatched runtime token;
 - a wrong or expired URL signature;
 - the size, block-count and expanded-size limits.

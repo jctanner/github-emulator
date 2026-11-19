@@ -56,6 +56,11 @@ server side.
     names after its one file, is stored as that file, even when it is a `.zip`.
   - A retried `FinalizeArtifact` with the committed sha256 returns the
     committed artifact.
+  - The artifact's size is the uploaded blob's size, as GitHub reports it,
+    not the total of the files it expands to.
+  - A run has one artifact per name. When two jobs finalize the same name at
+    once, the row committed first keeps it and the other gets
+    `already_exists`.
 - Sign upload and download URLs with an HMAC of their purpose, id and expiry
   under `SECRET_KEY`. That is the only credential the Azure client sends. They
   expire after 6 hours, the longest a job runs, and an expired URL is refused

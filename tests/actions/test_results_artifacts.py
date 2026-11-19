@@ -110,7 +110,8 @@ async def test_upload_list_and_download_round_trip(
     assert listed.status_code == 200
     [entry] = listed.json()["artifacts"]
     assert entry["database_id"] == artifact_id
-    assert entry["size"] == str(len(b'{"ok": true}') + len(b"line\n" * 1000))
+    # The size of the blob uploaded, as GitHub reports it; not the files' total.
+    assert entry["size"] == str(len(content))
 
     signed = await _twirp(client, "GetSignedArtifactURL", headers, {**ids, "name": "fullsend-triage"})
     assert signed.status_code == 200
@@ -399,3 +400,59 @@ async def test_a_zip_expanding_past_the_limit_is_refused(
     assert listed.json()["artifacts"] == []
     stored = os.path.join(settings.DATA_DIR, "artifacts")
     assert not os.path.isdir(stored) or os.listdir(stored) == []
+
+
+@pytest.mark.asyncio
+async def test_a_compressed_artifact_lists_the_uploaded_size(
+    client, uses_workflow, test_token  # noqa: F811
+):
+    """ListArtifacts and REST report the blob's size, not what it expands to."""
+    body, headers, ids = await _job(client, test_token)
+    buffer = io.BytesIO()
+    with zipfile.ZipFile(buffer, "w", zipfile.ZIP_DEFLATED) as archive:
+        archive.writestr("big.txt", b"a" * 20000)
+    content = buffer.getvalue()
+    assert len(content) < 20000
+
+    finalize = await _upload(client, headers, ids, "packed", content)
+    assert finalize.status_code == 200, finalize.text
+    listed = await _twirp(client, "ListArtifacts", headers, {**ids, "name_filter": "packed"})
+    [entry] = listed.json()["artifacts"]
+    assert entry["size"] == str(len(content))
+    rest = await client.get(
+        f"{API}/repos/testuser/uses-step-repo/actions/artifacts/{finalize.json()['artifact_id']}",
+        headers=auth_headers(test_token),
+    )
+    assert rest.json()["size_in_bytes"] == len(content)
+    assert rest.json()["files"] == {"big.txt": 20000}
+
+
+@pytest.mark.asyncio
+async def test_two_finalizes_racing_for_one_name_store_one_artifact(
+    client, uses_workflow, test_token, monkeypatch  # noqa: F811
+):
+    """Two uploads that both passed the name lookup: the first stored wins.
+
+    Two jobs of one run finalizing the same name at once both see no
+    artifact of that name before either is stored. The lookup is made to
+    answer "none" so the second finalize reaches storage the same way.
+    """
+    body, headers, ids = await _job(client, test_token)
+    winner = _zip({"a": b"1"})
+    first = await _upload(client, headers, ids, "shared", winner)
+    assert first.status_code == 200, first.text
+
+    async def nothing_named(db, run_id, name):
+        return None
+
+    monkeypatch.setattr(actions_results, "_artifact_named", nothing_named)
+    second = await _upload(client, headers, ids, "shared", _zip({"b": b"2"}))
+    assert second.status_code == 409, second.text
+    assert second.json()["code"] == "already_exists"
+
+    monkeypatch.undo()
+    listed = await _twirp(client, "ListArtifacts", headers, {**ids, "name_filter": "shared"})
+    assert [a["database_id"] for a in listed.json()["artifacts"]] == [first.json()["artifact_id"]]
+    assert (await _download(client, headers, ids, "shared")).content == winner
+    blobs = os.listdir(os.path.join(settings.DATA_DIR, "artifact-blobs"))
+    assert sorted(blobs) == sorted([first.json()["artifact_id"], first.json()["artifact_id"] + ".json"])
