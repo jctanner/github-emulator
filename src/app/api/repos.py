@@ -1,12 +1,11 @@
 """Repository endpoints -- CRUD, listing, and org repos."""
 
 import os
-from typing import Optional
 
 from fastapi import APIRouter, HTTPException, Query, Request, Response
-from sqlalchemy import select, func as sa_func
+from sqlalchemy import func as sa_func
+from sqlalchemy import select
 
-from app.services import repository_access
 from app.api.deps import (
     AuthUser,
     CurrentUser,
@@ -17,12 +16,12 @@ from app.api.deps import (
 from app.api.pagination import pagination_links
 from app.config import settings
 from app.db_loaders import repository_identity_options
+from app.models.organization import Organization, OrgMembership
 from app.models.repository import Repository
 from app.models.user import User
-from app.models.organization import Organization, OrgMembership
-from app.schemas.user import SimpleUser, _fmt_dt, _make_node_id
 from app.schemas.repository import RepoResponse
-from app.services import repo_service
+from app.schemas.user import SimpleUser, _fmt_dt, _make_node_id
+from app.services import repo_service, repository_access
 from app.services.repo_service import delete_repo as delete_repository
 
 router = APIRouter(tags=["repos"])
@@ -373,7 +372,6 @@ async def list_user_repos(
     query = query.offset((page - 1) * per_page).limit(per_page)
     repos = (await db.execute(query)).scalars().all()
 
-    response = Response()
     link = pagination_links(request, page, per_page, total)
     headers = {}
     if link:

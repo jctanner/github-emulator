@@ -14,7 +14,6 @@ from app.models.token import PersonalAccessToken
 from app.models.user import User
 from tests.conftest import auth_headers
 
-
 API = "/api/v3"
 
 

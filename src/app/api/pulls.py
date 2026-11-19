@@ -8,17 +8,20 @@ import tempfile
 from datetime import datetime, timezone
 from typing import Annotated, Optional
 
-logger = logging.getLogger(__name__)
-
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import JSONResponse, Response
 from sqlalchemy import func as sa_func
 from sqlalchemy import inspect as sa_inspect
 from sqlalchemy import select
-from sqlalchemy.orm import joinedload, raiseload, selectinload
+from sqlalchemy.orm import joinedload, raiseload
 
 from app.api.deps import (
-    AuthUser, CurrentUser, DbSession, get_current_user, get_repo_or_404, installation_token_covers,
+    AuthUser,
+    CurrentUser,
+    DbSession,
+    get_current_user,
+    get_repo_or_404,
+    installation_token_covers,
 )
 from app.api.pagination import pagination_links
 from app.config import settings
@@ -37,13 +40,15 @@ from app.models.pull_request import PullRequest
 from app.models.repository import Repository
 from app.models.user import User
 from app.schemas.label import LabelResponse
-from app.schemas.user import SimpleUser, _fmt_dt, _make_node_id
 from app.schemas.pull_request import (
     PRMergeResponse,
     PRResponse,
     PullCommitResponse,
     PullFileResponse,
 )
+from app.schemas.user import SimpleUser, _fmt_dt, _make_node_id
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(tags=["pulls"])
 diff_router = APIRouter(tags=["pulls"])

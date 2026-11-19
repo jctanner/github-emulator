@@ -112,7 +112,7 @@ async def _ensure_tag(repository, tag_name: str, target: str) -> None:
         raise HTTPException(
             status_code=422,
             detail=f"target_commitish {target!r} does not resolve to a commit",
-        )
+        ) from None
     await _git(repository.disk_path, "update-ref", f"refs/tags/{tag_name}", sha)
 
 

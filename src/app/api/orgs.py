@@ -1,7 +1,9 @@
 """Organization endpoints."""
 
 from fastapi import APIRouter, HTTPException, Query, Request, Response
-from sqlalchemy import delete as sa_delete, func as sa_func, select
+from sqlalchemy import delete as sa_delete
+from sqlalchemy import func as sa_func
+from sqlalchemy import select
 
 from app.api.deps import AuthUser, CurrentUser, DbSession, require_installation_grant
 from app.config import settings

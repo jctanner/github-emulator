@@ -6,15 +6,15 @@ import os
 from fastapi import APIRouter, HTTPException
 from sqlalchemy import select
 
-from app.services.cross_repo_pulls import same_repository_head
-from app.api.deps import require_contents_write, AuthUser, CurrentUser, DbSession, get_repo_or_404
+from app.api.deps import AuthUser, CurrentUser, DbSession, get_repo_or_404, require_contents_write
 from app.config import settings
+from app.middleware.error_handler import ValidationError
 from app.models.branch import Branch
 from app.models.issue import Issue
 from app.models.pull_request import PullRequest
-from app.middleware.error_handler import ValidationError
 from app.schemas.browse import TagResponse
 from app.schemas.user import _make_node_id
+from app.services.cross_repo_pulls import same_repository_head
 
 router = APIRouter(tags=["git-refs"])
 
@@ -189,7 +189,7 @@ async def get_ref(
     try:
         sha = (await _git(repository.disk_path, "rev-parse", full_ref)).strip()
     except RuntimeError:
-        raise HTTPException(status_code=404, detail="Not Found")
+        raise HTTPException(status_code=404, detail="Not Found") from None
 
     return _ref_json(full_ref, sha, owner, repo, BASE)
 
@@ -223,7 +223,7 @@ async def create_ref(
     try:
         await _git(repository.disk_path, "update-ref", ref, sha, "")
     except RuntimeError as e:
-        raise HTTPException(status_code=422, detail=str(e))
+        raise HTTPException(status_code=422, detail=str(e)) from None
 
     await _record_branch_change(db, repository, ref, sha, user)
     return _ref_json(ref, sha, owner, repo, BASE)
@@ -262,12 +262,12 @@ async def update_ref(
             try:
                 await _git(repository.disk_path, "merge-base", "--is-ancestor", old_sha, sha)
             except RuntimeError:
-                raise ValidationError(message="Update is not a fast forward")
+                raise ValidationError(message="Update is not a fast forward") from None
 
     try:
         await _git(repository.disk_path, *args)
     except RuntimeError as e:
-        raise HTTPException(status_code=422, detail=str(e))
+        raise HTTPException(status_code=422, detail=str(e)) from None
 
     await _record_branch_change(db, repository, full_ref, sha, user)
     return _ref_json(full_ref, sha, owner, repo, BASE)
@@ -293,7 +293,7 @@ async def delete_ref(
     try:
         await _git(repository.disk_path, "rev-parse", "--verify", full_ref)
     except RuntimeError:
-        raise ValidationError(message="Reference does not exist")
+        raise ValidationError(message="Reference does not exist") from None
 
     branch = await _get_branch_record(db, repository, full_ref)
     if (
@@ -305,5 +305,5 @@ async def delete_ref(
     try:
         await _git(repository.disk_path, "update-ref", "-d", full_ref)
     except RuntimeError as e:
-        raise HTTPException(status_code=422, detail=str(e))
+        raise HTTPException(status_code=422, detail=str(e)) from None
     await _record_branch_change(db, repository, full_ref, None, user)

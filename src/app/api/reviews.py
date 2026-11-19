@@ -9,9 +9,9 @@ from app.api.deps import AuthUser, CurrentUser, DbSession, get_repo_or_404
 from app.config import settings
 from app.middleware.error_handler import GitHubError
 from app.models.comment import PRReviewComment
-from app.models.review import Review
-from app.models.pull_request import PullRequest
 from app.models.issue import Issue
+from app.models.pull_request import PullRequest
+from app.models.review import Review
 from app.schemas.user import SimpleUser, _fmt_dt, _make_node_id
 
 router = APIRouter(tags=["reviews"])

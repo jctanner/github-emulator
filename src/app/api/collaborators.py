@@ -3,12 +3,12 @@
 from fastapi import APIRouter, HTTPException, Response
 from sqlalchemy import select
 
-from app.api.deps import AuthUser, CurrentUser, DbSession, get_repo_or_404
+from app.api.deps import AuthUser, DbSession, get_repo_or_404
 from app.config import settings
 from app.models.repository import Collaborator, Repository
 from app.models.user import User
-from app.schemas.user import SimpleUser, _make_node_id
 from app.schemas.settings import CollaboratorResponse
+from app.schemas.user import SimpleUser
 
 router = APIRouter(tags=["collaborators"])
 

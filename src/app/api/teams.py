@@ -3,7 +3,7 @@
 from fastapi import APIRouter, HTTPException, Query, Request
 from sqlalchemy import select
 
-from app.api.deps import AuthUser, CurrentUser, DbSession, require_installation_grant
+from app.api.deps import AuthUser, DbSession, require_installation_grant
 from app.config import settings
 from app.models.organization import Organization
 from app.models.team import Team, TeamMembership

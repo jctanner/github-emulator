@@ -12,14 +12,14 @@ on GitHub, and no longer does here.
 import time
 
 import pytest
+from fastapi import HTTPException
 from jose import jwt
+from sqlalchemy import select
 
 from app.git.smart_http import _check_write_access
 from app.models.user import User
 from app.services.repository_access import installation_role
 from tests.conftest import API, auth_headers
-from sqlalchemy import select
-from fastapi import HTTPException
 
 pytestmark = pytest.mark.asyncio
 

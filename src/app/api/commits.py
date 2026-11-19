@@ -7,7 +7,6 @@ from urllib.parse import quote
 from fastapi import APIRouter, HTTPException, Query, Request
 from fastapi.encoders import jsonable_encoder
 from fastapi.responses import JSONResponse
-from sqlalchemy import select
 
 from app.api.deps import CurrentUser, DbSession, get_repo_or_404
 from app.api.pagination import pagination_links
@@ -20,7 +19,7 @@ from app.git.bare_repo import (
     resolve_ref,
 )
 from app.schemas.browse import CommitResponse
-from app.schemas.user import _fmt_dt, _make_node_id
+from app.schemas.user import _make_node_id
 
 router = APIRouter(tags=["commits"])
 
@@ -175,7 +174,7 @@ async def get_commit(
     try:
         out = await _git(repository.disk_path, "log", f"--format={fmt}", "-1", sha)
     except RuntimeError:
-        raise HTTPException(status_code=404, detail="Not Found")
+        raise HTTPException(status_code=404, detail="Not Found") from None
 
     line = out.strip()
     if not line:

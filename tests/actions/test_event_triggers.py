@@ -1,8 +1,9 @@
 """Regression coverage for activity-triggered Actions workflow runs."""
 
+from types import SimpleNamespace
+
 import pytest
 from sqlalchemy import select
-from types import SimpleNamespace
 
 from app.models.actions import WorkflowJob, WorkflowRun
 from app.models.repository import Repository
