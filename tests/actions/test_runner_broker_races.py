@@ -11,7 +11,7 @@ import asyncio
 import json
 
 import pytest
-from sqlalchemy import select, update
+from sqlalchemy import delete, select, update
 
 from app.api import actions_distributed_task as dt
 from app.models.actions import Runner, WorkflowJob
@@ -223,3 +223,84 @@ async def test_acknowledgements_are_kept_per_runner_not_per_job(
             json={"result": "succeeded"}, headers=headers,
         )).status_code == 200
     assert dict(dt._acknowledged) == {runner_id: job_id}
+
+
+@pytest.mark.asyncio
+async def test_a_poll_superseded_during_its_claim_hands_out_nothing(
+    client, db_session, test_user, test_token, monkeypatch
+):
+    await _workflow(client, db_session, test_user, test_token, jobs=1)
+    runner_id, headers, session_id = await _runner(client, test_token)
+    claim = dt._claim_next_job
+
+    async def claim_then_superseded(runner, db, base_url=None):
+        message = await claim(runner, db, base_url)
+        # A newer poll from the runner starts while this one claims.
+        dt._poll_generation[runner_id] = dt._poll_generation.get(runner_id, 0) + 1
+        return message
+
+    monkeypatch.setattr(dt, "_claim_next_job", claim_then_superseded)
+    assert (await _poll(client, headers, session_id, 0)).status_code == 204
+
+    db_session.expire_all()
+    job = (await db_session.execute(select(WorkflowJob))).scalars().one()
+    assert job.status == "queued" and job.runner_id is None
+    runner = (await db_session.execute(select(Runner).where(Runner.id == runner_id))).scalar_one()
+    assert not runner.busy and runner.status == "online"
+    assert runner_id not in dt._holding
+
+
+@pytest.mark.asyncio
+async def test_a_cancellation_committed_while_a_report_waits_keeps_cancelled(
+    client, db_session, test_user, test_token
+):
+    await _workflow(client, db_session, test_user, test_token, jobs=1)
+    runner_id, headers, session_id = await _runner(client, test_token)
+    job_id = await _take_job(client, headers, session_id)
+
+    # The report loads the job, then waits for the runner's lock; the
+    # cancellation commits in between.
+    lock = dt._runner_lock(runner_id)
+    await lock.acquire()
+    report = asyncio.create_task(client.patch(
+        f"/_apis/distributedtask/pools/1/jobrequests/{job_id}",
+        json={"result": "succeeded"}, headers=headers,
+    ))
+    try:
+        await asyncio.sleep(0.2)
+        assert not report.done()
+        await _cancel(db_session, job_id)
+    finally:
+        lock.release()
+    assert (await report).status_code == 200
+
+    db_session.expire_all()
+    job = (await db_session.execute(select(WorkflowJob).where(WorkflowJob.id == job_id))).scalar_one()
+    assert (job.status, job.conclusion) == ("completed", "cancelled")
+    runner = (await db_session.execute(select(Runner).where(Runner.id == runner_id))).scalar_one()
+    assert not runner.busy
+
+
+@pytest.mark.asyncio
+async def test_a_late_online_poll_keeps_the_cancellation_of_a_deleted_job(
+    client, db_session, test_user, test_token
+):
+    await _workflow(client, db_session, test_user, test_token, jobs=1)
+    runner_id, headers, session_id = await _runner(client, test_token)
+    job_id = await _take_job(client, headers, session_id)
+    # Deleting the repository deletes its jobs while the runner runs one.
+    await db_session.execute(delete(WorkflowJob).where(WorkflowJob.id == job_id))
+    await db_session.commit()
+
+    # A request the runner sent as Online before it took the job, landing now.
+    late = await _poll(client, headers, session_id, 0, "Online")
+    assert late.status_code == 200
+    assert late.json()["messageType"] == "JobCancellation"
+    assert json.loads(late.json()["body"])["jobId"] == dt._workflow_guid("job", job_id)
+
+    # Once the runner acknowledges it, an Online poll frees the runner.
+    assert (await _ack(client, headers, session_id, late.json()["messageId"])).status_code == 200
+    assert (await _poll(client, headers, session_id, late.json()["messageId"], "Online")).status_code == 204
+    db_session.expire_all()
+    runner = (await db_session.execute(select(Runner).where(Runner.id == runner_id))).scalar_one()
+    assert not runner.busy

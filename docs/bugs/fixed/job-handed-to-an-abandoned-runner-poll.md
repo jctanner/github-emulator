@@ -65,7 +65,8 @@ Tests: `tests/actions/test_runner_lost_handout.py`.
 - A newer poll replaces an older one before the older can claim.
 - `tests/actions/test_runner_broker_races.py`: a superseded poll hands out
   nothing; a runner an older poll made busy gets no second job; an
-  acknowledgement and a report wait for the runner's lock.
+  acknowledgement and a report wait for the runner's lock. A poll replaced
+  while it claims gives the job back and frees the runner.
 - Stress: 4 runners, 12 jobs, half the polls abandoned with the server
   left to answer them. Every job reaches a live poll exactly once and
   completes.

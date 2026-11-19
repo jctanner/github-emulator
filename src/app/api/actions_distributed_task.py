@@ -17,7 +17,7 @@ from urllib.parse import parse_qs, urlsplit, urlunsplit
 
 from fastapi import APIRouter, HTTPException, Query, Request
 from fastapi.responses import FileResponse, JSONResponse, Response
-from sqlalchemy import and_, select, update
+from sqlalchemy import and_, or_, select, update
 from sqlalchemy.orm.attributes import flag_modified
 
 from app.api.actions_dispatch import _claim_queued_job
@@ -1154,11 +1154,13 @@ async def _settle_idle_runner(runner: Runner, status: str, last_message_id: str,
             .where(WorkflowJob.id == held[0])
             .execution_options(populate_existing=True)
         )).scalar_one_or_none()
-        if (
-            held_job is not None
-            and held_job.conclusion == "cancelled"
+        if held_job is None or (
+            held_job.conclusion == "cancelled"
             and _age(held_job.started_at, now) < _IDLE_GRACE
         ):
+            # A deleted job (its repository was deleted) has no start time to
+            # bound the wait; its cancellation goes out on this poll, and the
+            # runner's acknowledgement lets the next Online poll free it.
             await db.commit()
             return
     jobs = (await db.execute(
@@ -1217,6 +1219,25 @@ async def _settle_idle_runner(runner: Runner, status: str, last_message_id: str,
     await db.commit()
 
 
+async def _release_claim(runner: Runner, job_id: int, db) -> None:
+    """Give back a job a poll claimed but cannot hand out; free the runner."""
+    # Conditional, as the requeue in _settle_idle_runner.
+    await db.execute(
+        update(WorkflowJob)
+        .where(
+            WorkflowJob.id == job_id,
+            WorkflowJob.status == "in_progress",
+            WorkflowJob.runner_id == runner.id,
+        )
+        .values(status="queued", runner_id=None, runner_name=None, started_at=None)
+        .execution_options(synchronize_session=False)
+    )
+    runner.busy = False
+    runner.status = "online"
+    await db.commit()
+    logger.info("Runner %s's poll was replaced while it claimed job %s; job requeued", runner.name, job_id)
+
+
 async def _runner_moved_on(runner: Runner, job: WorkflowJob, db) -> bool:
     """Whether the runner now runs a job other than ``job``."""
     held = _holding.get(runner.id)
@@ -1235,13 +1256,30 @@ async def _runner_moved_on(runner: Runner, job: WorkflowJob, db) -> bool:
 async def _complete_job(job: WorkflowJob, runner: Runner, result_str: str, db) -> None:
     # A job cancelled while it ran keeps that conclusion when its runner
     # reports the end; the report still frees the runner, unless the runner
-    # has already taken another job.
-    if not (job.status == "completed" and job.conclusion == "cancelled"):
-        job.status = "completed"
-        job.conclusion = _result_to_conclusion(result_str)
-        job.completed_at = datetime.now(timezone.utc)
-        if _is_success_result(result_str):
-            _complete_queued_steps(job, result_str)
+    # has already taken another job. The write is conditional on the stored
+    # row, not on ``job``: cancellation writers do not take the runner's
+    # lock, so one can commit after the caller loaded the job.
+    await db.flush()
+    finished = await db.execute(
+        update(WorkflowJob)
+        .where(
+            WorkflowJob.id == job.id,
+            or_(
+                WorkflowJob.status != "completed",
+                WorkflowJob.conclusion.is_(None),
+                WorkflowJob.conclusion != "cancelled",
+            ),
+        )
+        .values(
+            status="completed",
+            conclusion=_result_to_conclusion(result_str),
+            completed_at=datetime.now(timezone.utc),
+        )
+        .execution_options(synchronize_session=False)
+    )
+    await db.refresh(job)
+    if finished.rowcount == 1 and _is_success_result(result_str):
+        _complete_queued_steps(job, result_str)
 
     if await _runner_moved_on(runner, job, db):
         # A late report of a job's end can land after the runner took its
@@ -1361,6 +1399,11 @@ async def dt_get_messages(
             message = await _claim_next_job(runner, db, _request_base(request))
             if not isinstance(message, Response):
                 body = json.loads(message["body"])
+                if _poll_generation.get(runner_id) != generation or await request.is_disconnected():
+                    # A newer poll started while this one claimed the job:
+                    # the runner reads only the newer one.
+                    await _release_claim(runner, int(body["requestId"]), db)
+                    return Response(status_code=204)
                 _holding[runner_id] = (int(body["requestId"]), str(body["jobId"]))
                 logger.info("Runner %s acquired job %s", runner.name, body["requestId"])
                 return message

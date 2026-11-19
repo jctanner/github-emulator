@@ -37,9 +37,12 @@ Tests: `tests/actions/test_runner_job_cancellation.py`.
 - A cancelled job's runner gets `JobCancellation` with the job's guid, again
   until it acknowledges it.
 - `tests/actions/test_runner_broker_races.py`: a cancellation whose response
-  was lost is sent again; a late `Online` poll does not drop it.
+  was lost is sent again; a late `Online` poll does not drop it, also when
+  the job was deleted.
 - A job still running gets none.
-- The runner's report keeps `cancelled` and frees the runner.
+- The runner's report keeps `cancelled` and frees the runner, also when the
+  cancellation commits after the report loaded the job: the report's write
+  is conditional on the stored row.
 
 ## Not changed
 
