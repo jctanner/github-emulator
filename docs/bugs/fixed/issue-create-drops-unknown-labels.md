@@ -30,6 +30,9 @@ Not emulated: GitHub silently drops `labels` for a caller without push
 access; the emulator applies them for any authenticated caller, as its
 `POST /issues/{n}/labels` does.
 
+A `labels` value that is not an array (a bare string) answers 422, as
+GitHub's schema check does, instead of being read one character at a time.
+
 ## Tests
 
 `tests/test_issue_unknown_labels.py`: create with an existing, a new and a

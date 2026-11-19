@@ -20,7 +20,8 @@ against the emulator but passes against GitHub.
 whose Content-Type is missing, form-encoded or `text/plain`. It reads the
 body, and if the body is a JSON object or array, it sets the Content-Type to
 `application/json` before routing. The middleware leaves these unchanged:
-- a body that is not JSON (still 422);
+- a body that is not JSON (still 422), including one nested past the JSON
+  decoder's limit;
 - any other Content-Type;
 - release asset uploads, which store the client's Content-Type.
 

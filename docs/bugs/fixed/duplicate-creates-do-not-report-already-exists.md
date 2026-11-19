@@ -35,7 +35,8 @@ every run and treat `errors[].code == "already_exists"` as "nothing to do".
   Python's `casefold` (`_find_label`), as SQLite's `lower()` folds ASCII
   letters only, so `Étiquette` and `ÉTIQUETTE` are one label too. A
   database written before this can hold both `bug` and `BUG`: a lookup
-  prefers the exact spelling and never fails on the second row.
+  prefers the exact spelling and never fails on the second row. A create or
+  rename that loses a race to the unique index answers `already_exists` too.
 - `src/app/api/releases.py`: the duplicate-asset error is a
   `ValidationError`, so `errors` is at the top level.
 - `src/app/api/git_refs.py`: `create_ref` refuses an existing ref with

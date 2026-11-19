@@ -77,6 +77,8 @@ def _is_json_document(body: bytes) -> bool:
         return False
     try:
         json.loads(body)
-    except ValueError:
+    except (ValueError, RecursionError):
+        # Not JSON, or nested past the decoder's limit: route the body as
+        # sent, so the route's own validation answers 4xx.
         return False
     return True

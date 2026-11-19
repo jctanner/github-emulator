@@ -42,6 +42,18 @@ Either side may name a branch with `/` in it (`main...feature/x`,
 `main...owner:fix/y`). A paginated comparison sends a `Link` header to the
 other pages of `commits`, as any GitHub list does.
 
+More detail, as on GitHub:
+
+- Compare reads repository contents, so an App installation or job token
+  needs `contents: read` for it (`compare` maps to `contents` in the shared
+  permission map).
+- A fork side is fetched into a temporary ref and compared at the commit
+  that was fetched, even if the branch moves meanwhile.
+- Unpaged, `commits` are the most recent 250, oldest first.
+- `files` come from NUL-delimited `--raw` and `--numstat` output: names are
+  kept exactly (any encoding, spaces), each carries its blob `sha`, a
+  removed file is `removed`, and `patch` is the hunks.
+
 ## Tests
 
 - `tests/test_compare_api.py`
@@ -52,4 +64,5 @@ other pages of `commits`, as any GitHub list does.
   `test_compare_with_an_unknown_ref_is_not_found`,
   `test_compare_with_slashed_branch_names`,
   `test_a_fork_branch_with_a_slash_compares`,
-  `test_compare_pages_link_to_each_other`).
+  `test_compare_pages_link_to_each_other`), and
+  `tests/test_compare_and_label_edges.py` for the details above.

@@ -2,6 +2,7 @@
 
 import asyncio
 import os
+from urllib.parse import quote
 
 from fastapi import APIRouter, HTTPException, Query, Request
 from fastapi.encoders import jsonable_encoder
@@ -14,7 +15,7 @@ from app.config import settings
 from app.git.bare_repo import (
     get_ahead_behind,
     get_commit_diff,
-    get_compare_diff,
+    get_compare_files,
     get_merge_base,
     resolve_ref,
 )
@@ -93,7 +94,7 @@ def _parse_commit_line(
 def _with_file_urls(owner: str, repo: str, sha: str, files: list[dict]) -> list[dict]:
     """Add GitHub's per-file URLs, at commit ``sha``, to changed-file records."""
     for file in files:
-        filename = file.get("filename", "")
+        filename = quote(file.get("filename", ""), safe="/")
         file.update(
             {
                 "sha": file.get("sha", ""),
@@ -266,7 +267,7 @@ async def compare_commits(
     """Compare two commits: GitHub's ``base...head`` comparison.
 
     ``commits`` are those on head since the merge base, oldest first (up to
-    250 unless paginated); ``files`` compare the merge base with head and
+    250, the most recent, unless paginated); ``files`` compare the merge base with head and
     appear on the first page only.
     """
     repository = await get_repo_or_404(owner, repo, db)
@@ -310,7 +311,8 @@ async def compare_commits(
     ).split()
     link = ""
     if page is None and per_page is None:
-        commit_shas = commit_shas[:250]
+        # Unpaged, GitHub returns the most recent 250 commits, oldest first.
+        commit_shas = commit_shas[-250:]
         first_page = True
     else:
         size = per_page or 30
@@ -325,7 +327,7 @@ async def compare_commits(
     if first_page:
         files = _with_file_urls(
             owner, repo, head_sha,
-            await get_compare_diff(repository.disk_path, base_sha, head_sha),
+            await get_compare_files(repository.disk_path, base_sha, head_sha),
         )
 
     api = f"{BASE}/api/v3"

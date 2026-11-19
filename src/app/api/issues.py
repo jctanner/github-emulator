@@ -1,5 +1,6 @@
 """Issue endpoints -- list, create, get, update issues."""
 
+import json
 from datetime import datetime, timezone
 from typing import Optional
 
@@ -216,6 +217,12 @@ async def _resolve_labels(db, repository_id: int, values) -> list[Label]:
     ``POST /issues/{n}/labels`` does. Entries may be names or objects with a
     ``name``; repeats are applied once.
     """
+    if values is not None and not isinstance(values, list):
+        # GitHub validates the shape: a bare string is not an array of labels.
+        raise HTTPException(
+            status_code=422,
+            detail=f"Invalid request.\n\nFor 'properties/labels', {json.dumps(values)} is not an array.",
+        )
     labels: dict[int, Label] = {}
     for value in values or []:
         name = value.get("name") if isinstance(value, dict) else value

@@ -6,6 +6,7 @@ from urllib.parse import parse_qs
 from fastapi import APIRouter, HTTPException, Query, Request
 from fastapi.responses import JSONResponse
 from sqlalchemy import select, delete as sa_delete
+from sqlalchemy.exc import IntegrityError
 
 from app.api.deps import AuthUser, CurrentUser, DbSession, get_repo_or_404
 from app.config import settings
@@ -80,6 +81,17 @@ def _label_already_exists() -> ValidationError:
     return ValidationError(
         errors=[{"resource": "Label", "code": "already_exists", "field": "name"}]
     )
+
+
+async def _commit_label(db) -> None:
+    """Commit a label create or rename. The name check reads before it writes,
+    so a concurrent request can take the name in between; the unique index
+    then refuses the second, which answers GitHub's already_exists."""
+    try:
+        await db.commit()
+    except IntegrityError as exc:
+        await db.rollback()
+        raise _label_already_exists() from exc
 
 
 async def _get_or_create_label(db, repository_id: int, name: str) -> Label:
@@ -160,7 +172,7 @@ async def create_label(
         description=body.description,
     )
     db.add(label)
-    await db.commit()
+    await _commit_label(db)
     await db.refresh(label)
     return LabelResponse.from_db(label, BASE, owner, repo)
 
@@ -203,7 +215,7 @@ async def update_label(
     if body.description is not None:
         label.description = body.description
 
-    await db.commit()
+    await _commit_label(db)
     await db.refresh(label)
     return LabelResponse.from_db(label, BASE, owner, repo)
 
