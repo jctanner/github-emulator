@@ -334,7 +334,7 @@ async def get_repo_size_kb(disk_path: str) -> int:
     total = 0
     if not os.path.isdir(disk_path):
         return 0
-    for dirpath, dirnames, filenames in os.walk(disk_path):
+    for dirpath, _dirnames, filenames in os.walk(disk_path):
         for f in filenames:
             fp = os.path.join(dirpath, f)
             if os.path.isfile(fp):
@@ -465,7 +465,6 @@ def _parse_signature(sig: str) -> dict:
     if len(parts) >= 3:
         name_email = parts[0]
         timestamp = parts[1]
-        tz = parts[2]
         # Parse name and email
         if "<" in name_email:
             name = name_email.split("<")[0].strip()
@@ -695,7 +694,7 @@ async def resolve_refs(disk_path: str, refs: list[str]) -> dict[str, str | None]
         # Fall back to one lookup per name rather than guess at a pairing.
         return {name: await resolve_ref(disk_path, name) for name in names}
     resolved: dict[str, str | None] = {}
-    for name, line in zip(names, lines):
+    for name, line in zip(names, lines, strict=True):
         # Unresolvable names come back as "<name> missing" or "<name> ambiguous".
         sha = line.strip()
         resolved[name] = sha if sha and " " not in sha else None
@@ -964,3 +963,55 @@ async def get_log(
         }
         commits.append(commit)
     return commits
+
+
+_OBJECT_TYPES = (b"blob", b"tree", b"commit", b"tag")
+
+
+async def read_object(disk_path: str, name: str) -> tuple[str, str, bytes] | None:
+    """Look up ``name`` (such as ``main:docs/a.md``) and read the object, in one process.
+
+    Returns ``(sha, type, content)``, or None when the name does not resolve
+    or the object is not in the repository. The name is resolved the way
+    ``git rev-parse`` resolves it.
+    """
+    # One name per line on stdin: a line break or NUL in it cannot be passed.
+    if not name or any(c in name for c in "\n\r\0"):
+        return None
+    env = os.environ.copy()
+    env["GIT_DIR"] = disk_path
+    proc = await asyncio.create_subprocess_exec(
+        "git", "cat-file", "--batch",
+        stdin=asyncio.subprocess.PIPE,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+        env=env,
+    )
+    stdout, _ = await proc.communicate((name + "\n").encode())
+    header, _, rest = stdout.partition(b"\n")
+    # "<sha> <type> <size>", or "<name> missing" / "<name> ambiguous".
+    parts = header.split(b" ")
+    if proc.returncode != 0 or len(parts) != 3 or parts[1] not in _OBJECT_TYPES or not parts[2].isdigit():
+        return None
+    size = int(parts[2])
+    if len(rest) < size:
+        return None
+    return parts[0].decode(), parts[1].decode(), rest[:size]
+
+
+def parse_tree(content: bytes, hash_len: int = 20) -> list[tuple[str, str, str]]:
+    """Entries of a raw tree object as ``(mode, name, sha)``, in tree order.
+
+    ``hash_len`` is the object id length in bytes: 20 for SHA-1.
+    """
+    entries = []
+    pos = 0
+    while pos < len(content):
+        space = content.index(b" ", pos)
+        nul = content.index(b"\x00", space)
+        mode = content[pos:space].decode()
+        name = content[space + 1:nul].decode("utf-8", errors="replace")
+        sha = content[nul + 1:nul + 1 + hash_len].hex()
+        entries.append((mode, name, sha))
+        pos = nul + 1 + hash_len
+    return entries

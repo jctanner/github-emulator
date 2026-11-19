@@ -6,11 +6,12 @@ import os
 import tempfile
 from datetime import datetime, timezone
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Request, Response
 from fastapi.responses import JSONResponse
 
 from app.api.deps import AuthUser, CurrentUser, DbSession, get_repo_record_or_404, require_contents_write
 from app.config import settings
+from app.git.bare_repo import parse_tree, read_object
 from app.schemas.browse import ContentResponse
 from app.schemas.user import _make_node_id
 from app.services.api_push import after_api_commit
@@ -50,29 +51,15 @@ async def _git(
     return stdout.decode()
 
 
-async def _git_bytes(repo_path: str, *args: str) -> bytes:
-    env = {**os.environ, "GIT_DIR": repo_path}
-    proc = await asyncio.create_subprocess_exec(
-        "git", *args,
-        stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.PIPE,
-        env=env,
-    )
-    stdout, stderr = await proc.communicate()
-    if proc.returncode != 0:
-        raise RuntimeError(stderr.decode())
-    return stdout
-
-
 def _file_response(
     owner: str, repo_name: str, path: str, content_bytes: bytes,
-    sha: str, ref: str, base_url: str,
+    sha: str, ref: str, base_url: str, with_content: bool = True,
 ) -> dict:
     api = f"{base_url}/api/v3"
-    encoded = base64.b64encode(content_bytes).decode()
+    encoded = base64.b64encode(content_bytes).decode() if with_content else ""
     return {
         "type": "file",
-        "encoding": "base64",
+        "encoding": "base64" if with_content else "none",
         "size": len(content_bytes),
         "name": os.path.basename(path),
         "path": path,
@@ -90,12 +77,65 @@ def _file_response(
     }
 
 
+# Media types that ask GET contents and GET readme for the file's bytes
+# instead of the JSON object. GitHub answers with the bytes and echoes the
+# type as the Content-Type; a directory still gets the JSON listing.
+_RAW_MEDIA_TYPES = (
+    "application/vnd.github.raw",
+    "application/vnd.github.v3.raw",
+    "application/vnd.github.raw+json",
+)
+
+# From 1 MiB (1,048,576 bytes, checked on github.com) GitHub's JSON object
+# carries no content: "encoding" is "none" and "content" is "". The raw
+# media type still returns the bytes.
+_JSON_CONTENT_LIMIT = 1024 * 1024
+
+
+def _raw_media_type(request: Request) -> str | None:
+    """The raw media type the Accept header asks for, if any.
+
+    A media range with ``q=0`` is one the client does not accept, so it is
+    not selected.
+    """
+    for part in request.headers.get("accept", "").split(","):
+        media, *params = part.split(";")
+        media = media.strip().lower()
+        if media not in _RAW_MEDIA_TYPES:
+            continue
+        q = 1.0
+        for param in params:
+            name, _, value = param.partition("=")
+            if name.strip().lower() == "q":
+                try:
+                    q = float(value.strip())
+                except ValueError:
+                    q = 1.0
+        if q > 0:
+            return media
+    return None
+
+
+def _get_file_response(
+    request: Request, owner: str, repo_name: str, path: str, content_bytes: bytes,
+    sha: str, ref: str,
+) -> dict | Response:
+    """A file for GET contents or GET readme, in the media type asked for."""
+    media = _raw_media_type(request)
+    if media is not None:
+        return Response(content=content_bytes, media_type=media)
+    return _file_response(
+        owner, repo_name, path, content_bytes, sha, ref, BASE,
+        with_content=len(content_bytes) < _JSON_CONTENT_LIMIT,
+    )
+
+
 @router.get(
     "/repos/{owner}/{repo}/contents/{path:path}",
     response_model=ContentResponse | list[ContentResponse],
 )
 async def get_contents(
-    owner: str, repo: str, path: str, db: DbSession, current_user: CurrentUser,
+    owner: str, repo: str, path: str, request: Request, db: DbSession, current_user: CurrentUser,
     ref: str | None = None,
 ):
     """Get file or directory contents."""
@@ -106,37 +146,24 @@ async def get_contents(
 
     branch = ref or repository.default_branch
 
-    # Try to get as file first
-    try:
-        blob_sha = (await _git(repository.disk_path, "rev-parse", f"{branch}:{path}")).strip()
-        # Check if it's a blob (file) or tree (directory)
-        obj_type = (await _git(repository.disk_path, "cat-file", "-t", blob_sha)).strip()
-    except RuntimeError:
-        raise HTTPException(status_code=404, detail="Not Found") from None
+    # One git process per call: resolve the path and read the object
+    # together. A job reads the agents harness with about a thousand of these
+    # calls, and on a loaded machine each process start is the main cost.
+    found = await read_object(repository.disk_path, f"{branch}:{path}")
+    if found is None:
+        raise HTTPException(status_code=404, detail="Not Found")
+    object_sha, obj_type, content_bytes = found
 
     if obj_type == "blob":
-        content_bytes = await _git_bytes(repository.disk_path, "cat-file", "blob", blob_sha)
-        return _file_response(owner, repo, path, content_bytes, blob_sha, branch, BASE)
+        return _get_file_response(request, owner, repo, path, content_bytes, object_sha, branch)
     elif obj_type == "tree":
-        # List directory
-        try:
-            ls_out = await _git(repository.disk_path, "ls-tree", blob_sha)
-        except RuntimeError:
-            raise HTTPException(status_code=404, detail="Not Found") from None
-
         api = f"{BASE}/api/v3"
         entries = []
-        for line in ls_out.strip().splitlines():
-            if not line:
-                continue
-            parts = line.split("\t", 1)
-            meta = parts[0].split()
-            entry_name = parts[1] if len(parts) > 1 else ""
-            entry_sha = meta[2] if len(meta) > 2 else ""
-            entry_type = meta[1] if len(meta) > 1 else "blob"
-
+        for mode, entry_name, entry_sha in parse_tree(content_bytes, len(object_sha) // 2):
             entry_path = f"{path}/{entry_name}".strip("/")
-            t = "file" if entry_type == "blob" else "dir"
+            # A tree or a submodule (gitlink) lists as "dir", anything else
+            # as "file", as before.
+            t = "dir" if mode in ("40000", "160000") else "file"
             entries.append({
                 "type": t,
                 "size": 0,
@@ -351,7 +378,9 @@ async def delete_file(
 README_NAMES = ["README.md", "README.rst", "README.txt", "README", "readme.md"]
 
 
-async def _readme_response(owner: str, repo: str, db, ref: str | None, directory: str = "") -> dict:
+async def _readme_response(
+    request: Request, owner: str, repo: str, db, ref: str | None, directory: str = "",
+) -> dict | Response:
     """Return the README in ``directory`` (the repository root when empty), as GitHub does."""
     repository = await get_repo_record_or_404(owner, repo, db)
 
@@ -366,29 +395,26 @@ async def _readme_response(owner: str, repo: str, db, ref: str | None, directory
     # Try common README filenames
     for readme_name in README_NAMES:
         path = f"{directory}/{readme_name}" if directory else readme_name
-        try:
-            blob_sha = (await _git(repository.disk_path, "rev-parse", f"{branch}:{path}")).strip()
-            content_bytes = await _git_bytes(repository.disk_path, "cat-file", "blob", blob_sha)
-            return _file_response(owner, repo, path, content_bytes, blob_sha, branch, BASE)
-        except RuntimeError:
-            continue
+        found = await read_object(repository.disk_path, f"{branch}:{path}")
+        if found is not None and found[1] == "blob":
+            return _get_file_response(request, owner, repo, path, found[2], found[0], branch)
 
     raise HTTPException(status_code=404, detail="Not Found")
 
 
 @router.get("/repos/{owner}/{repo}/readme", response_model=ContentResponse)
 async def get_readme(
-    owner: str, repo: str, db: DbSession, current_user: CurrentUser,
+    owner: str, repo: str, request: Request, db: DbSession, current_user: CurrentUser,
     ref: str | None = None,
 ):
     """Get the README for a repository."""
-    return await _readme_response(owner, repo, db, ref)
+    return await _readme_response(request, owner, repo, db, ref)
 
 
 @router.get("/repos/{owner}/{repo}/readme/{dir:path}", response_model=ContentResponse)
 async def get_directory_readme(
-    owner: str, repo: str, dir: str, db: DbSession, current_user: CurrentUser,
+    owner: str, repo: str, dir: str, request: Request, db: DbSession, current_user: CurrentUser,
     ref: str | None = None,
 ):
     """Get the README in a directory (GitHub's ``GET /repos/{owner}/{repo}/readme/{dir}``)."""
-    return await _readme_response(owner, repo, db, ref, dir)
+    return await _readme_response(request, owner, repo, db, ref, dir)

@@ -10,7 +10,7 @@ import {RepositoryTreeList} from "../components/RepositoryTreeList";
 import {useRepository} from "../components/RepositoryContext";
 import {requireApiData, useApiData} from "../hooks/useApiData";
 import {useRepositorySummary} from "../hooks/useRepositorySummary";
-import {decodeBase64Content} from "../utils/content";
+import {decodeBase64Content, withFileContent} from "../utils/content";
 import {MARKDOWN_FILE} from "../utils/markdown";
 
 type Content = components["schemas"]["ContentResponse"];
@@ -29,7 +29,12 @@ export function RepositoryPage() {
         {params: {path: {owner, repo}, query: {ref}}},
       );
       if (response.status === 404) return null;
-      return requireApiData(data, response, "Could not load README.");
+      return withFileContent(
+        owner,
+        repo,
+        ref,
+        requireApiData(data, response, "Could not load README."),
+      );
     },
   );
   return (

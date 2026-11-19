@@ -5,16 +5,15 @@ import {api} from "../api/client";
 import type {components} from "../api/schema";
 import {Loadable} from "../components/Loadable";
 import {requireApiData, useApiData} from "../hooks/useApiData";
+import {
+  decodeBase64Content,
+  encodeBase64Bytes,
+  withFileContent,
+} from "../utils/content";
 
 type Content = components["schemas"]["ContentResponse"];
 const encode = (value: string) =>
-  btoa(String.fromCharCode(...new TextEncoder().encode(value)));
-const decode = (value: string) =>
-  new TextDecoder().decode(
-    Uint8Array.from(atob(value.replaceAll("\n", "")), (char) =>
-      char.charCodeAt(0),
-    ),
-  );
+  encodeBase64Bytes(new TextEncoder().encode(value));
 
 export function FileEditorPage({create = false}: {create?: boolean}) {
   const {
@@ -34,7 +33,8 @@ export function FileEditorPage({create = false}: {create?: boolean}) {
       );
       const value = requireApiData(data, response, "Could not load file.");
       if (Array.isArray(value)) throw new Error("Cannot edit a directory.");
-      return value;
+      // From 1 MiB the JSON carries no content; read the bytes in raw.
+      return withFileContent(owner, repo, ref, value);
     },
   );
   const [path, setPath] = useState(routePath);
@@ -44,7 +44,8 @@ export function FileEditorPage({create = false}: {create?: boolean}) {
   );
   const [error, setError] = useState<string | null>(null);
   useEffect(() => {
-    if (existing.data?.content) setContent(decode(existing.data.content));
+    if (existing.data?.content)
+      setContent(decodeBase64Content(existing.data.content));
   }, [existing.data]);
   async function submit(event: FormEvent) {
     event.preventDefault();

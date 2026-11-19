@@ -11,7 +11,7 @@ import {RepositoryActivity} from "../components/RepositoryActivity";
 import {RepositoryTreeList} from "../components/RepositoryTreeList";
 import {requireApiData, useApiData} from "../hooks/useApiData";
 import {useRepositorySummary} from "../hooks/useRepositorySummary";
-import {decodeBase64Content} from "../utils/content";
+import {decodeBase64Content, withFileContent} from "../utils/content";
 import {highlightLines} from "../utils/highlight";
 import {MARKDOWN_FILE} from "../utils/markdown";
 import {RepositoryMarkdown} from "../components/RepositoryMarkdown";
@@ -40,7 +40,13 @@ export function CodeBrowserPage({blob = false}: {blob?: boolean}) {
         response,
         "Could not load repository content.",
       );
-      if (!Array.isArray(content)) return {content, readme: null};
+      // From 1 MiB the JSON carries no content; read the bytes in raw.
+      if (!Array.isArray(content)) {
+        return {
+          content: await withFileContent(owner, repo, ref, content),
+          readme: null,
+        };
+      }
 
       // A directory shows its own README below the listing, as on GitHub:
       // the repository's at the root, the directory's elsewhere.
@@ -57,10 +63,15 @@ export function CodeBrowserPage({blob = false}: {blob?: boolean}) {
           readmeResult.response.status === 404 ||
           (readmeResult.data as {type?: string} | undefined)?.type !== "file"
             ? null
-            : requireApiData(
-                readmeResult.data,
-                readmeResult.response,
-                "Could not load README.",
+            : await withFileContent(
+                owner,
+                repo,
+                ref,
+                requireApiData(
+                  readmeResult.data,
+                  readmeResult.response,
+                  "Could not load README.",
+                ),
               ),
       };
     },

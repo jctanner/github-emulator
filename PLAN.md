@@ -133,6 +133,9 @@ Actions visibility and runner evaluation.
 - `docs/bugs/fixed/python-runner-skips-tls-verification.md`
 - `docs/bugs/fixed/installation-token-narrowing-by-repository.md`
 - `docs/bugs/fixed/actions-oidc-claims-and-discovery-differ-from-github.md`
+- `docs/bugs/fixed/raw-githubusercontent-requests-are-not-served.md`
+- `docs/bugs/fixed/contents-reads-run-several-git-processes.md`
+- `docs/bugs/fixed/contents-ignore-the-raw-media-type-and-the-1-mib-limit.md`
 
 ## Decisions
 
