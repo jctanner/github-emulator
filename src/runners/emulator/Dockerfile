@@ -3,7 +3,7 @@
 # its reusable dispatch runs on that image by default. This is not a faithful
 # hosted image - it is runner.py, a compatibility layer, on the same base -
 # but a job that assumes the hosted distribution finds the same one here.
-FROM ubuntu:24.04
+FROM ubuntu:25.10
 
 # python-is-python3 keeps `python` valid: the deployments exec
 # `python /app/runner.py`, and Ubuntu ships only `python3`.
