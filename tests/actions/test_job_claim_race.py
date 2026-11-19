@@ -9,7 +9,7 @@ that interleaving: both polls finish their read before either claims.
 import asyncio
 
 import pytest
-from sqlalchemy import select
+from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from sqlalchemy.sql import Select
 
@@ -223,3 +223,38 @@ async def test_renewing_a_job_request_another_runner_holds_is_job_not_found(
     assert error["typeName"].startswith(
         "GitHub.DistributedTask.WebApi.TaskAgentJobNotFoundException,"
     )
+
+
+async def test_a_custom_runner_poll_claims_a_job_queued_after_an_empty_pass(
+    db_engine, db_session, queued_job, monkeypatch,
+):
+    """The poll expires its session between passes; the runner it holds must
+    still be usable when a job arrives on a later pass."""
+    job_id = queued_job.id
+    await db_session.execute(
+        update(WorkflowJob).where(WorkflowJob.id == job_id).values(status="waiting")
+    )
+    await db_session.commit()
+
+    real_sleep = asyncio.sleep
+
+    async def queue_then_sleep(seconds):
+        await db_session.execute(
+            update(WorkflowJob).where(WorkflowJob.id == job_id).values(status="queued")
+        )
+        await db_session.commit()
+        await real_sleep(0)
+
+    monkeypatch.setattr(actions_dispatch.asyncio, "sleep", queue_then_sleep)
+
+    factory = async_sessionmaker(db_engine, class_=AsyncSession, expire_on_commit=False)
+    async with factory() as session:
+        runner = (await session.execute(
+            select(Runner).where(Runner.name == "runner-a")
+        )).scalar_one()
+        result = await actions_dispatch._poll_for_jobs(
+            runner, session, labels="self-hosted,linux", timeout=5, repository_id=None,
+        )
+
+    assert isinstance(result, dict), result
+    assert result["job_id"] == job_id

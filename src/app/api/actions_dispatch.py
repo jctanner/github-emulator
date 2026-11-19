@@ -583,10 +583,13 @@ async def _poll_for_jobs(
         # meanwhile; SQLite's driver happened not to hold reads in a
         # transaction. The session does not expire objects on commit, so
         # expire them too: the next pass reads fresh rows, not the objects
-        # the identity map kept from this one.
+        # the identity map kept from this one. That expires the runner too,
+        # and an AsyncSession cannot load an expired attribute on access, so
+        # reload it after the wait, inside the next pass's read.
         await db.commit()
         db.expire_all()
         await asyncio.sleep(2)
+        await db.refresh(runner)
 
     return Response(status_code=204)
 
