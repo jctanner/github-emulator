@@ -123,3 +123,36 @@ async def test_a_push_run_is_titled_by_its_commit_and_knows_branch_protection(
     branch.protected = True
     await db_session.commit()
     assert (await github_identity_context(db_session, run))["ref_protected"] is True
+
+
+@pytest.mark.asyncio
+async def test_the_job_message_reports_a_protected_branch(client, db_session, uses_workflow, test_token):  # noqa: F811
+    from app.models.branch import Branch
+
+    repo, _workflow, _run = uses_workflow
+    db_session.add(Branch(repo_id=repo.id, name="main", sha="abc123", protected=True))
+    await db_session.commit()
+    body = await _claim_job(client, test_token)
+    github = {item["k"]: item["v"] for item in body["contextData"]["github"]["d"]}
+    assert github["ref_protected"] is True
+
+
+@pytest.mark.asyncio
+async def test_the_job_message_never_loads_the_repositorys_branches(db_session, uses_workflow):  # noqa: F811
+    """The message is built synchronously; reading a relationship that is not
+    loaded there raises MissingGreenlet on the async claim path."""
+    from app.api.actions_distributed_task import _job_request_message
+
+    repo, _workflow, run = uses_workflow
+    job = (await db_session.execute(select(WorkflowJob).where(WorkflowJob.run_id == run.id))).scalars().first()
+
+    class NoBranches:
+        def __getattr__(self, name):
+            if name == "branches":
+                raise AssertionError("the job message read repo.branches")
+            return getattr(repo, name)
+
+    message = _job_request_message(job, run, NoBranches(), "http://test", ref_protected=True)
+    body = json.loads(message["body"]) if "body" in message else message
+    github = {item["k"]: item["v"] for item in body["contextData"]["github"]["d"]}
+    assert github["ref_protected"] is True
