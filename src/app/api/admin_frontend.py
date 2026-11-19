@@ -141,9 +141,11 @@ async def _resolve_import_destination(db: DbSession, user: User, body: dict) -> 
 @router.get("/summary", response_model=AdminSummaryResponse)
 async def summary(user: AuthUser, db: DbSession):
     _require_admin(user)
-    async def count(model):
-        return (await db.execute(select(func.count()).select_from(model))).scalar() or 0
-    return {"users": await count(User), "organizations": await count(Organization), "repositories": await count(Repository), "issues": await count(Issue), "workflow_runs": await count(WorkflowRun), "runners": await count(Runner), "imports": await count(ImportJob)}
+    async def count(model, *where):
+        return (await db.execute(select(func.count()).select_from(model).where(*where))).scalar() or 0
+    # Remove-only credentials (config.sh remove's) are not runners.
+    runners = await count(Runner, Runner.remove_only.is_not(True))
+    return {"users": await count(User), "organizations": await count(Organization), "repositories": await count(Repository), "issues": await count(Issue), "workflow_runs": await count(WorkflowRun), "runners": runners, "imports": await count(ImportJob)}
 
 
 @router.get("/users", response_model=list[AdminUserResponse])
@@ -296,7 +298,9 @@ async def memory(user: AuthUser):
 @router.get("/runners", response_model=list[AdminRunnerResponse])
 async def runners(user: AuthUser, db: DbSession):
     _require_admin(user)
-    values = (await db.execute(select(Runner).order_by(Runner.id))).scalars().all()
+    values = (await db.execute(
+        select(Runner).where(Runner.remove_only.is_not(True)).order_by(Runner.id)
+    )).scalars().all()
     # Resolved in two queries rather than one per runner, and only for the ids
     # actually referenced.
     repo_ids = {r.repo_id for r in values if r.repo_id}

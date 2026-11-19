@@ -249,10 +249,36 @@ async def test_an_abandoned_remove_exchange_is_listed_nowhere(client, admin_toke
         "/_apis/distributedtask/pools/1/agents", headers={"Authorization": f"Bearer {kept_credential}"})
     pipelines = await client.get("/_services/pipelines/enterprises/breadboard/_apis/pipelines/runs")
     rest = await client.get(f"{API}/enterprises/breadboard/actions/runners", headers=auth_headers(admin_token))
+    admin = await client.get("/admin/api/runners", headers=auth_headers(admin_token))
+    assert admin.status_code == 200, admin.text
+    summary = (await client.get("/admin/api/summary", headers=auth_headers(admin_token))).json()
+    assert summary["runners"] == len(admin.json())
     for names in (
         [a["name"] for a in pool.json()["value"]],
         [r["name"] for r in pipelines.json()["value"]],
         [r["name"] for r in rest.json()["runners"]],
+        [r["name"] for r in admin.json()],
     ):
         assert "kept-listing" in names
         assert "unnamed-runner" not in names
+
+
+@pytest.mark.asyncio
+async def test_a_named_registration_never_reuses_a_remove_credential(client, admin_token):
+    remove = await client.post(
+        f"{API}/actions/runner-registration", json={"url": "http://test/x", "runner_event": "remove"},
+        headers={"Authorization": f"RemoteAuth {await _remove_token(client, admin_token)}"},
+    )
+    assert remove.status_code == 200, remove.text  # abandoned: no delete follows
+    reg_token = await _registration_token(client, "/enterprises/breadboard", admin_token)
+    named = await client.post(
+        f"{API}/actions/runner-registration",
+        json={"url": "http://test/x", "runner_event": "register", "name": "unnamed-runner"},
+        headers={"Authorization": f"RemoteAuth {reg_token}"},
+    )
+    assert named.status_code == 200, named.text
+    pools = await client.get(
+        "/enterprises/breadboard/_apis/distributedtask/pools",
+        headers={"Authorization": f"Bearer {named.json()['token']}"},
+    )
+    assert pools.status_code == 200, pools.text

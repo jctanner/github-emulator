@@ -150,7 +150,8 @@ async def _create_runner_from_registration(
         else Runner.enterprise_slug == enterprise_reg.enterprise_slug
     )
     existing = (await db.execute(
-        select(Runner).where(Runner.name == name, scope_filter)
+        # A remove-only credential is not a runner, so it is never reused.
+        select(Runner).where(Runner.name == name, scope_filter, Runner.remove_only.is_not(True))
     )).scalars().first() if given_name else None
     if existing is not None:
         existing.os = normalise_runner_os(body.get("os", body.get("osDescription"))) or existing.os

@@ -45,7 +45,9 @@ single token the second and third registrations get 401.
 - A `runner-registration` call with `runner_event` `remove` (what
   `config.sh remove` sends) returns a remove-only credential (`remove_only`,
   same migration). It can delete an agent and nothing else: it registers,
-  renames or re-keys no runner, takes no jobs, and is not listed as a runner.
+  renames or re-keys no runner, is never reused by name, takes no jobs,
+  and is not listed as a runner (pool, pipelines, REST and admin lists and
+  the admin runner count).
   It is deleted with the agent it removes, so removals leave no
   `unnamed-runner` rows.
 
