@@ -292,6 +292,9 @@ _STATUS_CALL_RE = re.compile(r"\b(?:success|failure|cancelled|always)\s*\(\s*\)"
 # ``needs:`` keys and whether the run was cancelled.
 JOB_NEEDS_KEY = "__job_needs__"
 RUN_CANCELLED_KEY = "__run_cancelled__"
+# Results of ancestors the job has no ``needs`` entry for: a reusable-workflow
+# caller reached through another job, judged by the call's result.
+JOB_ANCESTOR_RESULTS_KEY = "__job_ancestor_results__"
 
 
 def uses_status_function(condition: object) -> bool:
@@ -311,7 +314,11 @@ def job_status(name: str, context: dict) -> bool:
     keys = context.get(JOB_NEEDS_KEY)
     if keys is None:
         keys = list(needs)
-    results = [str((needs.get(key) or {}).get("result") or "") for key in keys]
+    ancestor_results = context.get(JOB_ANCESTOR_RESULTS_KEY) or {}
+    results = [
+        str(ancestor_results[key] if key in ancestor_results else (needs.get(key) or {}).get("result") or "")
+        for key in keys
+    ]
     if name == "failure":
         return any(result == "failure" for result in results)
     return not cancelled and all(result == "success" for result in results)

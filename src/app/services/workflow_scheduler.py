@@ -7,6 +7,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.actions import WorkflowJob, WorkflowRun
 
+
 def _runs_after_unsuccessful_needs(job: WorkflowJob) -> bool:
     """Whether a job is still evaluated when a job it needs failed, was
     skipped or was cancelled: on GitHub, when its condition names a status
@@ -29,7 +30,22 @@ def _called_jobs(job: WorkflowJob) -> dict[str, str]:
     return called
 
 
-def _ancestors(job: WorkflowJob, all_jobs) -> list[str]:
+def _caller_of(key: str, prefix: str) -> str | None:
+    """The caller, in the workflow whose jobs are keyed ``<prefix><id>``,
+    whose call inlined job ``key``; None when ``key`` is a job of that
+    workflow itself or of another one. Called jobs are keyed
+    ``<caller> / <job>``, and a job id cannot hold `` / ``."""
+    if not key.startswith(prefix):
+        return None
+    rest = key[len(prefix):]
+    if " / " not in rest:
+        return None
+    return prefix + rest.split(" / ", 1)[0]
+
+
+def _ancestors(
+    job: WorkflowJob, all_jobs, key_results: dict | None = None,
+) -> tuple[list[str], dict[str, str]]:
     """Every job ``job`` depends on, directly or through others: the jobs
     ``success()`` and ``failure()`` answer for, as on GitHub, so a cleanup
     job behind a skipped one still sees the failure that skipped it.
@@ -37,10 +53,20 @@ def _ancestors(job: WorkflowJob, all_jobs) -> list[str]:
     A called job of a caller ``job`` needs is listed as that caller, whose
     ``needs`` entry carries the call's result: a called job skipped by its
     own condition does not make ``success()`` false when the call succeeded.
+    A called job reached through another job is listed as its caller too,
+    with the call's result (``alias_result``: the worst of its called jobs'
+    results) returned alongside, since ``job`` has no ``needs`` entry for
+    that caller.
     """
+    from app.services.workflow_service import _combined_result
+
+    key_results = key_results or {}
     needs_by_key = {(j.job_key or j.name): list(j.needs or []) for j in all_jobs}
+    own_key = job.job_key or job.name
+    prefix = own_key.rsplit(" / ", 1)[0] + " / " if " / " in own_key else ""
     called = _called_jobs(job)
     seen: list[str] = []
+    results: dict[str, str] = {}
     visited: set[str] = set()
     pending = list(job.needs or [])
     while pending:
@@ -48,11 +74,19 @@ def _ancestors(job: WorkflowJob, all_jobs) -> list[str]:
         if key in visited:
             continue
         visited.add(key)
-        name = called.get(key, key)
+        name = called.get(key)
+        if name is None:
+            name = _caller_of(key, prefix) or key
+            if name != key and name not in results:
+                result = ""
+                for other, other_result in key_results.items():
+                    if other.startswith(name + " / "):
+                        result = _combined_result(result, other_result)
+                results[name] = result
         if name not in seen:
             seen.append(name)
         pending.extend(needs_by_key.get(key, []))
-    return seen
+    return seen, results
 
 
 def _needs_state(
@@ -100,6 +134,13 @@ async def dispatch_ready_jobs(db: AsyncSession, run_id: int) -> list[WorkflowJob
     creation when it declares dependencies, because they may read
     ``needs.<job>.outputs.*``, which only exist once those jobs have finished.
     """
+    from app.services.workflow_expressions import (
+        JOB_ANCESTOR_RESULTS_KEY,
+        JOB_NEEDS_KEY,
+        RUN_CANCELLED_KEY,
+        evaluate_job_if,
+        render_expressions,
+    )
     from app.services.workflow_service import (
         _combined_result,
         build_needs_context,
@@ -110,12 +151,6 @@ async def dispatch_ready_jobs(db: AsyncSession, run_id: int) -> list[WorkflowJob
         needs_alias_entries,
         render_job_labels,
         strategy_context,
-    )
-    from app.services.workflow_expressions import (
-        JOB_NEEDS_KEY,
-        RUN_CANCELLED_KEY,
-        evaluate_job_if,
-        render_expressions,
     )
 
     result = await db.execute(
@@ -196,6 +231,7 @@ async def dispatch_ready_jobs(db: AsyncSession, run_id: int) -> list[WorkflowJob
                         [j for j in all_jobs if j.status == "completed"]
                     )
                 github_ctx = base_context.get("github") or {}
+                ancestors, ancestor_results = _ancestors(job, all_jobs, key_results)
                 context = {
                     **base_context,
                     # A reusable-workflow caller this job needs is not a job
@@ -206,7 +242,8 @@ async def dispatch_ready_jobs(db: AsyncSession, run_id: int) -> list[WorkflowJob
                             pending.get("_needs_aliases"), needs_context, base_context,
                         ),
                     },
-                    JOB_NEEDS_KEY: _ancestors(job, all_jobs),
+                    JOB_NEEDS_KEY: ancestors,
+                    JOB_ANCESTOR_RESULTS_KEY: ancestor_results,
                     RUN_CANCELLED_KEY: bool(base_context.get(RUN_CANCELLED_KEY)),
                     "matrix": pending.get("matrix") or {},
                     "strategy": pending.get("strategy") or strategy_context(None),
@@ -296,14 +333,13 @@ async def _expand_dynamic_matrix(
     GitHub ("Matrix vector 'include' does not contain any values"). Returns
     the instances with their expression contexts, or [] when the job failed.
     """
-    from app.services.workflow_expressions import evaluate_expression_value
+    from app.services.workflow_expressions import evaluate_expression_value, render_expressions
     from app.services.workflow_service import (
         _job_concurrency,
         matrix_combinations,
         matrix_job_name,
         strategy_context,
     )
-    from app.services.workflow_expressions import render_expressions
 
     combos = matrix_combinations(
         evaluate_expression_value(pending["dynamic_matrix"], context)

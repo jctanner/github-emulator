@@ -788,3 +788,98 @@ async def test_an_output_forwarded_up_from_a_twice_nested_call(
     )
     assert after.status == "queued"
     assert after.steps[0]["run"] == "echo v2-mid 2-mid"
+
+
+def _chain(final_if):
+    return {
+        "name": "caller",
+        "jobs": {
+            "call": {"uses": "./.github/workflows/called.yml"},
+            "middle": {"needs": ["call"], "runs-on": ["self-hosted"], "steps": [{"run": "echo"}]},
+            "final": {
+                "needs": ["middle"],
+                "if": final_if,
+                "runs-on": ["self-hosted"],
+                "steps": [{"run": "echo"}],
+            },
+        },
+    }
+
+
+async def _finish(db_session, run, conclusions):
+    rows = await _rows(db_session, run)
+    for key, conclusion in conclusions.items():
+        rows[key].status = "completed"
+        rows[key].conclusion = conclusion
+    await db_session.commit()
+    await dispatch_ready_jobs(db_session, run.id)
+    await db_session.commit()
+    return await _rows(db_session, run)
+
+
+@pytest.mark.asyncio
+async def test_success_further_down_reads_the_calls_result_not_its_skipped_job(
+    monkeypatch, executable_workflow, db_session, test_user,  # noqa: F811
+):
+    """call -> middle -> final (``if: success()``). ``success()`` answers for
+    every ancestor, and the ancestor here is the call, which succeeded: its
+    job skipped by its own ``if:`` does not count against it."""
+    _repo, workflow, _ = executable_workflow
+    run = await _run(
+        monkeypatch, db_session, workflow, test_user, _chain("success()"), {"called.yml": OPTIONAL},
+    )
+    rows = await _finish(db_session, run, {"call / build": "success"})
+    assert rows["middle"].status == "queued"
+    rows = await _finish(db_session, run, {"middle": "success"})
+    assert rows["final"].status == "queued"
+
+
+@pytest.mark.asyncio
+async def test_success_further_down_inside_a_called_workflow_reads_the_nested_calls_result(
+    monkeypatch, executable_workflow, db_session, test_user,  # noqa: F811
+):
+    """The same chain one level down, inside ``deploy``: ``deploy / final``'s
+    ancestor is the ``deploy / call`` call, not its skipped job."""
+    chain = _chain("success()")
+    mid = {"on": {"workflow_call": {}}, "jobs": chain["jobs"]}
+    caller = {"name": "caller", "jobs": {"deploy": {"uses": "./.github/workflows/mid.yml"}}}
+    _repo, workflow, _ = executable_workflow
+    run = await _run(
+        monkeypatch, db_session, workflow, test_user, caller,
+        {"called.yml": OPTIONAL, "mid.yml": mid},
+    )
+    rows = await _finish(db_session, run, {"deploy / call / build": "success"})
+    assert rows["deploy / call / optional"].conclusion == "skipped"
+    assert rows["deploy / middle"].status == "queued"
+    rows = await _finish(db_session, run, {"deploy / middle": "success"})
+    assert rows["deploy / final"].status == "queued"
+
+
+FAILING = {
+    "on": {"workflow_call": {}},
+    "jobs": {
+        **OPTIONAL["jobs"],
+        "check": {"runs-on": ["self-hosted"], "steps": [{"run": "echo"}]},
+    },
+}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(("final_if", "final_status", "final_conclusion"), [
+    ("success()", "completed", "skipped"),
+    ("failure()", "queued", None),
+])
+async def test_a_failed_job_in_the_call_is_seen_further_down(
+    monkeypatch, executable_workflow, db_session, test_user,  # noqa: F811
+    final_if, final_status, final_conclusion,
+):
+    """A failed called job fails the call: middle (no ``if:``) is skipped, and
+    final sees the failed ancestor, as it would behind a plain failed job."""
+    _repo, workflow, _ = executable_workflow
+    run = await _run(
+        monkeypatch, db_session, workflow, test_user, _chain(final_if), {"called.yml": FAILING},
+    )
+    rows = await _finish(db_session, run, {"call / build": "success", "call / check": "failure"})
+    assert rows["middle"].conclusion == "skipped"
+    assert rows["final"].status == final_status
+    assert rows["final"].conclusion == final_conclusion

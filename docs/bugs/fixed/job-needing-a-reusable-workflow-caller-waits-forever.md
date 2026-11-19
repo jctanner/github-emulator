@@ -30,6 +30,19 @@ the run. A job with `needs: <caller>`:
   need and skipped the dependent. A call with a failed or cancelled job is
   still unsuccessful, so its dependent is still skipped. Plain needs are
   judged as before.
+- The same holds further down a chain. `success()` and `failure()` answer
+  for every ancestor, and a called job reached through another job is
+  counted as its caller, with the call's result (the worst of its called
+  jobs' results). The caller is found from the key: called jobs are keyed
+  `<caller> / <job>`, and a job id cannot hold ` / `. For `call -> middle ->
+  final`, with `final` on `if: success()` and the call holding one
+  successful job and one skipped by its own `if:`, `final` now runs. Before,
+  only `final`'s own needs were read through the call's alias, so `success()`
+  saw the skipped called job and `final` was skipped. Inside a called
+  workflow, `deploy / final` counts `deploy / call / *` as the
+  `deploy / call` call. A failed called job still skips `middle` and makes
+  `success()` false and `failure()` true for `final`, as behind a plain
+  failed job.
 - Nested calls re-prefix those keys at each level.
 - A caller inside a called workflow keeps its own alias inside the outer
   caller's alias (`callers`). The outer call's outputs can then read
