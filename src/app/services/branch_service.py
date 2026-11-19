@@ -51,6 +51,10 @@ async def record_moved_branch(
     That is only done while the branch is still at ``after``: if another
     writer has already moved it past ``after``, the commit stays.
 
+    A replay records the branch only while it is still at ``after``. If
+    another writer moved it during the lock wait, that writer records its
+    own value; writing ``after`` here would put an older sha over it.
+
     ``refresh`` lists other loaded objects the caller reads afterwards; a
     rollback expires them, so they are reloaded on replay. Returns the
     repository, reloaded if a replay happened.
@@ -70,6 +74,8 @@ async def record_moved_branch(
             current = await db.get(Repository, repository_id, populate_existing=True)
             for obj in refresh:
                 await db.refresh(obj)
+            if await ref_sha(disk_path, full_ref(branch)) != after:
+                return
         await record_branch(db, current, branch, after)
         current.pushed_at = datetime.now(timezone.utc)
 
@@ -99,7 +105,9 @@ async def replay_ref_record(
     ``commit_with_sqlite_retry`` commits them, and on a lock rolls back,
     reloads ``refresh`` and stages again. If the lock persists, the ref is
     put back (only while still at ``after``) before the 503, so the
-    client's retry finds the repository as it was.
+    client's retry finds the repository as it was. A replay stages only
+    while the ref is still at ``after``, so it never records an older sha
+    over one another writer has moved the ref to and recorded.
     """
     from app.database_retry import commit_with_sqlite_retry
     from app.middleware.error_handler import RetryableDatabaseError
@@ -107,7 +115,8 @@ async def replay_ref_record(
     async def restage() -> None:
         for obj in refresh:
             await db.refresh(obj)
-        await stage()
+        if await ref_sha(disk_path, full_ref(ref)) == after:
+            await stage()
 
     await stage()
     try:
@@ -115,6 +124,25 @@ async def replay_ref_record(
     except RetryableDatabaseError:
         await _move_ref_back(disk_path, ref, before, after)
         raise
+
+
+def full_ref(branch: str) -> str:
+    """A branch name (``main``) or a full ``refs/...`` name, as a full ref."""
+    return branch if branch.startswith("refs/") else f"refs/heads/{branch}"
+
+
+async def ref_sha(disk_path: str, ref: str) -> str | None:
+    """The sha ``ref`` points at on disk, or None if it does not exist."""
+    import asyncio
+
+    proc = await asyncio.create_subprocess_exec(
+        "git", "rev-parse", "--verify", "--quiet", ref, cwd=disk_path,
+        stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.DEVNULL,
+    )
+    stdout, _ = await proc.communicate()
+    if proc.returncode != 0:
+        return None
+    return stdout.decode().strip() or None
 
 
 async def _move_ref_back(disk_path: str, branch: str, before: str | None, after: str) -> None:
@@ -125,7 +153,7 @@ async def _move_ref_back(disk_path: str, branch: str, before: str | None, after:
     import asyncio
     import logging
 
-    ref = branch if branch.startswith("refs/") else f"refs/heads/{branch}"
+    ref = full_ref(branch)
     args = ["update-ref", ref, before, after] if before else ["update-ref", "-d", ref, after]
     proc = await asyncio.create_subprocess_exec(
         "git", *args, cwd=disk_path,

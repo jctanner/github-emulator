@@ -189,6 +189,30 @@ async def test_overlapping_lookups_sync_once_and_keep_the_cache(client, test_tok
     assert len(calls) == 1
 
 
+async def test_an_uncommitted_sync_keeps_lookups_from_caching(client, test_token, db_session, monkeypatch):
+    base = await _repo(client, test_token, "open-sync-repo", actions_enabled=False)
+    await _put_file(client, test_token, base, ".github/workflows/ci.yml", _workflow("ci"))
+    workflow_service._synced_workflows.clear()
+    repository = (await db_session.execute(select(Repository).where(Repository.name == "open-sync-repo"))).scalar_one()
+    headers = auth_headers(test_token)
+
+    # A sync of another ref (a push dispatch) runs, and its transaction stays open.
+    await workflow_service.sync_workflows_to_db(db_session, repository, "refs/heads/other")
+
+    # A lookup meanwhile syncs the default branch but must not cache: the other
+    # sync's changes are not committed yet.
+    assert (await client.get(f"{base}/actions/workflows", headers=headers)).status_code == 200
+    assert repository.id not in workflow_service._synced_workflows
+
+    # The other transaction commits; the next lookup syncs again and caches.
+    await db_session.commit()
+    assert repository.id not in workflow_service._synced_workflows
+    calls = _count_detections(monkeypatch)
+    assert (await client.get(f"{base}/actions/workflows", headers=headers)).status_code == 200
+    assert len(calls) == 1
+    assert repository.id in workflow_service._synced_workflows
+
+
 async def test_a_sync_that_ends_after_a_lookup_clears_the_cache(client, test_token, db_session, monkeypatch):
     base = await _repo(client, test_token, "late-sync-repo", actions_enabled=False)
     await _put_file(client, test_token, base, ".github/workflows/ci.yml", _workflow("ci"))
@@ -209,12 +233,13 @@ async def test_a_sync_that_ends_after_a_lookup_clears_the_cache(client, test_tok
     late = asyncio.create_task(workflow_service.sync_workflows_to_db(db_session, repository, "refs/heads/other"))
     await started.wait()
 
-    # A lookup syncs the default branch and caches it meanwhile.
+    # A lookup syncs the default branch meanwhile; the other sync is in flight.
     response = await client.get(f"{base}/actions/workflows", headers=auth_headers(test_token))
     assert response.status_code == 200, response.text
-    assert repository.id in workflow_service._synced_workflows
+    assert repository.id not in workflow_service._synced_workflows
 
-    # The earlier sync finishing after it drops the entry again.
+    # The earlier sync finishes and commits after it; nothing is cached.
     release.set()
     await late
+    await db_session.commit()
     assert repository.id not in workflow_service._synced_workflows

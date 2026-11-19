@@ -221,6 +221,9 @@ async def create_ref(
     sha = body.get("sha", "")
     if not ref or not sha:
         raise HTTPException(status_code=422, detail="ref and sha are required")
+    # One full name for git, the database and a rollback: a shorthand
+    # "heads/x" is refs/heads/x, as _branch_name reads it.
+    ref = ref if ref.startswith("refs/") else f"refs/{ref}"
 
     # `git update-ref` moves a ref that is already there, so creating an
     # existing branch answered 201 and silently repointed it. GitHub refuses

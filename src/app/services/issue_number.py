@@ -4,6 +4,7 @@ from sqlalchemy import update
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm.attributes import set_committed_value
 
+from app.middleware.error_handler import NotFoundError
 from app.models.repository import Repository
 
 
@@ -25,7 +26,10 @@ async def allocate_issue_number(db: AsyncSession, repository: Repository, *, ope
         .values(**values)
         .returning(Repository.next_issue_number, Repository.open_issues_count)
         .execution_options(synchronize_session=False)
-    )).one()
+    )).one_or_none()
+    if row is None:
+        # Deleted by another request since the route looked it up.
+        raise NotFoundError()
     # Keep the loaded object in step, without marking it changed: flushing a
     # stale value back would undo another request's increment.
     set_committed_value(repository, "next_issue_number", row.next_issue_number)

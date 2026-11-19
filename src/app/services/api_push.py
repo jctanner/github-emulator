@@ -16,10 +16,12 @@ import logging
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.database_retry import commit_with_sqlite_retry
 from app.models.issue import Issue
 from app.models.pull_request import PullRequest
 from app.models.repository import Repository
 from app.models.user import User
+from app.services.branch_service import full_ref, ref_sha
 from app.services.cross_repo_pulls import same_repository_head
 
 logger = logging.getLogger("github_emulator.api_push")
@@ -54,18 +56,31 @@ async def after_api_commit(
         # request heads below unrecorded (as after a git push).
         logger.exception("push activity for %s:%s failed", repository.full_name, branch)
         await db.rollback()
-    heads = (await db.execute(
-        select(PullRequest).join(Issue, PullRequest.issue_id == Issue.id).where(
-            PullRequest.repo_id == repository_id,
-            PullRequest.head_ref == branch,
-            same_repository_head(repository_id),
-            Issue.state == "open",
-        )
-    )).scalars().all()
-    for pull_request in heads:
-        pull_request.head_sha = after
-        pull_request.last_push_by_id = user.id
-    await db.commit()
+    disk_path = repository.disk_path
+
+    async def stage_heads(replay: bool = False) -> None:
+        if replay:
+            await db.refresh(user)
+            # The same rule as the branch record: a replay after a lock wait
+            # leaves the heads to a writer that has moved the branch since.
+            if await ref_sha(disk_path, full_ref(branch)) != after:
+                return
+        heads = (await db.execute(
+            select(PullRequest).join(Issue, PullRequest.issue_id == Issue.id).where(
+                PullRequest.repo_id == repository_id,
+                PullRequest.head_ref == branch,
+                same_repository_head(repository_id),
+                Issue.state == "open",
+            )
+        )).scalars().all()
+        for pull_request in heads:
+            pull_request.head_sha = after
+            pull_request.last_push_by_id = user.id
+
+    await stage_heads()
+    await commit_with_sqlite_retry(
+        db, label=f"pull request heads for {branch}", before_retry=lambda: stage_heads(replay=True),
+    )
     try:
         await reevaluate_auto_merges(db, repository_id)
     except Exception:

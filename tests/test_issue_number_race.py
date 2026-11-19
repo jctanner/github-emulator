@@ -57,3 +57,18 @@ async def test_graphql_creates_count_one_open_issue_each(client, test_token):
         assert response.status_code == 200 and "errors" not in response.json(), response.text
     repo = (await client.get(f"{API}/repos/testuser/g", headers=h)).json()
     assert repo["open_issues_count"] == 2
+
+
+@pytest.mark.asyncio
+async def test_a_repository_deleted_meanwhile_is_not_found(client, db_session, test_token):
+    from sqlalchemy import delete
+
+    from app.middleware.error_handler import NotFoundError
+
+    h = auth_headers(test_token)
+    assert (await client.post(f"{API}/user/repos", json={"name": "gone"}, headers=h)).status_code == 201
+    loaded = (await db_session.execute(select(Repository).where(Repository.name == "gone"))).scalar_one()
+    # Another request deletes the repository after this one looked it up.
+    await db_session.execute(delete(Repository).where(Repository.id == loaded.id))
+    with pytest.raises(NotFoundError):
+        await allocate_issue_number(db_session, loaded)

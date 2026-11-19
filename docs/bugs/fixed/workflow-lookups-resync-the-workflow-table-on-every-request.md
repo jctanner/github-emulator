@@ -38,11 +38,16 @@ from the key of the last sync. Then:
 The cache is in-process, keyed by repository id. The emulator serves from
 one uvicorn process, and every other caller of `sync_workflows_to_db` (the
 push and trigger path, which also syncs other branches) goes through the
-same function. That function drops the repository's cache entry and bumps a
-per-repository generation counter. A lookup stores its key only if no other
-sync ran while it was syncing. So after a push to any branch, the next
-lookup reconciles against the default branch exactly as before. The
-push/trigger path itself is unchanged.
+same function. A sync's changes count only once its transaction commits,
+so the cache follows transactions: the function records the repository on
+the session, and when that transaction ends (commit, rollback or close)
+the repository's entry is dropped and its generation counter bumped. A
+lookup stores its key only if no other sync of the repository is still
+uncommitted and none ended while it ran; lookups that miss at the same
+time wait for one sync. So after a push to any branch, the next lookup
+reconciles against the default branch exactly as before. The push/trigger
+path reads its git files before its first write (see
+`workflow-runs-hold-the-write-lock-for-seconds.md`).
 
 Not changed: `PATCH /repos/{o}/{r}` with `default_branch` updates only the
 database column, not the bare repository's `HEAD`, so workflow detection

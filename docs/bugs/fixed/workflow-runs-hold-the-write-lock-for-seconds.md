@@ -24,6 +24,10 @@ They held it that long because of what ran inside the window:
 
 - Run creation reads everything before its first write; the window holds
   only the run and job INSERTs (14 statements).
+- Dispatching an event reads the workflow files and the reusable workflows a
+  matched workflow calls from git before the inventory sync and the runs
+  write anything (`tests/actions/test_dispatch_reads_before_writes.py`). A
+  caller that already wrote in the same transaction holds the lock anyway.
 - The collections that grow with use load only when a query asks for them:
   a repository's issues, labels, branches, milestones, collaborators and
   stars, and the repositories of a user or organization. Nothing read them

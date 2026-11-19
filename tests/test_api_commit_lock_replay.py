@@ -41,6 +41,10 @@ def locked_commits(monkeypatch):
         wrote = self.dirty or self.new or self.deleted or self.sync_session.info.get("wrote")
         if state["armed"] and state["fail"] > 0 and wrote:
             state["fail"] -= 1
+            # What another request does while this one waits on the lock.
+            on_fail = state.pop("on_fail", None)
+            if on_fail is not None:
+                await on_fail()
             raise OperationalError("UPDATE", {}, Exception("database is locked"))
         return await real_commit(self)
 
@@ -162,3 +166,123 @@ async def test_create_ref_over_an_existing_ref_lock_that_persists_keeps_it(clien
     kept = await client.get(f"{API}/repos/testuser/{name}/git/ref/heads/feature", headers=auth_headers(test_token))
     assert kept.status_code == 200
     assert kept.json()["object"]["sha"] == head
+
+
+async def _git_in(disk_path, *args):
+    import asyncio
+
+    proc = await asyncio.create_subprocess_exec("git", *args, cwd=disk_path)
+    assert await proc.wait() == 0
+
+
+async def _branch_row_sha(db_session, name, branch):
+    from sqlalchemy import select
+
+    from app.models.branch import Branch
+    from app.models.repository import Repository
+
+    db_session.expire_all()
+    repo = (await db_session.execute(select(Repository).where(Repository.name == name))).scalar_one()
+    row = (await db_session.execute(
+        select(Branch).where(Branch.repo_id == repo.id, Branch.name == branch)
+    )).scalar_one_or_none()
+    return repo.disk_path, (row.sha if row else None)
+
+
+@pytest.mark.asyncio
+async def test_update_ref_replay_does_not_record_over_a_newer_move(client, test_token, db_session, locked_commits):
+    """Another writer moves the ref during the lock wait; the replay leaves it to them."""
+    name, head = await _repo(client, test_token, "lock-refs-newer")
+    url = f"{API}/repos/testuser/{name}/git/refs"
+    assert (await client.post(url, json={"ref": "refs/heads/feature", "sha": head},
+                              headers=auth_headers(test_token))).status_code == 201
+    first = (await _put(client, test_token, name, text=b"one\n")).json()["commit"]["sha"]
+    second = (await _put(client, test_token, name, text=b"two\n")).json()["commit"]["sha"]
+    assert second != first
+    disk_path, _ = await _branch_row_sha(db_session, name, "feature")
+
+    async def other_writer():
+        await _git_in(disk_path, "update-ref", "refs/heads/feature", second)
+
+    locked_commits.update(fail=1, armed=True, on_fail=other_writer)
+    resp = await client.patch(f"{url}/heads/feature", json={"sha": first}, headers=auth_headers(test_token))
+    locked_commits["armed"] = False
+    assert resp.status_code == 200, resp.text
+    _, recorded = await _branch_row_sha(db_session, name, "feature")
+    assert recorded != first
+
+
+@pytest.mark.asyncio
+async def test_create_ref_shorthand_lock_that_persists_removes_the_ref(client, test_token, db_session, locked_commits):
+    """POST git/refs with "heads/x": the rollback finds the ref it created."""
+    name, head = await _repo(client, test_token, "lock-refs-short")
+    url = f"{API}/repos/testuser/{name}/git/refs"
+
+    locked_commits.update(fail=99, armed=True)
+    resp = await client.post(url, json={"ref": "heads/short", "sha": head}, headers=auth_headers(test_token))
+    locked_commits["armed"] = False
+    assert resp.status_code == 503
+    gone = await client.get(f"{API}/repos/testuser/{name}/git/ref/heads/short", headers=auth_headers(test_token))
+    assert gone.status_code == 404
+    # Nothing is left on disk under either spelling.
+    from app.services.branch_service import ref_sha
+
+    disk_path, _ = await _branch_row_sha(db_session, name, "short")
+    assert await ref_sha(disk_path, "heads/short") is None
+    assert await ref_sha(disk_path, "refs/heads/short") is None
+
+
+@pytest.mark.asyncio
+async def test_contents_put_replay_does_not_record_over_a_newer_move(client, test_token, db_session, locked_commits):
+    """The contents path follows the same rule as git/refs."""
+    name, head = await _repo(client, test_token, "lock-put-newer")
+    disk_path, _ = await _branch_row_sha(db_session, name, "main")
+
+    async def other_writer():
+        # Another request moves main back to the head it started from.
+        await _git_in(disk_path, "update-ref", "refs/heads/main", head)
+
+    locked_commits.update(fail=1, armed=True, on_fail=other_writer)
+    resp = await _put(client, test_token, name, text=b"three\n")
+    locked_commits["armed"] = False
+    assert resp.status_code in (200, 201), resp.text
+    _, recorded = await _branch_row_sha(db_session, name, "main")
+    assert recorded != resp.json()["commit"]["sha"]
+
+
+@pytest.mark.asyncio
+async def test_pull_request_heads_replay_through_a_brief_lock(
+    client, test_token, test_user, db_session, locked_commits, monkeypatch
+):
+    """after_api_commit's head update commits through the shared retry."""
+    from sqlalchemy import select
+
+    from app.models.pull_request import PullRequest
+    from app.models.repository import Repository
+    from app.services import api_push, workflow_service
+
+    name, head = await _repo(client, test_token, "lock-pr-heads")
+    h = auth_headers(test_token)
+    url = f"{API}/repos/testuser/{name}"
+    assert (await client.post(f"{url}/git/refs", json={"ref": "refs/heads/topic", "sha": head}, headers=h)).status_code == 201
+    body = {"message": "t", "content": base64.b64encode(b"t\n").decode(), "branch": "topic"}
+    moved = (await client.put(f"{url}/contents/t.txt", json=body, headers=h)).json()["commit"]["sha"]
+    pr = await client.post(f"{url}/pulls", json={"title": "p", "head": "topic", "base": "main"}, headers=h)
+    assert pr.status_code == 201, pr.text
+
+    async def no_push_event(*_args, **_kwargs):
+        return None
+
+    monkeypatch.setattr(workflow_service, "process_push_event", no_push_event)
+    repository = (await db_session.execute(select(Repository).where(Repository.name == name))).scalar_one()
+    repo_id = repository.id
+    row = (await db_session.execute(select(PullRequest).where(PullRequest.repo_id == repository.id))).scalar_one()
+    row.head_sha = head
+    await db_session.commit()
+
+    locked_commits.update(fail=1, armed=True)
+    await api_push.after_api_commit(db_session, repository, test_user, "topic", head, moved)
+    locked_commits["armed"] = False
+    db_session.expire_all()
+    row = (await db_session.execute(select(PullRequest).where(PullRequest.repo_id == repo_id))).scalar_one()
+    assert row.head_sha == moved
