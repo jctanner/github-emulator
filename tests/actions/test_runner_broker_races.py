@@ -9,9 +9,11 @@ receipt or freeing while an acknowledgement or report is in flight.
 
 import asyncio
 import json
+import sqlite3
 
 import pytest
-from sqlalchemy import delete, select, update
+from sqlalchemy import delete, event, select, update
+from sqlalchemy.orm import Session
 
 from app.api import actions_distributed_task as dt
 from app.models.actions import Runner, WorkflowJob
@@ -304,3 +306,119 @@ async def test_a_late_online_poll_keeps_the_cancellation_of_a_deleted_job(
     db_session.expire_all()
     runner = (await db_session.execute(select(Runner).where(Runner.id == runner_id))).scalar_one()
     assert not runner.busy
+
+
+@pytest.mark.asyncio
+async def test_a_cancellation_committed_while_an_online_poll_settles_is_sent(
+    client, db_session, test_user, test_token, tmp_path
+):
+    await _workflow(client, db_session, test_user, test_token, jobs=1)
+    runner_id, headers, session_id = await _runner(client, test_token)
+    job_id = await _take_job(client, headers, session_id)
+    cancelled = []
+
+    def cancel_before_the_in_progress_query(state):
+        # The poll has read the held job (not cancelled yet); the
+        # cancellation commits, on its own connection, just before the poll
+        # lists the runner's in-progress jobs.
+        where = str(state.statement).partition("WHERE")[2]
+        if cancelled or not state.is_select or "workflow_jobs.status =" not in where \
+                or "workflow_jobs.runner_id =" not in where:
+            return
+        cancelled.append(job_id)
+        with sqlite3.connect(tmp_path / "test.db", timeout=5) as conn:
+            conn.execute(
+                "UPDATE workflow_jobs SET status = 'completed', conclusion = 'cancelled' WHERE id = ?", (job_id,)
+            )
+
+    event.listen(Session, "do_orm_execute", cancel_before_the_in_progress_query)
+    try:
+        resp = await _poll(client, headers, session_id, job_id, "Online")
+    finally:
+        event.remove(Session, "do_orm_execute", cancel_before_the_in_progress_query)
+
+    assert cancelled == [job_id]
+    assert resp.status_code == 200
+    assert resp.json()["messageType"] == "JobCancellation"
+    assert json.loads(resp.json()["body"])["jobId"] == dt._workflow_guid("job", job_id)
+    db_session.expire_all()
+    runner = (await db_session.execute(select(Runner).where(Runner.id == runner_id))).scalar_one()
+    assert runner.busy
+
+
+@pytest.mark.asyncio
+async def test_an_older_poll_that_initialises_last_does_not_replace_the_newer_one(
+    client, db_session, test_user, test_token, monkeypatch
+):
+    monkeypatch.setattr(dt, "_POLL_SECONDS", 3.0)
+    await _workflow(client, db_session, test_user, test_token, jobs=1)
+    runner_id, headers, session_id = await _runner(client, test_token)
+    # No job to hand out until both polls are set up.
+    await db_session.execute(update(WorkflowJob).values(status="waiting"))
+    await db_session.commit()
+
+    lookup = dt._get_runner_from_token
+    release_older = asyncio.Event()
+    lookups = []
+
+    async def older_poll_lookup_delayed(request, db):
+        lookups.append(request.url.path)
+        if len(lookups) == 1:
+            await release_older.wait()
+        return await lookup(request, db)
+
+    monkeypatch.setattr(dt, "_get_runner_from_token", older_poll_lookup_delayed)
+    older = asyncio.create_task(_poll(client, headers, session_id, 0))
+    while not lookups:
+        await asyncio.sleep(0.01)
+    newer = asyncio.create_task(_poll(client, headers, session_id, 0))
+    # The newer poll initialises first and is waiting for a job ...
+    for _ in range(100):
+        if runner_id in dt._poll_generation:
+            break
+        await asyncio.sleep(0.01)
+    assert runner_id in dt._poll_generation
+    # ... then the older one, delayed in its token lookup, catches up.
+    release_older.set()
+    await asyncio.sleep(0.1)
+    await db_session.execute(update(WorkflowJob).values(status="queued"))
+    await db_session.commit()
+
+    older_resp, newer_resp = await asyncio.gather(older, newer)
+    assert older_resp.status_code == 204
+    assert newer_resp.status_code == 200
+    assert newer_resp.json()["messageType"] == "PipelineAgentJobRequest"
+
+
+@pytest.mark.asyncio
+async def test_a_report_that_waited_on_the_lock_does_not_end_a_job_its_runner_lost(
+    client, db_session, test_user, test_token
+):
+    await _workflow(client, db_session, test_user, test_token, jobs=1)
+    runner_id, headers, session_id = await _runner(client, test_token)
+    job_id = await _take_job(client, headers, session_id)
+
+    # The report passes the ownership check, then waits for the runner's
+    # lock; meanwhile the job is requeued off the runner.
+    lock = dt._runner_lock(runner_id)
+    await lock.acquire()
+    report = asyncio.create_task(client.patch(
+        f"/_apis/distributedtask/pools/1/jobrequests/{job_id}",
+        json={"result": "succeeded"}, headers=headers,
+    ))
+    try:
+        await asyncio.sleep(0.2)
+        assert not report.done()
+        await db_session.execute(update(WorkflowJob).where(WorkflowJob.id == job_id).values(
+            status="queued", runner_id=None, runner_name=None, started_at=None,
+        ))
+        await db_session.commit()
+    finally:
+        lock.release()
+    resp = await report
+    assert resp.status_code == 404
+    assert resp.json()["typeKey"] == "TaskAgentJobNotFoundException"
+
+    db_session.expire_all()
+    job = (await db_session.execute(select(WorkflowJob).where(WorkflowJob.id == job_id))).scalar_one()
+    assert (job.status, job.conclusion, job.runner_id) == ("queued", None, None)

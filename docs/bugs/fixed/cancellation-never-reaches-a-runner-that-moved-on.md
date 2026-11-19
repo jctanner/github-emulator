@@ -24,6 +24,11 @@ but its runner never got `JobCancellation`. Two causes:
   another job (held in memory, or in progress on it in the database).
 - Each pass of the long poll ends its transaction, and the cancellation
   check reads the job fresh.
+- An `Online` poll frees a runner that holds a job only through one
+  conditional write that re-reads the held job's conclusion. A
+  cancellation that commits while the poll settles (after it read the
+  job, before it listed the in-progress jobs) keeps the runner busy, and
+  the cancellation goes out.
 
 Tests: `tests/actions/test_runner_cancel_delivery.py`.
 
@@ -32,3 +37,5 @@ Tests: `tests/actions/test_runner_cancel_delivery.py`.
 - A late report of the previous job leaves the runner busy with its new
   job.
 - The report of the job the runner holds still frees it.
+- `tests/actions/test_runner_broker_races.py`: a cancellation committed
+  while an `Online` poll settles is still sent.

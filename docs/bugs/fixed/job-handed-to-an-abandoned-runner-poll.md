@@ -23,10 +23,15 @@ although the runner never saw it.
 
 ## Fix
 
-- Each poll takes a generation number. Only a runner's newest poll may
-  hand out a job. The claim and the settling of the runner's state run
-  under a per-runner lock, so an old poll cannot claim between a new
-  poll's start and its settling.
+- Each poll takes a generation number: its arrival order, taken before
+  the poll's first await. An older poll delayed in its token lookup or
+  heartbeat commit therefore cannot outrank a newer one. Only a runner's
+  newest poll may hand out a job. The claim and the settling of the
+  runner's state run under a per-runner lock, so an old poll cannot
+  claim between a new poll's start and its settling.
+- A job report checks again, once it holds the lock, that the job is
+  still the runner's: a requeue (or another runner's claim) can commit
+  while the report waits.
 - The runner sends `lastMessageId` on every poll and acknowledges each job
   message (`DELETE` of the message) once it has dispatched the job. A job
   the runner holds per the database that it neither acknowledged nor named
@@ -66,7 +71,10 @@ Tests: `tests/actions/test_runner_lost_handout.py`.
 - `tests/actions/test_runner_broker_races.py`: a superseded poll hands out
   nothing; a runner an older poll made busy gets no second job; an
   acknowledgement and a report wait for the runner's lock. A poll replaced
-  while it claims gives the job back and frees the runner.
+  while it claims gives the job back and frees the runner. An older poll
+  that finishes setting up after a newer one returns nothing. A report
+  that waited on the lock while its job was requeued answers
+  `TaskAgentJobNotFoundException` and changes nothing.
 - Stress: 4 runners, 12 jobs, half the polls abandoned with the server
   left to answer them. Every job reaches a live poll exactly once and
   completes.
