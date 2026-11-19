@@ -225,3 +225,32 @@ def test_the_emulator_runner_finishes_relational_join_and_negation():
     assert render(steps[0]["run"], {}, {}) == "echo a,b"
     assert render(steps[0]["env"]["BIG"], {}, {}) == "true"
     assert render(steps[0]["env"]["NOT"], {}, {}) == "false"
+
+
+def test_a_server_resolved_value_holding_an_expression_stays_text_on_the_runner():
+    title = "x ${{ github.token }} y"
+    context = {**CONTEXT, "github": {**CONTEXT["github"], "event": {"issue": {"title": title}}}}
+    steps = build_steps_data(
+        [{"run": "echo \"${{ format('[{0}]', github.event.issue.title) }}\"",
+          "env": {"TITLE": "${{ github.event.issue.title }}", "PLAIN": "${{ github.repository }}"}}],
+        {}, context,
+    )
+    step = steps[0]
+    assert step["env"]["PLAIN"] == "o/r"  # values without an expression are unchanged
+    render = _emulator_runner()._render_local_action
+    for value, expected in ((step["env"]["TITLE"], title), (step["run"], f'echo "[{title}]"')):
+        rendered = render(value, {}, {}, github_token="SENTINEL-TOKEN")
+        assert rendered == expected
+        assert "SENTINEL-TOKEN" not in rendered
+
+
+def test_the_emulator_runner_reads_accessors_and_compares_like_actions():
+    context = {**CONTEXT, "inputs": {"data": '{"ok": "yes"}', "mode": "prod"}}
+    steps = build_steps_data(
+        [{"run": "echo ${{ github.workspace && fromJSON(inputs.data).ok }}",
+          "env": {"PROD": "${{ github.workspace != '' && inputs.mode == 'PROD' }}"}}],
+        {}, context,
+    )
+    render = _emulator_runner()._render_local_action
+    assert render(steps[0]["run"], {}, {}) == "echo yes"
+    assert render(steps[0]["env"]["PROD"], {}, {}) == "true"

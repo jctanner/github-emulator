@@ -51,6 +51,10 @@ Two authentication answers differed as well:
   never end the expression it is bound into.
 - `working-directory` and `shell` are left for the runner the same way as
   `run`.
+- In `run:`, `with:`, `env:`, `working-directory` and `shell`, which the runner
+  renders again, a value the server resolved that holds `${{` (an issue title,
+  say) is sent as an expression that yields the text itself, so the runner
+  never evaluates it.
 - Index notation (`github['workspace']`) is recognised like dot notation and
   sent to the runner in dot form.
 - A `'...'` literal's only escape is a doubled quote, as in Actions, in the
@@ -59,8 +63,9 @@ Two authentication answers differed as well:
   value may end in a backslash.
 - The emulator's own runner finishes what the server leaves: it reads `''`
   inside a string, writes a false result as `false`, knows `job.status`, has
-  `fromJSON`, `toJSON` and `join`, the `<`, `>`, `<=` and `>=` operators and
-  a leading `!`, and gives `github.env`, `github.output`,
+  `fromJSON`, `toJSON` and `join`, the `<`, `>`, `<=` and `>=` operators, a
+  leading `!`, `.name` and `[index]` after a call, and compares with `==` as
+  Actions does (strings case-insensitively), and gives `github.env`, `github.output`,
   `github.path` and `github.event_path` their file paths.
 - `GET /installation/repositories` with a job token lists the run's
   repository with `repository_selection: selected`. A personal access token

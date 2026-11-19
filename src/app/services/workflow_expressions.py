@@ -848,6 +848,10 @@ def evaluate_expression_value(value: object, context: dict) -> object:
     return render_expressions(value, context)
 
 
+# Marks an expression render_expressions leaves for the runner on purpose.
+_DEFERRED = "\x00deferred\x00"
+
+
 def render_expressions(
     value: object, context: dict, resolve_steps: bool = False, for_runner: bool = False,
 ) -> object:
@@ -863,21 +867,32 @@ def render_expressions(
     """
     if isinstance(value, str):
         def replace(match):
+            text = resolve(match)
+            if text.startswith(_DEFERRED):
+                return text[len(_DEFERRED):]
+            if for_runner and "${{" in text:
+                # The runner renders this value again, so text the server
+                # resolved (an issue title, say) must not hold an expression:
+                # it goes as an expression that yields the text itself.
+                return "${{ " + _json_literal(text) + " }}"
+            return text
+
+        def resolve(match):
             expression = match.group(1).strip()
             if for_runner and _RUNNER_FILLED_RE.search(expression):
-                return "${{ " + bind_server_context(_runner_index_to_dot(expression), context) + " }}"
+                return _DEFERRED + "${{ " + bind_server_context(_runner_index_to_dot(expression), context) + " }}"
             # Step outputs only exist after a prior step has run. Preserve the
             # expression for the runner's runtime renderer.
             if expression == "github.token":
-                return match.group(0)
+                return _DEFERRED + match.group(0)
             if expression.startswith("steps.") and not resolve_steps:
-                return match.group(0)
+                return _DEFERRED + match.group(0)
             # The runner context describes the machine a job lands on, so
             # only the runner can resolve it. Rendering it here produced an
             # empty string: ``${{ runner.temp }}/fullsend-cache`` reached the
             # runner as ``/fullsend-cache`` and actions/cache saved nothing.
             if _RUNNER_CONTEXT_RE.search(expression):
-                return match.group(0)
+                return _DEFERRED + match.group(0)
             # Anything with an operator, a literal, or a call needs the real
             # parser. A job's ``outputs:`` routinely combines several step
             # outputs, as in

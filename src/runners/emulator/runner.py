@@ -541,7 +541,7 @@ class _StepIfParser:
     """Evaluate the small Actions expression subset needed by the runner."""
 
     _TOKEN_RE = re.compile(
-        r"(?P<space>\s+)|(?P<op>\|\||&&|==|!=|<=|>=|[!(),<>])|"
+        r"(?P<space>\s+)|(?P<op>\|\||&&|==|!=|<=|>=|[!(),<>\[\].])|"
         r"(?P<string>'(?:''|[^'])*'|\"(?:\\.|[^\"])*\")|"
         r"(?P<number>\d+(?:\.\d+)?)|(?P<name>[A-Za-z_][A-Za-z0-9_.-]*)"
     )
@@ -624,7 +624,7 @@ class _StepIfParser:
         if self._peek("==") or self._peek("!="):
             operator = self._take()[1]
             right = self._parse_primary()
-            equal = left == right
+            equal = _loose_equal(left, right)
             return equal if operator == "==" else not equal
         for operator in ("<=", ">=", "<", ">"):
             if self._peek(operator):
@@ -637,7 +637,7 @@ class _StepIfParser:
             self._take("(")
             value = self._parse_or()
             self._take(")")
-            return value
+            return self._parse_accessors(value)
 
         kind, token = self._take()
         if kind == "string":
@@ -661,14 +661,39 @@ class _StepIfParser:
                     self._take(",")
                     arguments.append(self._parse_or())
             self._take(")")
-            return self._call(token, arguments)
+            return self._parse_accessors(self._call(token, arguments))
         if token == "true":
             return True
         if token == "false":
             return False
         if token == "null":
             return None
-        return _lookup_context_path(self.context, token)
+        return self._parse_accessors(_lookup_context_path(self.context, token))
+
+    def _parse_accessors(self, value):
+        """``.name`` and ``[index]`` after a value, e.g. ``fromJSON(x).ok``.
+        A missing property is null, as in Actions."""
+        while True:
+            if self._peek("."):
+                self._take(".")
+                kind, name = self._take()
+                if kind != "name":
+                    raise ValueError("expected a property name")
+                for part in name.split("."):
+                    value = value.get(part) if isinstance(value, dict) else None
+            elif self._peek("["):
+                self._take("[")
+                key = self._parse_or()
+                self._take("]")
+                if isinstance(value, list) and isinstance(key, (int, float)) and not isinstance(key, bool):
+                    index = int(key)
+                    value = value[index] if 0 <= index < len(value) else None
+                elif isinstance(value, dict):
+                    value = value.get(str(key))
+                else:
+                    value = None
+            else:
+                return value
 
     def _call(self, name, arguments):
         # Status functions. Without these a workflow cannot express "run this
@@ -739,6 +764,20 @@ def _expression_number(value) -> float:
         except ValueError:
             return float("nan")
     return float("nan")
+
+
+def _loose_equal(left, right) -> bool:
+    """Actions' ==: strings case-insensitively; values of different types as
+    numbers (so null == '' and 1 == '1'); arrays and objects only to
+    themselves."""
+    if isinstance(left, (list, dict)) or isinstance(right, (list, dict)):
+        return left is right
+    if isinstance(left, str) and isinstance(right, str):
+        return left.lower() == right.lower()
+    if type(left) is type(right) and left is not None and not isinstance(left, (int, float)):
+        return left == right
+    a, b = _expression_number(left), _expression_number(right)
+    return a == b
 
 
 def _relational(operator: str, left, right) -> bool:
