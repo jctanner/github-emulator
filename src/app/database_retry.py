@@ -34,6 +34,7 @@ async def commit_with_sqlite_retry(
     *,
     label: str,
     before_retry: Callable[[], Any | Awaitable[Any]] | None = None,
+    before_commit: Callable[[], Any | Awaitable[Any]] | None = None,
 ) -> None:
     """Commit a replayable write transaction with bounded SQLite-lock retry.
 
@@ -45,6 +46,11 @@ async def commit_with_sqlite_retry(
     once that much time has passed: a lock that stays held answers 503 after
     about one to two busy timeouts, not one per attempt. Lock errors that come
     back at once (a snapshot conflict) still get every attempt.
+
+    ``before_commit`` runs inside each attempt, before the commit, so a lock
+    error it meets is retried like one from the commit. A caller that stages
+    its changes there passes ``before_retry`` only to reload what the
+    rollback expired.
     """
     attempts = max(1, settings.SQLITE_WRITE_RETRY_ATTEMPTS)
     delay = max(0, settings.SQLITE_WRITE_RETRY_DELAY_MS) / 1000
@@ -53,6 +59,10 @@ async def commit_with_sqlite_retry(
 
     for attempt in range(1, attempts + 1):
         try:
+            if before_commit is not None:
+                result = before_commit()
+                if asyncio.iscoroutine(result):
+                    await result
             await db.commit()
             return
         except OperationalError as exc:
@@ -78,7 +88,7 @@ async def commit_with_sqlite_retry(
                 result = before_retry()
                 if asyncio.iscoroutine(result):
                     await result
-            else:
+            elif before_commit is None:
                 raise RetryableDatabaseError(
                     "Database was busy and the write cannot be replayed safely"
                 ) from exc

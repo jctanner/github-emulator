@@ -1,6 +1,7 @@
 """Git operations service for managing bare repositories."""
 
 import asyncio
+import logging
 import os
 import shutil
 from typing import Optional
@@ -203,3 +204,41 @@ async def _run_git(
     )
     stdout, stderr = await proc.communicate()
     return stdout.decode(), stderr.decode()
+
+
+def full_ref(branch: str) -> str:
+    """A branch name (``main``) or a full ``refs/...`` name, as a full ref."""
+    return branch if branch.startswith("refs/") else f"refs/heads/{branch}"
+
+
+async def ref_sha(disk_path: str, ref: str) -> Optional[str]:
+    """The sha ``ref`` points at, or None if it does not exist."""
+    proc = await asyncio.create_subprocess_exec(
+        "git", "rev-parse", "--verify", "--quiet", ref, cwd=disk_path,
+        stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.DEVNULL,
+    )
+    stdout, _ = await proc.communicate()
+    if proc.returncode != 0:
+        return None
+    return stdout.decode().strip() or None
+
+
+async def move_ref_back(disk_path: str, ref: str, before: Optional[str], after: str) -> bool:
+    """Put ``ref`` back to ``before`` (or delete it), only while it is at ``after``.
+
+    Returns whether git moved it; a failure (usually another writer moved
+    the ref since, so the change stays) is logged with git's message.
+    """
+    args = ["update-ref", ref, before, after] if before else ["update-ref", "-d", ref, after]
+    proc = await asyncio.create_subprocess_exec(
+        "git", *args, cwd=disk_path,
+        stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.PIPE,
+    )
+    _, stderr = await proc.communicate()
+    if proc.returncode != 0:
+        logging.getLogger("github_emulator.database").warning(
+            "Could not move %s back from %s to %s: %s",
+            ref, after, before or "(deleted)", stderr.decode(errors="replace").strip(),
+        )
+        return False
+    return True

@@ -39,12 +39,18 @@ same file, used by the git/refs routes, both:
    stages it again after a rollback. Retries stop once a busy timeout's
    worth of time has passed. Auto-merge re-evaluation runs after the
    git/refs write is committed, outside the replay.
-2. A replay records the ref, and moves open pull requests' heads, only
-   while the ref on disk is still at this request's sha. If another
-   writer moved it during the lock wait, that writer records its own
-   value, and the replay does not write an older sha over it. The pull
-   request head update after a contents commit goes through the same
-   retry and rule.
+2. Never record an older sha over a newer one. Each attempt, the first
+   included, takes the repository's write lock (a no-op UPDATE of its
+   row) and only then reads the ref (`commit_if_ref_unmoved` in
+   `branch_service.py`). A writer that moved the ref later has either
+   committed already (the ref has moved, so this request stages nothing)
+   or waits for this commit and writes over it. The branch record, the
+   git/refs record and the open pull requests' heads all go through it.
+   An API commit the branch has moved past still raises its push
+   activity, but leaves the heads (and their synchronize activity) to the
+   newer push. If the heads' own update meets a lock that persists, the
+   already committed write still answers 200 and the heads wait for the
+   next push; that is logged.
 3. If the lock persists, move the ref back before answering 503, so a
    retry finds the repository as it was. This happens only while the ref
    is still at the new commit: a ref another writer has moved since keeps

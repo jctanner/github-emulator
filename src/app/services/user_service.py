@@ -1,5 +1,6 @@
 """User management service."""
 
+from collections.abc import Iterable
 from typing import Optional
 
 from sqlalchemy import func, select
@@ -142,7 +143,7 @@ async def create_token(
     return pat, raw_token
 
 
-async def public_repo_counts(db, user_ids) -> dict[int, int]:
+async def public_repo_counts(db: AsyncSession, user_ids: Iterable[int]) -> dict[int, int]:
     """Each user's public repositories, by user id, in one query."""
     ids = list(user_ids)
     if not ids:

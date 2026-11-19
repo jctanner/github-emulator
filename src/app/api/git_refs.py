@@ -244,7 +244,7 @@ async def create_ref(
         raise HTTPException(status_code=422, detail=str(e)) from None
 
     await replay_ref_record(
-        db, repository.disk_path, ref, before, sha,
+        db, repository.id, repository.disk_path, ref, before, sha,
         lambda: _stage_branch_change(db, repository, ref, sha, user),
         refresh=(repository, user),
     )
@@ -293,7 +293,7 @@ async def update_ref(
         raise HTTPException(status_code=422, detail=str(e)) from None
 
     await replay_ref_record(
-        db, repository.disk_path, full_ref, old_sha, sha,
+        db, repository.id, repository.disk_path, full_ref, old_sha, sha,
         lambda: _stage_branch_change(db, repository, full_ref, sha, user),
         refresh=(repository, user),
     )

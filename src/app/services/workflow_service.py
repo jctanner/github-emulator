@@ -2187,8 +2187,14 @@ async def process_push_event(
     created: bool = False,
     deleted: bool = False,
     forced: bool = False,
+    update_heads: bool = True,
 ) -> list[WorkflowRun]:
-    """Dispatch a push and any matching pull-request synchronizations."""
+    """Dispatch a push and any matching pull-request synchronizations.
+
+    ``update_heads=False`` raises the push itself (webhooks and push
+    workflows) but leaves the pull requests' heads, and their synchronize
+    activity, to the push that moved the branch since.
+    """
     if not repository.disk_path:
         return []
     user = user or repository.owner
@@ -2252,7 +2258,7 @@ async def process_push_event(
 
     # A deleted head ref cannot synchronize an open PR; the push event is the
     # only event generated for that ref update.
-    if deleted:
+    if deleted or not update_heads:
         return runs
 
     # A push to a pull request's head branch is the source of the

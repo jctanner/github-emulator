@@ -6,6 +6,8 @@ from typing import Any, Optional
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 
+logger = logging.getLogger("github_emulator")
+
 DOCS_URL = "https://docs.github.com/rest"
 
 
@@ -193,7 +195,7 @@ async def stale_row_handler(request: Request, exc: Exception) -> JSONResponse:
     runner reports the end of a job there. The resource is gone, so 404,
     not 500.
     """
-    logging.getLogger("github_emulator").info(
+    logger.info(
         "%s %s updated a row another request deleted: %s", request.method,
         request.url.path.encode("unicode_escape").decode("ascii"), exc
     )

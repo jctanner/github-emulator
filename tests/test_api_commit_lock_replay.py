@@ -39,7 +39,10 @@ def locked_commits(monkeypatch):
 
     async def commit(self):
         wrote = self.dirty or self.new or self.deleted or self.sync_session.info.get("wrote")
-        if state["armed"] and state["fail"] > 0 and wrote:
+        if state["armed"] and state.get("skip", 0) > 0 and wrote:
+            # Let this many writing commits through first.
+            state["skip"] -= 1
+        elif state["armed"] and state["fail"] > 0 and wrote:
             state["fail"] -= 1
             # What another request does while this one waits on the lock.
             on_fail = state.pop("on_fail", None)
@@ -225,7 +228,7 @@ async def test_create_ref_shorthand_lock_that_persists_removes_the_ref(client, t
     gone = await client.get(f"{API}/repos/testuser/{name}/git/ref/heads/short", headers=auth_headers(test_token))
     assert gone.status_code == 404
     # Nothing is left on disk under either spelling.
-    from app.services.branch_service import ref_sha
+    from app.services.git_service import ref_sha
 
     disk_path, _ = await _branch_row_sha(db_session, name, "short")
     assert await ref_sha(disk_path, "heads/short") is None
@@ -349,3 +352,86 @@ async def test_a_failed_push_event_still_answers_the_api_commit(client, test_tok
     assert resp.status_code == 200, resp.text
     pull = (await client.get(f"{url}/pulls/{number}", headers=auth_headers(test_token))).json()
     assert pull["head"]["sha"] == resp.json()["commit"]["sha"]
+
+
+@pytest.mark.asyncio
+async def test_a_lock_on_the_head_update_does_not_fail_the_committed_write(
+    client, test_token, db_session, locked_commits, monkeypatch
+):
+    """The contents commit and branch record are in; a lock that persists on
+    the pull request heads afterwards leaves them stale but answers 200."""
+    from sqlalchemy import select
+
+    from app.models.pull_request import PullRequest
+    from app.services import workflow_service
+
+    name, head = await _repo(client, test_token, "lock-heads-exhausted")
+    url, first, _number = await _open_pull_request(client, test_token, name, head)
+
+    async def no_push_event(*_args, **_kwargs):
+        return None
+
+    monkeypatch.setattr(workflow_service, "process_push_event", no_push_event)
+    sha = (await client.get(f"{url}/contents/t.txt?ref=topic", headers=auth_headers(test_token))).json()["sha"]
+    body = {"message": "w", "content": base64.b64encode(b"w\n").decode(), "branch": "topic", "sha": sha}
+    locked_commits.update(skip=1, fail=99, armed=True)
+    resp = await client.put(f"{url}/contents/t.txt", json=body, headers=auth_headers(test_token))
+    locked_commits["armed"] = False
+    assert resp.status_code == 200, resp.text
+    moved = resp.json()["commit"]["sha"]
+
+    _, recorded = await _branch_row_sha(db_session, name, "topic")
+    assert recorded == moved
+    db_session.expire_all()
+    head_sha = (await db_session.execute(select(PullRequest.head_sha).where(PullRequest.head_ref == "topic"))).scalar_one()
+    assert head_sha == first
+
+
+@pytest.mark.asyncio
+async def test_a_ref_moved_before_the_first_attempt_is_not_recorded(client, test_token, db_session):
+    """No lock error needed: a writer that moved the ref and recorded it first keeps its value."""
+    from sqlalchemy import select
+
+    from app.models.repository import Repository
+    from app.services.branch_service import commit_if_ref_unmoved
+
+    name, head = await _repo(client, test_token, "unmoved-first")
+    # Another writer moves main on from ``head``.
+    assert (await _put(client, test_token, name, text=b"one\n")).status_code in (200, 201)
+    repository = (await db_session.execute(select(Repository).where(Repository.name == name))).scalar_one()
+    # This request moved main to ``head``; another moved it on and
+    # recorded that before this request's first database attempt.
+    staged = []
+
+    async def stage():
+        staged.append(True)
+
+    committed = await commit_if_ref_unmoved(
+        db_session, repository_id=repository.id, disk_path=repository.disk_path, ref="main",
+        after=head, stage=stage, label="test",
+    )
+    assert committed is False and staged == []
+
+
+@pytest.mark.asyncio
+async def test_an_obsolete_commit_still_raises_its_push(client, test_token, test_user, db_session, monkeypatch):
+    """The push event is the commit's own; only the pull request heads are left to the newer push."""
+    from sqlalchemy import select
+
+    from app.models.repository import Repository
+    from app.services import api_push, workflow_service
+
+    name, head = await _repo(client, test_token, "obsolete-push")
+    first = (await _put(client, test_token, name, text=b"one\n")).json()["commit"]["sha"]
+    calls = []
+
+    async def recording(*_args, **kwargs):
+        calls.append(kwargs)
+
+    monkeypatch.setattr(workflow_service, "process_push_event", recording)
+    repository = (await db_session.execute(select(Repository).where(Repository.name == name))).scalar_one()
+    # main is at ``first``; report the older move head~ -> head as this request's.
+    await api_push.after_api_commit(db_session, repository, test_user, "main", None, head)
+    assert len(calls) == 1
+    assert calls[0]["after_sha"] == head and calls[0]["update_heads"] is False
+    assert first != head
