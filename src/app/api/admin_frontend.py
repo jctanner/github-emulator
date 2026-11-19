@@ -5,10 +5,11 @@ import secrets
 from fastapi import APIRouter, HTTPException, Response
 from sqlalchemy import func, select
 
-from app.api.deps import AuthUser, DbSession
 from app.api.actions_runners import (
-    _delete_runner_and_detach_history, _effective_status,
+    _delete_runner_and_detach_history,
+    _effective_status,
 )
+from app.api.deps import AuthUser, DbSession
 from app.models.actions import Runner, Workflow, WorkflowJob, WorkflowRun
 from app.models.import_job import ImportJob
 from app.models.issue import Issue
@@ -18,19 +19,24 @@ from app.models.repository import Repository
 from app.models.token import PersonalAccessToken
 from app.models.user import User
 from app.schemas.admin import (
+    AdminImportResponse,
+    AdminIssueResponse,
     AdminJobPage,
+    AdminOrganizationResponse,
+    AdminRepositoryResponse,
+    AdminRunnerResponse,
     AdminRunPage,
-    AdminActiveRunResponse,
-    AdminImportResponse, AdminIssueResponse, AdminOrganizationResponse, AdminRepositoryResponse,
-    AdminRunnerResponse, AdminSummaryResponse, AdminTokenCreatedResponse,
-    AdminTokenResponse, AdminUserResponse,
+    AdminSummaryResponse,
+    AdminTokenCreatedResponse,
+    AdminTokenResponse,
+    AdminUserResponse,
 )
 from app.schemas.user import _fmt_dt
+from app.services import org_service
 from app.services.auth_service import hash_password
+from app.services.import_service import start_single_import
 from app.services.repo_service import delete_repo
 from app.services.user_service import create_token, create_user
-from app.services.import_service import start_single_import
-from app.services import org_service
 from app.services.workflow_scheduler import cancel_workflow_run
 
 router = APIRouter(prefix="/admin/api", tags=["admin-frontend"])
@@ -132,7 +138,9 @@ async def _resolve_import_destination(db: DbSession, user: User, body: dict) -> 
         return new_user.id, "User", None
     if create_as == "Organization":
         new_org = Organization(login=owner_login)
-        db.add(new_org); await db.commit(); await db.refresh(new_org)
+        db.add(new_org)
+        await db.commit()
+        await db.refresh(new_org)
         return user.id, "Organization", new_org.login
 
     raise HTTPException(status_code=422, detail=f"Unknown user or organization '{owner_login}'")
@@ -141,9 +149,11 @@ async def _resolve_import_destination(db: DbSession, user: User, body: dict) -> 
 @router.get("/summary", response_model=AdminSummaryResponse)
 async def summary(user: AuthUser, db: DbSession):
     _require_admin(user)
-    async def count(model):
-        return (await db.execute(select(func.count()).select_from(model))).scalar() or 0
-    return {"users": await count(User), "organizations": await count(Organization), "repositories": await count(Repository), "issues": await count(Issue), "workflow_runs": await count(WorkflowRun), "runners": await count(Runner), "imports": await count(ImportJob)}
+    async def count(model, *where):
+        return (await db.execute(select(func.count()).select_from(model).where(*where))).scalar() or 0
+    # Remove-only credentials (config.sh remove's) are not runners.
+    runners = await count(Runner, Runner.remove_only.is_not(True))
+    return {"users": await count(User), "organizations": await count(Organization), "repositories": await count(Repository), "issues": await count(Issue), "workflow_runs": await count(WorkflowRun), "runners": runners, "imports": await count(ImportJob)}
 
 
 @router.get("/users", response_model=list[AdminUserResponse])
@@ -166,21 +176,29 @@ async def add_user(body: dict, user: AuthUser, db: DbSession):
 async def edit_user(user_id: int, body: dict, user: AuthUser, db: DbSession):
     _require_admin(user)
     value = (await db.execute(select(User).where(User.id == user_id))).scalar_one_or_none()
-    if value is None: raise HTTPException(status_code=404, detail="Not Found")
+    if value is None:
+        raise HTTPException(status_code=404, detail="Not Found")
     for name in ("name", "email", "site_admin"):
-        if name in body: setattr(value, name, body[name])
-    if body.get("password"): value.hashed_password = hash_password(body["password"])
-    await db.commit(); await db.refresh(value)
+        if name in body:
+            setattr(value, name, body[name])
+    if body.get("password"):
+        value.hashed_password = hash_password(body["password"])
+    await db.commit()
+    await db.refresh(value)
     return _user(value)
 
 
 @router.delete("/users/{user_id}", status_code=204)
 async def remove_user(user_id: int, user: AuthUser, db: DbSession):
     _require_admin(user)
-    if user_id == user.id: raise HTTPException(status_code=409, detail="cannot delete current user")
+    if user_id == user.id:
+        raise HTTPException(status_code=409, detail="cannot delete current user")
     value = (await db.execute(select(User).where(User.id == user_id))).scalar_one_or_none()
-    if value is None: raise HTTPException(status_code=404, detail="Not Found")
-    await db.delete(value); await db.commit(); return Response(status_code=204)
+    if value is None:
+        raise HTTPException(status_code=404, detail="Not Found")
+    await db.delete(value)
+    await db.commit()
+    return Response(status_code=204)
 
 
 @router.get("/organizations", response_model=list[AdminOrganizationResponse])
@@ -193,7 +211,8 @@ async def organizations(user: AuthUser, db: DbSession):
 async def add_organization(body: dict, user: AuthUser, db: DbSession):
     _require_admin(user)
     login = str(body.get("login") or "").strip()
-    if not login: raise HTTPException(status_code=422, detail="login is required")
+    if not login:
+        raise HTTPException(status_code=422, detail="login is required")
     if (await db.execute(select(Organization).where(Organization.login == login))).scalar_one_or_none():
         raise HTTPException(status_code=409, detail="login already exists")
     # The owner is the named `admin` user, else the calling site admin, so a
@@ -201,7 +220,8 @@ async def add_organization(body: dict, user: AuthUser, db: DbSession):
     owner = user
     if body.get("admin"):
         owner = await org_service.find_user(db, str(body["admin"]).strip())
-        if owner is None: raise HTTPException(status_code=422, detail="admin user does not exist")
+        if owner is None:
+            raise HTTPException(status_code=422, detail="admin user does not exist")
     value = await org_service.create_organization(
         db, login, owner, name=body.get("name"), description=body.get("description"), email=body.get("email"),
     )
@@ -212,23 +232,29 @@ async def add_organization(body: dict, user: AuthUser, db: DbSession):
 async def edit_org(org_id: int, body: dict, user: AuthUser, db: DbSession):
     _require_admin(user)
     value = (await db.execute(select(Organization).where(Organization.id == org_id))).scalar_one_or_none()
-    if value is None: raise HTTPException(status_code=404, detail="Not Found")
+    if value is None:
+        raise HTTPException(status_code=404, detail="Not Found")
     for name in ("name", "description", "email"):
-        if name in body: setattr(value, name, body[name])
-    await db.commit(); await db.refresh(value); return _org(value)
+        if name in body:
+            setattr(value, name, body[name])
+    await db.commit()
+    await db.refresh(value)
+    return _org(value)
 
 
 @router.delete("/organizations/{org_id}", status_code=204)
 async def remove_org(org_id: int, user: AuthUser, db: DbSession):
     _require_admin(user)
     value = (await db.execute(select(Organization).where(Organization.id == org_id))).scalar_one_or_none()
-    if value is None: raise HTTPException(status_code=404, detail="Not Found")
+    if value is None:
+        raise HTTPException(status_code=404, detail="Not Found")
     if (await db.execute(select(func.count(Repository.id)).where(Repository.organization_id == org_id))).scalar():
         raise HTTPException(status_code=409, detail="Organization still owns repositories")
     # Memberships and teams carry a non-null org_id with no cascade, so
     # deleting the organization alone nulled them and failed with 500 on
     # any organization anyone had ever joined. They go first.
     from sqlalchemy import delete as sql_delete
+
     from app.models.organization import OrgMembership, OrgRoleAssignment
     from app.models.team import Team
     await db.execute(sql_delete(OrgMembership).where(OrgMembership.org_id == org_id))
@@ -240,7 +266,9 @@ async def remove_org(org_id: int, user: AuthUser, db: DbSession):
     owned = select(OrgVariable.id).where(OrgVariable.org_id == org_id)
     await db.execute(sql_delete(OrgVariableRepository).where(OrgVariableRepository.org_variable_id.in_(owned)))
     await db.execute(sql_delete(OrgVariable).where(OrgVariable.org_id == org_id))
-    await db.delete(value); await db.commit(); return Response(status_code=204)
+    await db.delete(value)
+    await db.commit()
+    return Response(status_code=204)
 
 
 @router.get("/repositories", response_model=list[AdminRepositoryResponse])
@@ -253,8 +281,10 @@ async def repositories(user: AuthUser, db: DbSession):
 async def remove_repo(repo_id: int, user: AuthUser, db: DbSession):
     _require_admin(user)
     value = (await db.execute(select(Repository).where(Repository.id == repo_id))).scalar_one_or_none()
-    if value is None: raise HTTPException(status_code=404, detail="Not Found")
-    await delete_repo(db, value); return Response(status_code=204)
+    if value is None:
+        raise HTTPException(status_code=404, detail="Not Found")
+    await delete_repo(db, value)
+    return Response(status_code=204)
 
 
 @router.get("/tokens", response_model=list[AdminTokenResponse])
@@ -274,8 +304,11 @@ async def add_token(body: dict, user: AuthUser, db: DbSession):
 async def remove_token(token_id: int, user: AuthUser, db: DbSession):
     _require_admin(user)
     value = (await db.execute(select(PersonalAccessToken).where(PersonalAccessToken.id == token_id))).scalar_one_or_none()
-    if value is None: raise HTTPException(status_code=404, detail="Not Found")
-    await db.delete(value); await db.commit(); return Response(status_code=204)
+    if value is None:
+        raise HTTPException(status_code=404, detail="Not Found")
+    await db.delete(value)
+    await db.commit()
+    return Response(status_code=204)
 
 
 @router.get("/memory")
@@ -296,7 +329,9 @@ async def memory(user: AuthUser):
 @router.get("/runners", response_model=list[AdminRunnerResponse])
 async def runners(user: AuthUser, db: DbSession):
     _require_admin(user)
-    values = (await db.execute(select(Runner).order_by(Runner.id))).scalars().all()
+    values = (await db.execute(
+        select(Runner).where(Runner.remove_only.is_not(True)).order_by(Runner.id)
+    )).scalars().all()
     # Resolved in two queries rather than one per runner, and only for the ids
     # actually referenced.
     repo_ids = {r.repo_id for r in values if r.repo_id}
@@ -346,7 +381,8 @@ async def imports(user: AuthUser, db: DbSession):
 async def add_import(body: dict, user: AuthUser, db: DbSession):
     _require_admin(user)
     source = str(body.get("source_url") or "").strip()
-    if not source: raise HTTPException(status_code=422, detail="source_url is required")
+    if not source:
+        raise HTTPException(status_code=422, detail="source_url is required")
     owner_id, owner_type, org_login = await _resolve_import_destination(db, user, body)
     value = await start_single_import(db, source, owner_id, body.get("token"), owner_type, org_login)
     return _import(value)
@@ -356,7 +392,8 @@ async def add_import(body: dict, user: AuthUser, db: DbSession):
 async def import_job(job_id: int, user: AuthUser, db: DbSession):
     _require_admin(user)
     value = (await db.execute(select(ImportJob).where(ImportJob.id == job_id))).scalar_one_or_none()
-    if value is None: raise HTTPException(status_code=404, detail="Not Found")
+    if value is None:
+        raise HTTPException(status_code=404, detail="Not Found")
     return _import(value)
 
 

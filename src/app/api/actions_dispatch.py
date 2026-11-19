@@ -30,7 +30,7 @@ def _is_expired(value: datetime) -> bool:
 
 
 async def _get_runner_from_token(request: Request, db) -> Runner:
-    """Authenticate a runner by its bearer token."""
+    """Authenticate a runner by its bearer token (not a remove-only credential)."""
     auth = request.headers.get("Authorization", "")
     if not auth.startswith("Bearer "):
         raise HTTPException(status_code=401, detail="Runner token required")
@@ -40,7 +40,7 @@ async def _get_runner_from_token(request: Request, db) -> Runner:
         select(Runner).where(Runner.token_hash == token_hash)
     )
     runner = result.scalar_one_or_none()
-    if runner is None:
+    if runner is None or runner.remove_only:
         raise HTTPException(status_code=401, detail="Invalid runner token")
     return runner
 
@@ -98,6 +98,30 @@ async def _create_runner_from_registration(
     registration = reg or enterprise_reg
     if _is_expired(registration.expires_at):
         raise HTTPException(status_code=401, detail="Registration token expired")
+    if enterprise_reg is not None and enterprise_reg.for_remove and body.get("runner_event") != "remove":
+        # A remove token serves config.sh remove only; it registers no runner.
+        raise HTTPException(status_code=401, detail="Invalid registration token")
+
+    if body.get("runner_event") == "remove":
+        # config.sh remove: a credential that may only delete an agent. It
+        # is no runner, takes no jobs, and never reuses or re-keys one.
+        remove_token = f"ghp_runner_{secrets.token_urlsafe(32)}"
+        broker = Runner(
+            name="unnamed-runner",
+            status="offline",
+            labels=[],
+            busy=False,
+            token_hash=hash_token(remove_token),
+            repo_id=reg.repo_id if reg is not None else None,
+            enterprise_slug=(
+                enterprise_reg.enterprise_slug if enterprise_reg is not None else None
+            ),
+            remove_only=True,
+        )
+        db.add(broker)
+        await db.commit()
+        await db.refresh(broker)
+        return broker, remove_token
 
     labels = body.get("labels", ["self-hosted", "linux"])
     if isinstance(labels, list):
@@ -110,18 +134,25 @@ async def _create_runner_from_registration(
         labels = ["self-hosted", "linux"]
 
     runner_token = f"ghp_runner_{secrets.token_urlsafe(32)}"
-    name = body.get("name", body.get("agentName", "unnamed-runner"))
+    given_name = body.get("name") or body.get("agentName")
+    name = given_name or "unnamed-runner"
     # A pod that restarts registers again under the same name. That used to
     # create a new row each time and leave the old one reporting online -
     # 39 registrations for one deployment on 2026-08-28. The same name in
     # the same scope is the same runner: reuse the row, re-key its token.
+    # actions/runner's config.sh sends no name here (only url and
+    # runner_event; the name comes with the agent add that follows), so an
+    # unnamed registration is always a new runner. Reusing the placeholder
+    # row re-keyed it under runners registering at the same time, and the
+    # earlier ones' tokens stopped working (401).
     scope_filter = (
         Runner.repo_id == reg.repo_id if reg is not None
         else Runner.enterprise_slug == enterprise_reg.enterprise_slug
     )
     existing = (await db.execute(
-        select(Runner).where(Runner.name == name, scope_filter)
-    )).scalars().first()
+        # A remove-only credential is not a runner, so it is never reused.
+        select(Runner).where(Runner.name == name, scope_filter, Runner.remove_only.is_not(True))
+    )).scalars().first() if given_name else None
     if existing is not None:
         existing.os = normalise_runner_os(body.get("os", body.get("osDescription"))) or existing.os
         existing.status = "online"
@@ -148,7 +179,8 @@ async def _create_runner_from_registration(
         last_heartbeat=datetime.now(timezone.utc),
     )
     db.add(runner)
-    await db.delete(registration)
+    # The registration token stays until it expires: on GitHub one token
+    # registers any number of runners within its hour.
     await db.commit()
     await db.refresh(runner)
     return runner, runner_token

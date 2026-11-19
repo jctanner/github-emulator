@@ -305,8 +305,12 @@ async def dt_oauth_token(request: Request, db: DbSession, runner_id: int = Query
     }
 
 
-async def _get_runner_from_token(request: Request, db) -> Runner:
-    """Authenticate a runner from Authorization header."""
+async def _get_runner_from_token(request: Request, db, allow_remove_only: bool = False) -> Runner:
+    """Authenticate a runner from Authorization header.
+
+    A remove-only credential (config.sh remove's) is refused unless the route
+    allows it: only deleting an agent does.
+    """
     auth = request.headers.get("Authorization", "")
     challenge = {"WWW-Authenticate": "Bearer"}
     token = ""
@@ -325,7 +329,7 @@ async def _get_runner_from_token(request: Request, db) -> Runner:
         select(Runner).where(Runner.token_hash == token_hash)
     )
     runner = result.scalar_one_or_none()
-    if runner is None:
+    if runner is None or (runner.remove_only and not allow_remove_only):
         raise HTTPException(status_code=401, detail="Invalid token", headers=challenge)
     return runner
 
@@ -424,6 +428,8 @@ async def dt_register_pool_agent(
             )
         )
         enterprise_reg = result.scalar_one_or_none()
+    if enterprise_reg is not None and enterprise_reg.for_remove:
+        enterprise_reg = None  # a remove token registers no runner
     if reg is None and enterprise_reg is None:
         raise HTTPException(status_code=401, detail="Invalid registration token")
     registration = reg or enterprise_reg
@@ -447,7 +453,8 @@ async def dt_register_pool_agent(
         last_heartbeat=datetime.now(timezone.utc),
     )
     db.add(runner)
-    await db.delete(registration)
+    # The registration token stays until it expires: on GitHub one token
+    # registers any number of runners within its hour.
     await db.commit()
     await db.refresh(runner)
     return _agent_json(runner, runner_token, _request_base(request))
@@ -461,9 +468,16 @@ async def dt_list_pool_agents(
     db: DbSession,
     agentName: str | None = Query(None),
 ):
-    """List registered pool agents."""
-    caller = await _get_runner_from_token(request, db)
-    query = select(Runner).where(_same_scope_as(caller)).order_by(Runner.id)
+    """List registered pool agents in the caller's scope.
+
+    config.sh remove looks its agent up here before deleting it, so the
+    remove-only credential may list too. Remove-only credentials are never
+    listed: they are not runners.
+    """
+    caller = await _get_runner_from_token(request, db, allow_remove_only=True)
+    query = select(Runner).where(
+        _same_scope_as(caller), Runner.remove_only.is_not(True),
+    ).order_by(Runner.id)
     if agentName:
         query = query.where(Runner.name == agentName)
     result = await db.execute(query)
@@ -539,13 +553,16 @@ async def dt_delete_pool_agent(
     pool_id: int, agent_id: int, request: Request, db: DbSession,
 ):
     """Remove a pool-scoped agent."""
-    caller = await _get_runner_from_token(request, db)
+    authenticated_runner = await _get_runner_from_token(request, db, allow_remove_only=True)
     result = await db.execute(select(Runner).where(
-        Runner.id == agent_id, _same_scope_as(caller),
+        Runner.id == agent_id, _same_scope_as(authenticated_runner),
     ))
     runner = result.scalar_one_or_none()
     if runner is None:
         raise HTTPException(status_code=404, detail="Agent not found")
+    if authenticated_runner.remove_only and authenticated_runner.id != runner.id:
+        # config.sh remove's credential is spent once the agent is gone.
+        await db.delete(authenticated_runner)
     # Detach the jobs that ran on it (PostgreSQL enforces the foreign key);
     # a job it still runs fails, as the runner will not finish it.
     await _delete_runner_and_detach_history(db, runner, fail_live_jobs=True)

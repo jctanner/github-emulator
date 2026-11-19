@@ -4,7 +4,7 @@ import secrets
 from datetime import datetime, timedelta, timezone
 
 from fastapi import APIRouter, HTTPException
-from sqlalchemy import select
+from sqlalchemy import delete, select
 
 from app.api.deps import AuthUser, DbSession, get_repo_or_404
 from app.config import settings
@@ -95,12 +95,24 @@ def _runner_payload(runner: Runner) -> dict:
     }
 
 
+async def _prune_expired_registration_tokens(db) -> None:
+    """Drop registration and remove tokens past their expiry.
+
+    A token is kept until it expires rather than deleted on first use, so
+    issuing a new one is where the expired ones go.
+    """
+    now = datetime.now(timezone.utc).replace(tzinfo=None)
+    for model in (RegistrationToken, EnterpriseRunnerRegistrationToken):
+        await db.execute(delete(model).where(model.expires_at < now))
+
+
 @router.post("/enterprises/{enterprise}/actions/runners/registration-token")
 async def create_enterprise_registration_token(
     enterprise: str, db: DbSession, user: AuthUser,
 ):
     """Create a registration token for an enterprise-scoped runner."""
     _require_enterprise(enterprise, user)
+    await _prune_expired_registration_tokens(db)
     token = f"AAAAAA{secrets.token_urlsafe(27)}"
     expires = datetime.now(timezone.utc) + timedelta(hours=1)
     db.add(EnterpriseRunnerRegistrationToken(
@@ -118,12 +130,14 @@ async def create_enterprise_remove_token(
 ):
     """Create the short-lived token consumed by config.sh remove."""
     _require_enterprise(enterprise, user)
+    await _prune_expired_registration_tokens(db)
     token = f"AAAAAA{secrets.token_urlsafe(27)}"
     expires = datetime.now(timezone.utc) + timedelta(hours=1)
     db.add(EnterpriseRunnerRegistrationToken(
         token=token,
         enterprise_slug=enterprise,
         expires_at=expires,
+        for_remove=True,
     ))
     await db.commit()
     return {"token": token, "expires_at": _fmt_dt(expires)}
@@ -135,7 +149,7 @@ async def list_enterprise_runners(
 ):
     _require_enterprise(enterprise, user)
     result = await db.execute(
-        select(Runner).where(Runner.enterprise_slug == enterprise)
+        select(Runner).where(Runner.enterprise_slug == enterprise, Runner.remove_only.is_not(True))
     )
     runners = result.scalars().all()
     return {
@@ -258,6 +272,7 @@ async def create_registration_token(
 ):
     """Create a registration token for a self-hosted runner."""
     repository = await get_repo_or_404(owner, repo, db)
+    await _prune_expired_registration_tokens(db)
 
     token = f"AAAAAA{secrets.token_urlsafe(27)}"
     expires = datetime.now(timezone.utc) + timedelta(hours=1)
@@ -292,7 +307,7 @@ async def list_runners(
     """List self-hosted runners for a repository."""
     repository = await get_repo_or_404(owner, repo, db)
     result = await db.execute(
-        select(Runner).where(Runner.repo_id == repository.id)
+        select(Runner).where(Runner.repo_id == repository.id, Runner.remove_only.is_not(True))
     )
     runners = result.scalars().all()
     items = [_runner_payload(r) for r in runners]

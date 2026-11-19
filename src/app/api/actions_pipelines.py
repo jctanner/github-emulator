@@ -46,7 +46,7 @@ async def pipelines_register_enterprise_runner(
         )
     )
     registration = result.scalar_one_or_none()
-    if registration is None:
+    if registration is None or registration.for_remove:
         raise HTTPException(status_code=401, detail="Invalid registration token")
     if _is_expired(registration.expires_at):
         raise HTTPException(status_code=401, detail="Registration token expired")
@@ -68,7 +68,8 @@ async def pipelines_register_enterprise_runner(
         last_heartbeat=datetime.now(timezone.utc),
     )
     db.add(runner)
-    await db.delete(registration)
+    # The registration token stays until it expires: on GitHub one token
+    # registers any number of runners within its hour.
     await db.commit()
     await db.refresh(runner)
     base = _request_base(request)
@@ -103,7 +104,7 @@ async def pipelines_deregister_enterprise_runner(
 @router.get("/_services/pipelines/enterprises/{enterprise}/_apis/pipelines/runs")
 async def pipelines_list_enterprise_runners(enterprise: str, db: DbSession):
     result = await db.execute(
-        select(Runner).where(Runner.enterprise_slug == enterprise)
+        select(Runner).where(Runner.enterprise_slug == enterprise, Runner.remove_only.is_not(True))
     )
     runners = result.scalars().all()
     return {
@@ -159,7 +160,8 @@ async def pipelines_register_runner(
         last_heartbeat=datetime.now(timezone.utc),
     )
     db.add(runner)
-    await db.delete(reg)
+    # The registration token stays until it expires: on GitHub one token
+    # registers any number of runners within its hour.
     await db.commit()
     await db.refresh(runner)
 
@@ -199,7 +201,7 @@ async def pipelines_list_runners(
     """List runners via GHES pipelines protocol."""
     repository = await get_repo_or_404(owner, repo, db)
     result = await db.execute(
-        select(Runner).where(Runner.repo_id == repository.id)
+        select(Runner).where(Runner.repo_id == repository.id, Runner.remove_only.is_not(True))
     )
     runners = result.scalars().all()
     return {
