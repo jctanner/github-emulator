@@ -38,6 +38,12 @@ from app.services.action_download_service import (
 )
 from app.services.auth_service import hash_token
 from app.services.job_token_service import issue_job_token
+from app.services.runner_credentials import (
+    CLIENT_ASSERTION_TYPE,
+    InvalidClientAssertion,
+    public_key_pem_from_agent,
+    verify_client_assertion,
+)
 from app.services.workflow_service import check_run_completion, dispatch_ready_jobs
 
 router = APIRouter(tags=["actions-distributed-task"])
@@ -269,6 +275,23 @@ async def apis_root_options():
     )
 
 
+def _invalid_client(description: str) -> JSONResponse:
+    """OAuth 2.0 error response for a client that failed authentication."""
+    return JSONResponse(
+        status_code=400,
+        content={"error": "invalid_client", "error_description": description},
+    )
+
+
+def _token_audiences(request: Request, runner: Runner) -> set[str]:
+    """Audiences a runner's client assertion may name: the authorization URL
+    handed out at registration (see _agent_json), or the URL it was sent to."""
+    return {
+        f"{_request_base(request)}/_apis/oauth2/token?runner_id={runner.id}",
+        str(request.url),
+    }
+
+
 @router.post("/_apis/oauth2/token")
 @router.post("/{owner}/{repo}/_apis/oauth2/token")
 async def dt_oauth_token(request: Request, db: DbSession, runner_id: int = Query(...)):
@@ -283,6 +306,22 @@ async def dt_oauth_token(request: Request, db: DbSession, runner_id: int = Query
     runner = result.scalar_one_or_none()
     if runner is None:
         raise HTTPException(status_code=404, detail="Runner not found")
+
+    assertion_type = form.get("client_assertion_type", [""])[-1]
+    assertion = form.get("client_assertion", [""])[-1]
+    if assertion_type and assertion_type != CLIENT_ASSERTION_TYPE:
+        return _invalid_client("Unsupported client_assertion_type")
+    if not assertion:
+        return _invalid_client("client_assertion is required")
+    try:
+        verify_client_assertion(
+            assertion,
+            public_key_pem=runner.public_key,
+            client_id=_runner_client_id(runner),
+            audiences=_token_audiences(request, runner),
+        )
+    except InvalidClientAssertion as exc:
+        return _invalid_client(str(exc))
 
     access_token = f"ghp_runner_{secrets.token_urlsafe(32)}"
     runner.token_hash = hash_token(access_token)
@@ -394,6 +433,7 @@ async def dt_register_pool_agent(
             or runner.os
         )
         runner.labels = _labels_from_body(body) or runner.labels
+        runner.public_key = public_key_pem_from_agent(body) or runner.public_key
         runner.status = "online"
         runner.last_heartbeat = datetime.now(timezone.utc)
         await db.commit()
@@ -428,6 +468,7 @@ async def dt_register_pool_agent(
         labels=_labels_from_body(body),
         busy=False,
         token_hash=hash_token(runner_token),
+        public_key=public_key_pem_from_agent(body),
         repo_id=reg.repo_id if reg is not None else None,
         enterprise_slug=(
             enterprise_reg.enterprise_slug if enterprise_reg is not None else None
@@ -481,6 +522,7 @@ async def dt_update_pool_agent(
         or runner.os
     )
     runner.labels = _labels_from_body(body) or runner.labels
+    runner.public_key = public_key_pem_from_agent(body) or runner.public_key
     runner.status = "online"
     runner.last_heartbeat = datetime.now(timezone.utc)
     if authenticated_runner.id != runner.id:
