@@ -2,7 +2,7 @@
 # "ubuntu-24.04" and its reusable dispatch defaults runner_image to the same.
 # This image is the stack's stand-in for a GitHub-hosted runner, so its label
 # list has to describe what it actually is.
-FROM ubuntu:24.04
+FROM ubuntu:25.10
 
 ARG RUNNER_VERSION=2.317.0
 
