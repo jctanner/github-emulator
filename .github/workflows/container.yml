@@ -40,7 +40,7 @@ jobs:
         run: python3 scripts/release_version.py "$GITHUB_REF_NAME"
       - name: Publication policy regression tests
         run: python3 -m unittest discover -s scripts -p test_publish_image.py -v
-      - uses: docker/setup-buildx-action@v3
+      - uses: docker/setup-buildx-action@v4
       - id: meta
         uses: docker/metadata-action@v5
         with:
