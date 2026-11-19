@@ -1,6 +1,7 @@
 from app.models.user import User
 from app.models.token import PersonalAccessToken
 from app.models.organization import Organization, OrgMembership, OrgRoleAssignment
+from app.models.account import AccountId
 from app.models.team import Team, TeamMembership, TeamRepo
 from app.models.repository import Repository, Collaborator, StarredRepo
 from app.models.branch import Branch, BranchProtection
@@ -46,6 +47,7 @@ __all__ = [
     "User",
     "PersonalAccessToken",
     "Organization", "OrgMembership", "OrgRoleAssignment",
+    "AccountId",
     "Team", "TeamMembership", "TeamRepo",
     "Repository", "Collaborator", "StarredRepo",
     "Branch", "BranchProtection",

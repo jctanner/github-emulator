@@ -88,7 +88,9 @@ class OrganizationType:
         from app.models.repository import Repository as RepoModel
 
         db = info.context["db"]
-        query = select(RepoModel).where(RepoModel.owner_id == self.database_id)
+        # owner_id is the member who created the repository; the
+        # organization that owns it is organization_id.
+        query = select(RepoModel).where(RepoModel.organization_id == self.database_id)
 
         if privacy is not None:
             if privacy == RepositoryPrivacy.PUBLIC:
