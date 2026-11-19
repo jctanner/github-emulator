@@ -1830,25 +1830,34 @@ async def dt_raise_plan_event(
     event_job = str(body.get("jobId", body.get("JobId", "")) or "")
     if event_job and event_job.lower() != _workflow_guid("job", job.id).lower():
         raise HTTPException(status_code=403, detail="Event is for another job")
-    if job.status != "in_progress":
-        # Only a running job completes. A repeat after completion, or an event
-        # for a job that is queued again, changes neither its outputs nor its
-        # result: the jobs that need it may already have read them.
+    # Only a running job completes. A repeat after completion, or an event
+    # for a job that is queued again, changes neither its outputs nor its
+    # result: the jobs that need it may already have read them. A job
+    # cancelled while it ran still reaches _complete_job, which keeps the
+    # cancelled conclusion and frees the runner; its outputs stay unchanged.
+    if job.status != "completed" or job.conclusion == "cancelled":
+        if job.status not in ("in_progress", "completed"):
+            return Response(status_code=200)
+    else:
         return Response(status_code=200)
-    outputs = body.get("outputs", body.get("Outputs")) or {}
-    resolved = {}
-    for key, value in outputs.items():
-        if isinstance(value, dict):
-            if value.get("isSecret", value.get("IsSecret")):
-                continue
-            value = value.get("value", value.get("Value"))
-        resolved[key] = "" if value is None else str(value)
     runner = (await db.execute(select(Runner).where(Runner.id == job.runner_id))).scalar_one_or_none()
     if runner is None:
         raise HTTPException(status_code=409, detail="Job has no runner to complete it")
-    job.outputs = {**(job.outputs or {}), **resolved}
-    await _complete_job(job, runner, body.get("result", body.get("Result", "Succeeded")), db)
-    await db.commit()
+    result_str = body.get("result", body.get("Result", "Succeeded"))
+    if job.status != "completed":
+        outputs = body.get("outputs", body.get("Outputs")) or {}
+        resolved = {}
+        for key, value in outputs.items():
+            if isinstance(value, dict):
+                if value.get("isSecret", value.get("IsSecret")):
+                    continue
+                value = value.get("value", value.get("Value"))
+            resolved[key] = "" if value is None else str(value)
+        job.outputs = {**(job.outputs or {}), **resolved}
+    # Under the runner's lock, as every report of a job's end. A job that
+    # moved off the runner while this waited is left as it is, as a job
+    # queued again is above.
+    await _report_job_end(job, runner, result_str, db)
     return Response(status_code=200)
 
 

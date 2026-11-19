@@ -241,3 +241,28 @@ async def test_an_event_for_another_plan_is_not_found(client, db_session, uses_w
     db_session.expire_all()
     job = (await db_session.execute(select(WorkflowJob))).scalars().first()
     assert job.status == "in_progress"
+
+
+@pytest.mark.asyncio
+async def test_job_completed_for_a_cancelled_job_frees_the_runner(
+    client, db_session, uses_workflow, test_token  # noqa: F811
+):
+    """A job cancelled while it ran keeps its conclusion and outputs, and the
+    runner that reports its end is free for the next job."""
+    from app.models.actions import Runner
+
+    body = await _claim_job(client, test_token)
+    token = body["variables"]["system.github.token"]["Value"]
+    job = (await db_session.execute(select(WorkflowJob))).scalars().first()
+    job.status, job.conclusion = "completed", "cancelled"
+    await db_session.commit()
+
+    resp = await _raise(client, body, token, _event(body["jobId"], {"stage": {"value": "late"}}))
+    assert resp.status_code == 200, resp.text
+
+    db_session.expire_all()
+    job = (await db_session.execute(select(WorkflowJob))).scalars().first()
+    assert (job.status, job.conclusion) == ("completed", "cancelled")
+    assert not job.outputs
+    runner = (await db_session.execute(select(Runner).where(Runner.id == job.runner_id))).scalar_one()
+    assert runner.busy is False
