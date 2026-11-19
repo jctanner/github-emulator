@@ -56,6 +56,23 @@ the run. A job with `needs: <caller>`:
   it had a default. `with:` values still holding an expression are rendered
   at promotion against `github`, `vars`, `needs` and the calling workflow's
   inputs. `secrets` is not in that context, as on GitHub.
+- For the run's own (top-level) callers, "the calling workflow's inputs" are
+  the run's inputs (`inputs` in the run's expression context, from the
+  `workflow_dispatch` or `workflow_call` payload), the same values the called
+  jobs render their `with:` against. Before, the alias used `{}` there, so a
+  compound expression such as `${{ format('{0}-x', inputs.ver) }}` gave the
+  called job `1.0-x` but `needs.<caller>.outputs` `-x`. For a caller inside
+  a called workflow, they are that workflow's inputs, kept on the alias at
+  materialization (`parent_inputs`), not the run's.
+- A caller that needs another caller (A → B → C, B with
+  `x: ${{ needs.A.outputs.o }}`) keeps the aliases of the callers it needs
+  (`needs_aliases`, in any job order; a needs cycle is cut). Its `with:` is
+  rendered with `needs.A` built from A's called jobs, the entry a plain
+  dependent of A reads. Before, C's called jobs read `needs.B` from B's
+  alias, which rendered `needs.A` against plain job rows only, so
+  `needs.B.outputs` was `""`, C's jobs received an empty input, and
+  `needs.C.outputs` was empty too. B's own called jobs already rendered
+  `inputs.x` correctly from their own `needs.A` entry.
 
 [contexts]: https://docs.github.com/en/actions/reference/workflows-and-actions/contexts#context-availability
 

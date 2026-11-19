@@ -546,12 +546,34 @@ def needs_alias_entries(aliases: dict, needs_context: dict, run_context: dict | 
     ``vars`` from ``run_context``. A caller inside the called workflow
     (``callers``) is in ``jobs`` under its own key, its entry built the same
     way, so an output can read ``jobs.<caller>.outputs``.
+
+    A ``with:`` expression on ``inputs`` reads the calling workflow's
+    inputs: for the run's own callers, the run's (``run_context['inputs']``),
+    as the called jobs' ``_job_context`` does; for a caller inside a called
+    workflow, that workflow's (``parent_inputs``, kept at materialization).
     """
     run_context = run_context or {}
     return {
-        caller: _alias_entry(alias, needs_context, run_context, {})
+        caller: _alias_entry(
+            alias, needs_context, run_context, _alias_parent_inputs(alias, needs_context, run_context),
+        )
         for caller, alias in (aliases or {}).items()
     }
+
+
+def _alias_parent_inputs(alias: dict, needs_context: dict, run_context: dict) -> dict:
+    run_inputs = run_context.get("inputs") or {}
+    if "parent_inputs" not in alias:
+        return run_inputs
+    # The enclosing call's resolved inputs; a value still holding an
+    # expression is in the run's terms one level up.
+    parent = render_expressions(alias["parent_inputs"] or {}, {
+        "github": run_context.get("github") or {},
+        "vars": run_context.get("vars") or {},
+        "needs": needs_context,
+        "inputs": run_inputs,
+    })
+    return parent if isinstance(parent, dict) else {}
 
 
 def alias_result(alias: dict, results: dict) -> str:
@@ -568,11 +590,20 @@ def _alias_entry(alias: dict, needs_context: dict, run_context: dict, parent_inp
     # The call's ``with:`` values may still hold expressions in the calling
     # workflow's terms (``${{ github.ref_name }}``, ``${{ needs.x.outputs.y }}``,
     # or a compound one on the caller's own inputs), rendered here as
-    # ``_job_context`` renders them for the called jobs.
+    # ``_job_context`` renders them for the called jobs. A need on another
+    # caller (``needs_aliases``) reads that caller's entry, as the called
+    # jobs' own needs.<caller> does.
+    needs = {
+        **needs_context,
+        **{
+            name: _alias_entry(upstream, needs_context, run_context, parent_inputs)
+            for name, upstream in (alias.get("needs_aliases") or {}).items()
+        },
+    }
     inputs = render_expressions(alias.get("inputs") or {}, {
         "github": run_context.get("github") or {},
         "vars": run_context.get("vars") or {},
-        "needs": needs_context,
+        "needs": needs,
         "inputs": parent_inputs,
     })
     if not isinstance(inputs, dict):
@@ -612,6 +643,10 @@ def _prefix_alias(alias: dict, prefix: str, keys: set) -> dict:
         "callers": {
             name: _prefix_alias(nested, prefix, keys)
             for name, nested in (alias.get("callers") or {}).items()
+        },
+        "needs_aliases": {
+            name: _prefix_alias(upstream, prefix, keys)
+            for name, upstream in (alias.get("needs_aliases") or {}).items()
         },
     }
 
@@ -723,6 +758,8 @@ async def _materialize_reusable_jobs(
     # Each inlined caller at this level: its called jobs by their own key and
     # by the key they get here, its ``on.workflow_call.outputs`` and its inputs.
     callers: dict[str, dict] = {}
+    # Each caller's own needs, for the callers among them (below).
+    caller_needs: dict[str, list] = {}
     for key, config in jobs.items():
         if not isinstance(config, dict) or not config.get("uses"):
             expanded[key] = _render_reusable_call_context(config, inputs, secrets)
@@ -811,6 +848,12 @@ async def _materialize_reusable_jobs(
                 for name, nested in nested_callers.items()
             },
         }
+        if depth > 0:
+            # The calling workflow's inputs, which a compound ``with:``
+            # expression reads when a sibling's needs.<key> is built.
+            callers[key]["parent_inputs"] = copy.deepcopy(inputs)
+        declared_needs = config.get("needs") or []
+        caller_needs[key] = [declared_needs] if isinstance(declared_needs, str) else list(declared_needs)
         for called_key, called_config in called_jobs.items():
             child = copy.deepcopy(called_config)
             child["name"] = child.get("name", f"{key} / {called_key}")
@@ -872,6 +915,20 @@ async def _materialize_reusable_jobs(
     # itself is no job in the run. needs.<caller> still has to answer, with
     # the call's result and its workflow_call outputs, so the job carries
     # what the scheduler needs to build that entry (_needs_aliases).
+    # A caller's ``with:`` may read needs.<another caller>.outputs, so each
+    # alias also holds the aliases of the callers it needs (``needs_aliases``),
+    # in any job order; a cycle in needs is cut rather than followed.
+    def linked(key: str, seen: frozenset) -> dict:
+        return {
+            **callers[key],
+            "needs_aliases": {
+                need: linked(need, seen | {need})
+                for need in caller_needs.get(key, [])
+                if need in callers and need not in seen
+            },
+        }
+
+    callers = {key: linked(key, frozenset({key})) for key in callers}
     for job in expanded.values():
         if not isinstance(job, dict):
             continue

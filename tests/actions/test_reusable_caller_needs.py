@@ -474,3 +474,203 @@ def test_a_call_output_cannot_read_secrets():
     aliases = {"call": {"jobs": {}, "outputs": {"v": "${{ secrets.TOKEN }}"}}}
     entry = needs_alias_entries(aliases, {}, {"secrets": {"TOKEN": "hidden"}})["call"]
     assert entry["outputs"] == {"v": ""}
+
+
+@pytest.mark.asyncio
+async def test_a_top_level_calls_compound_with_reads_the_dispatch_inputs(
+    monkeypatch, executable_workflow, db_session, test_user,  # noqa: F811
+):
+    """A compound ``with:`` expression on the run's own inputs is rendered at
+    promotion; ``needs.<caller>.outputs`` must agree with what the called job
+    received, not render ``inputs`` as empty."""
+    called = {"called.yml": {
+        "on": {"workflow_call": {
+            "inputs": {"v": {"type": "string"}},
+            "outputs": {"v": {"value": "${{ inputs.v }}"}},
+        }},
+        "jobs": {"build": {"runs-on": ["self-hosted"], "steps": [{"run": "echo ${{ inputs.v }}"}]}},
+    }}
+    caller = {
+        "name": "caller",
+        "jobs": {
+            "call": {
+                "uses": "./.github/workflows/called.yml",
+                "with": {"v": "${{ format('{0}-x', inputs.ver) }}"},
+            },
+            "after": {
+                "needs": ["call"],
+                "runs-on": ["self-hosted"],
+                "steps": [{"run": "echo ${{ needs.call.outputs.v }}"}],
+            },
+        },
+    }
+
+    async def fake_detect(path, ref="HEAD"):
+        return [{"_path": f".github/workflows/{name}", **config} for name, config in called.items()]
+
+    monkeypatch.setattr(workflow_service, "detect_workflows", fake_detect)
+    inputs = {"ver": "1.0"}
+    workflow_yaml = await workflow_service.materialize_reusable_workflows(
+        caller, "caller.git", "main", None, inputs=inputs,
+    )
+    _repo, workflow, _ = executable_workflow
+    run = await create_workflow_run(
+        db_session, workflow, workflow_yaml, event="workflow_dispatch",
+        payload={"repository": {"full_name": "testuser/actions-exec-repo"}, "inputs": inputs},
+        actor=test_user, head_sha="caller123", head_branch="main",
+    )
+    await db_session.commit()
+    assert (await _rows(db_session, run))["call / build"].steps[0]["run"] == "echo 1.0-x"
+    after = await _promote_after(db_session, run, ["call / build"])
+    assert after.status == "queued"
+    assert after.steps[0]["run"] == "echo 1.0-x"
+
+
+CHAIN = {
+    "a.yml": {
+        "on": {"workflow_call": {"outputs": {"o": {"value": "${{ jobs.build.outputs.o }}"}}}},
+        "jobs": {"build": {
+            "runs-on": ["self-hosted"],
+            "outputs": {"o": "${{ steps.s.outputs.o }}"},
+            "steps": [{"id": "s", "run": "echo"}],
+        }},
+    },
+    "b.yml": {
+        "on": {"workflow_call": {
+            "inputs": {"x": {"type": "string"}},
+            "outputs": {"out": {"value": "${{ inputs.x }}"}},
+        }},
+        "jobs": {"use": {"runs-on": ["self-hosted"], "steps": [{"run": "echo b ${{ inputs.x }}"}]}},
+    },
+    "c.yml": {
+        "on": {"workflow_call": {
+            "inputs": {"y": {"type": "string"}},
+            "outputs": {"z": {"value": "${{ inputs.y }}"}},
+        }},
+        "jobs": {"use": {"runs-on": ["self-hosted"], "steps": [{"run": "echo c ${{ inputs.y }}"}]}},
+    },
+}
+
+
+@pytest.mark.asyncio
+async def test_an_output_forwarded_through_a_chain_of_calls(
+    monkeypatch, executable_workflow, db_session, test_user,  # noqa: F811
+):
+    """A -> B -> C: B passes ``needs.A.outputs.o`` as its input and outputs
+    it; C reads it from ``needs.B.outputs``. Rendering B's ``with:`` for C
+    needs ``needs.A``, the entry built from A's called jobs."""
+    caller = {
+        "name": "caller",
+        "jobs": {
+            # C first: the order of the jobs must not matter.
+            "C": {
+                "uses": "./.github/workflows/c.yml",
+                "needs": "B",
+                "with": {"y": "${{ needs.B.outputs.out }}"},
+            },
+            "B": {
+                "uses": "./.github/workflows/b.yml",
+                "needs": ["A"],
+                "with": {"x": "${{ needs.A.outputs.o }}"},
+            },
+            "A": {"uses": "./.github/workflows/a.yml"},
+            "after": {
+                "needs": ["C"],
+                "runs-on": ["self-hosted"],
+                "steps": [{"run": "echo ${{ needs.C.outputs.z }} ${{ needs.C.result }}"}],
+            },
+        },
+    }
+    _repo, workflow, _ = executable_workflow
+    run = await _run(monkeypatch, db_session, workflow, test_user, caller, CHAIN)
+
+    async def finish(key, outputs=None):
+        row = (await _rows(db_session, run))[key]
+        row.status = "completed"
+        row.conclusion = "success"
+        row.outputs = outputs or {}
+        await db_session.commit()
+        await dispatch_ready_jobs(db_session, run.id)
+        await db_session.commit()
+
+    await finish("A / build", {"o": "forty"})
+    rows = await _rows(db_session, run)
+    assert rows["B / use"].status == "queued"
+    assert rows["B / use"].steps[0]["run"] == "echo b forty"
+    await finish("B / use")
+    rows = await _rows(db_session, run)
+    assert rows["C / use"].status == "queued"
+    assert rows["C / use"].steps[0]["run"] == "echo c forty"
+    await finish("C / use")
+    after = (await _rows(db_session, run))["after"]
+    assert after.status == "queued"
+    assert after.steps[0]["run"] == "echo forty success"
+
+
+def test_a_chained_calls_with_is_rendered_with_its_own_needs_on_callers():
+    alias_a = {"jobs": {"build": "A / build"}, "outputs": {"o": "${{ jobs.build.outputs.o }}"}}
+    aliases = {"B": {
+        "jobs": {"use": "B / use"},
+        "inputs": {"x": "${{ needs.A.outputs.o }}"},
+        "outputs": {"out": "${{ inputs.x }}"},
+        "needs_aliases": {"A": alias_a},
+    }}
+    needs = {
+        "A / build": {"result": "success", "outputs": {"o": "forty"}},
+        "B / use": {"result": "success", "outputs": {}},
+    }
+    assert needs_alias_entries(aliases, needs)["B"]["outputs"] == {"out": "forty"}
+
+
+@pytest.mark.asyncio
+async def test_a_nested_calls_compound_with_reads_its_own_workflows_inputs(
+    monkeypatch, executable_workflow, db_session, test_user,  # noqa: F811
+):
+    """Inside outer.yml, ``needs.inner.outputs`` renders inner's ``with:``
+    against outer.yml's inputs, not the run's (``ver`` is in both)."""
+    called = {
+        "outer.yml": {
+            "on": {"workflow_call": {"inputs": {"ver": {"type": "string"}}}},
+            "jobs": {
+                "inner": {
+                    "uses": "./.github/workflows/inner.yml",
+                    "with": {"tag": "${{ format('v{0}', inputs.ver) }}"},
+                },
+                "report": {
+                    "needs": "inner",
+                    "runs-on": ["self-hosted"],
+                    "steps": [{"run": "echo ${{ needs.inner.outputs.tag }}"}],
+                },
+            },
+        },
+        "inner.yml": {
+            "on": {"workflow_call": {
+                "inputs": {"tag": {"type": "string"}},
+                "outputs": {"tag": {"value": "${{ inputs.tag }}"}},
+            }},
+            "jobs": {"leaf": {"runs-on": ["self-hosted"], "steps": [{"run": "echo ${{ inputs.tag }}"}]}},
+        },
+    }
+    caller = {"name": "caller", "jobs": {
+        "outer": {"uses": "./.github/workflows/outer.yml", "with": {"ver": "2"}},
+    }}
+
+    async def fake_detect(path, ref="HEAD"):
+        return [{"_path": f".github/workflows/{name}", **config} for name, config in called.items()]
+
+    monkeypatch.setattr(workflow_service, "detect_workflows", fake_detect)
+    inputs = {"ver": "run"}
+    workflow_yaml = await workflow_service.materialize_reusable_workflows(
+        caller, "caller.git", "main", None, inputs=inputs,
+    )
+    _repo, workflow, _ = executable_workflow
+    run = await create_workflow_run(
+        db_session, workflow, workflow_yaml, event="workflow_dispatch",
+        payload={"repository": {"full_name": "testuser/actions-exec-repo"}, "inputs": inputs},
+        actor=test_user, head_sha="caller123", head_branch="main",
+    )
+    await db_session.commit()
+    assert (await _rows(db_session, run))["outer / inner / leaf"].steps[0]["run"] == "echo v2"
+    report = await _promote_after(db_session, run, ["outer / inner / leaf"], "outer / report")
+    assert report.status == "queued"
+    assert report.steps[0]["run"] == "echo v2"
