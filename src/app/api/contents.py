@@ -51,20 +51,6 @@ async def _git(
     return stdout.decode()
 
 
-async def _git_bytes(repo_path: str, *args: str) -> bytes:
-    env = {**os.environ, "GIT_DIR": repo_path}
-    proc = await asyncio.create_subprocess_exec(
-        "git", *args,
-        stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.PIPE,
-        env=env,
-    )
-    stdout, stderr = await proc.communicate()
-    if proc.returncode != 0:
-        raise RuntimeError(stderr.decode())
-    return stdout
-
-
 def _file_response(
     owner: str, repo_name: str, path: str, content_bytes: bytes,
     sha: str, ref: str, base_url: str, with_content: bool = True,
