@@ -173,6 +173,17 @@ _RUNNER_FILLED = (
     rf"|job(?:\.{_RUNNER_JOB}(?![\w])|\[\s*'{_RUNNER_JOB}'\s*\])"
 )
 _RUNNER_FILLED_RE = re.compile(r"(?<![\w.])(?:" + _RUNNER_FILLED + ")")
+_RUNNER_INDEX_RE = re.compile(
+    rf"(?<![\w.])(github)\[\s*'({_RUNNER_GITHUB})'\s*\]|(?<![\w.])(job)\[\s*'({_RUNNER_JOB})'\s*\]"
+)
+
+
+def _runner_index_to_dot(expression: str) -> str:
+    """``github['workspace']`` as ``github.workspace``: the same value, in the
+    form every runner reads."""
+    return _RUNNER_INDEX_RE.sub(
+        lambda m: f"{m.group(1) or m.group(3)}.{m.group(2) or m.group(4)}", expression,
+    )
 _RUNNER_FILLED_PATH_RE = re.compile(r"^(?:" + _RUNNER_FILLED + ")")
 
 
@@ -430,7 +441,9 @@ class _IfExpressionParser:
     # name alternative requires a leading letter and consumes its own dots.
     _TOKEN_RE = re.compile(
         r"(?P<space>\s+)|(?P<op>\|\||&&|==|!=|<=|>=|[<>!(),\[\].*])|"
-        r"(?P<string>'(?:\\.|[^'])*'|\"(?:\\.|[^\"])*\")|"
+        # '...' escapes a quote only by doubling it (a backslash is plain);
+        # "..." keeps the backslash form older step records use.
+        r"(?P<string>'(?:''|[^'])*'|\"(?:\\.|[^\"])*\")|"
         r"(?P<number>\d+(?:\.\d+)?)|"
         # A dotted name never ends in a dot, so ``include.*.agent`` leaves
         # the ``.`` and ``*`` of its object filter as tokens of their own.
@@ -852,7 +865,7 @@ def render_expressions(
         def replace(match):
             expression = match.group(1).strip()
             if for_runner and _RUNNER_FILLED_RE.search(expression):
-                return "${{ " + bind_server_context(expression, context) + " }}"
+                return "${{ " + bind_server_context(_runner_index_to_dot(expression), context) + " }}"
             # Step outputs only exist after a prior step has run. Preserve the
             # expression for the runner's runtime renderer.
             if expression == "github.token":

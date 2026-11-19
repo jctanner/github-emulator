@@ -542,7 +542,7 @@ class _StepIfParser:
 
     _TOKEN_RE = re.compile(
         r"(?P<space>\s+)|(?P<op>\|\||&&|==|!=|[!(),])|"
-        r"(?P<string>'(?:''|\\.|[^'])*'|\"(?:\\.|[^\"])*\")|"
+        r"(?P<string>'(?:''|[^'])*'|\"(?:\\.|[^\"])*\")|"
         r"(?P<number>\d+(?:\.\d+)?)|(?P<name>[A-Za-z_][A-Za-z0-9_.-]*)"
     )
 

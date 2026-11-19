@@ -51,9 +51,12 @@ Two authentication answers differed as well:
   never end the expression it is bound into.
 - `working-directory` and `shell` are left for the runner the same way as
   `run`.
-- Index notation (`github['workspace']`) is recognised like dot notation.
-- A `'...'` literal's only escape is a doubled quote, as in Actions; a
-  backslash is an ordinary character, so bound JSON keeps its escapes.
+- Index notation (`github['workspace']`) is recognised like dot notation and
+  sent to the runner in dot form.
+- A `'...'` literal's only escape is a doubled quote, as in Actions, in the
+  server's and the emulator runner's tokenizers and decoders alike; a
+  backslash is an ordinary character, so bound JSON keeps its escapes and a
+  value may end in a backslash.
 - The emulator's own runner finishes what the server leaves: it reads `''`
   inside a string, writes a false result as `false`, knows `job.status`, has
   `fromJSON` and `toJSON`, and gives `github.env`, `github.output`,

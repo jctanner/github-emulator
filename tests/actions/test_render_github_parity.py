@@ -174,7 +174,10 @@ def test_index_notation_is_left_for_the_runner_too():
     steps = build_steps_data(
         [{"run": "cd ${{ github['workspace'] }} && echo ${{ job['status'] }}"}], {}, CONTEXT,
     )
-    assert steps[0]["run"] == "cd ${{ github['workspace'] }} && echo ${{ job['status'] }}"
+    # Sent in dot form, which both runners read.
+    assert steps[0]["run"] == "cd ${{ github.workspace }} && echo ${{ job.status }}"
+    rendered = _emulator_runner()._render_local_action(steps[0]["run"], {}, {})
+    assert rendered.endswith(" && echo success") and "${{" not in rendered
 
 
 def test_an_object_chosen_by_a_logical_operator_stays_an_object():
@@ -198,3 +201,14 @@ def test_quotes_and_backslashes_in_event_data_round_trip():
     event_json, _, _ = runner._render_local_action(steps[0]["run"], {}, {}).removeprefix("echo ").rpartition("|")
     assert json.loads(event_json) == event
     assert runner._render_local_action(steps[0]["env"]["T"], {}, {}) == event["issue"]["title"]
+
+
+def test_a_doubled_quote_and_a_trailing_backslash_parse_on_both_sides():
+    assert render_expressions("${{ format('{0}', 'Don''t') }}", CONTEXT) == "Don't"
+    assert evaluate_job_if("${{ format('{0}', 'Don''t') == 'Don''t' }}", CONTEXT) is True
+    context = {**CONTEXT, "inputs": {"dir": "C:\\"}}
+    steps = build_steps_data(
+        [{"run": "echo ${{ format('{0}{1}|{2}', inputs.dir, 'ok', github.workspace) }}"}], {}, context,
+    )
+    rendered = _emulator_runner()._render_local_action(steps[0]["run"], {}, {})
+    assert rendered.startswith("echo C:\\ok|")
