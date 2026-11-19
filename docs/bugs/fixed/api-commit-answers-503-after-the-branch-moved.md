@@ -56,6 +56,10 @@ same file, used by the git/refs routes, both:
    reads the ref it will move, and holds it until the response is sent, so
    no other API writer's ref move, record or rollback lands in between.
    Git pushes take their own path and keep only the ordering rule above.
+   The lock is per process: the emulator runs one uvicorn worker
+   (`supervisord.conf` starts uvicorn without `--workers`), so it covers
+   every API writer. Running several workers would need a lock shared
+   between them.
 3. If the lock persists, move the ref back before answering 503, so a
    retry finds the repository as it was. This happens only while the ref
    is still at the new commit: a ref another writer has moved since keeps
