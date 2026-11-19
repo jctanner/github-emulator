@@ -811,7 +811,10 @@ async def get_compare_files(disk_path: str, base_ref: str, head_ref: str) -> lis
             previous, name = None, fields[i + 1]
             i += 2
         record = {
-            "filename": name.decode("utf-8", errors="surrogateescape"),
+            # A name that is not UTF-8 is shown with replacement characters;
+            # its bytes stay in path_bytes for URLs.
+            "filename": name.decode("utf-8", errors="replace"),
+            "path_bytes": name,
             "status": _COMPARE_STATUS.get(kind, "modified"),
             # A removed file's blob is the one it had; every other file's is the new one.
             "sha": old_oid if kind == "D" else new_oid,
@@ -821,7 +824,7 @@ async def get_compare_files(disk_path: str, base_ref: str, head_ref: str) -> lis
             "patch": "",
         }
         if previous is not None:
-            record["previous_filename"] = previous.decode("utf-8", errors="surrogateescape")
+            record["previous_filename"] = previous.decode("utf-8", errors="replace")
         files.append(record)
 
     # --numstat -z: "add\tdel\tpath\0", or "add\tdel\t\0old\0new\0" for a rename.

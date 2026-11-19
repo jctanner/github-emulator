@@ -94,7 +94,9 @@ def _parse_commit_line(
 def _with_file_urls(owner: str, repo: str, sha: str, files: list[dict]) -> list[dict]:
     """Add GitHub's per-file URLs, at commit ``sha``, to changed-file records."""
     for file in files:
-        filename = quote(file.get("filename", ""), safe="/")
+        # Percent-encode the path's own bytes, which may not be UTF-8.
+        path = file.pop("path_bytes", None)
+        filename = quote(path if path is not None else file.get("filename", ""), safe="/")
         file.update(
             {
                 "sha": file.get("sha", ""),
@@ -203,7 +205,9 @@ async def get_commit(
 
 
 
-_COMMIT_FORMAT = "%H%x1f%an%x1f%ae%x1f%aI%x1f%cn%x1f%ce%x1f%cI%x1f%s%x1f%P%x1f%T"
+# Fields are split by \x1f and records end with \x1e, so the full message
+# (%B), newlines and all, stays one field.
+_COMMIT_FORMAT = "%H%x1f%an%x1f%ae%x1f%aI%x1f%cn%x1f%ce%x1f%cI%x1f%B%x1f%P%x1f%T%x1e"
 
 
 async def _resolve_compare_side(
@@ -245,11 +249,16 @@ async def _commit_objects(
     out = await _git(
         repository.disk_path, "log", "--no-walk=unsorted", f"--format={_COMMIT_FORMAT}", *shas
     )
-    return [
-        _parse_commit_line(line, owner, repo, BASE, verified)
-        for line in out.strip().splitlines()
-        if line
-    ]
+    commits = []
+    for record in out.split("\x1e"):
+        record = record.lstrip("\n")
+        if not record:
+            continue
+        commit = _parse_commit_line(record, owner, repo, BASE, verified)
+        # GitHub's message has no trailing newline.
+        commit["commit"]["message"] = commit["commit"]["message"].rstrip("\n")
+        commits.append(commit)
+    return commits
 
 
 # ``basehead`` is a path: either side may be a branch with "/" in it.

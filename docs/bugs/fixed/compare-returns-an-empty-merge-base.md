@@ -53,6 +53,9 @@ More detail, as on GitHub:
 - `files` come from NUL-delimited `--raw` and `--numstat` output: names are
   kept exactly (any encoding, spaces), each carries its blob `sha`, a
   removed file is `removed`, and `patch` is the hunks.
+- Each commit carries its full message, body included. A file name that is
+  not UTF-8 is shown with replacement characters, and its URLs encode its
+  own bytes.
 
 ## Tests
 

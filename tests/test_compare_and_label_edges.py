@@ -257,3 +257,54 @@ async def test_a_contents_write_that_loses_the_race_answers_409(client, db_sessi
 
     assert resp.status_code == 409, resp.text
     assert _git(git_dir, "rev-parse", "refs/heads/main") == other["sha"]
+
+
+# Commit messages keep their body.
+
+async def test_compare_commits_carry_the_full_message(client, db_session, test_token):
+    import os
+
+    headers = auth_headers(test_token)
+    await client.post(f"{API}/user/repos", json={"name": "long-messages", "auto_init": True}, headers=headers)
+    git_dir = await _disk_path(db_session, "testuser/long-messages")
+    main = _git(git_dir, "rev-parse", "refs/heads/main")
+    env = {**os.environ, "GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@example.com",
+           "GIT_COMMITTER_NAME": "t", "GIT_COMMITTER_EMAIL": "t@example.com"}
+    message = "Subject line\n\nBody paragraph one.\n\nBody paragraph two."
+    commit = _git(git_dir, "commit-tree", f"{main}^{{tree}}", "-p", main, "-m", message, env=env)
+    _git(git_dir, "update-ref", "refs/heads/described", commit)
+
+    resp = await client.get(f"{API}/repos/testuser/long-messages/compare/main...described", headers=headers)
+
+    assert resp.status_code == 200, resp.text
+    assert [c["commit"]["message"] for c in resp.json()["commits"]] == [message]
+
+
+# A file name that is not UTF-8 does not fail the compare.
+
+async def test_a_non_utf8_file_name_is_compared(client, db_session, test_token):
+    import os
+
+    headers = auth_headers(test_token)
+    await client.post(f"{API}/user/repos", json={"name": "latin1-names", "auto_init": True}, headers=headers)
+    git_dir = await _disk_path(db_session, "testuser/latin1-names")
+    main = _git(git_dir, "rev-parse", "refs/heads/main")
+    blob = subprocess.run(["git", "--git-dir", git_dir, "hash-object", "-w", "--stdin"], input=b"x\n",
+                          capture_output=True, check=True).stdout.decode().strip()
+    listing = subprocess.run(["git", "--git-dir", git_dir, "ls-tree", "-z", main], capture_output=True, check=True).stdout
+    name = b"caf\xe9.txt"  # Latin-1, not UTF-8
+    tree = subprocess.run(["git", "--git-dir", git_dir, "mktree", "-z"], input=listing + b"100644 blob " + blob.encode() + b"\t" + name + b"\0",
+                          capture_output=True, check=True).stdout.decode().strip()
+    env = {**os.environ, "GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@example.com",
+           "GIT_COMMITTER_NAME": "t", "GIT_COMMITTER_EMAIL": "t@example.com"}
+    commit = _git(git_dir, "commit-tree", tree, "-p", main, "-m", "latin-1 name", env=env)
+    _git(git_dir, "update-ref", "refs/heads/latin1", commit)
+
+    resp = await client.get(f"{API}/repos/testuser/latin1-names/compare/main...latin1", headers=headers)
+
+    assert resp.status_code == 200, resp.text
+    (changed,) = resp.json()["files"]
+    assert changed["filename"] == "caf�.txt"
+    assert changed["sha"] == blob
+    assert changed["raw_url"].endswith("caf%E9.txt")
+    assert "path_bytes" not in changed
