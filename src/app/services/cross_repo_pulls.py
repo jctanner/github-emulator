@@ -16,8 +16,10 @@ pull request opens and on every push to that branch.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import os
-import uuid
+import shutil
+import tempfile
 
 from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -98,44 +100,45 @@ async def is_branch_name(branch: str) -> bool:
     return await process.wait() == 0
 
 
-async def fetch_branch_objects(base: Repository, head: Repository, branch: str) -> str | None:
-    """Copy the objects of ``head``'s ``branch`` into ``base`` without a ref,
-    so ``base`` can compare against it. Returns the commit that was fetched,
-    or None.
-
-    GitHub keeps a fork network's objects together; the emulator keeps one
-    bare repository per fork, so a comparison with a fork branch fetches it.
-    The branch is fetched into a temporary ref and the commit read from that
-    ref, so the commit returned is the one fetched even when the branch moves
-    meanwhile. The ref is then deleted; the objects stay.
-    """
-    if not (base.disk_path and head.disk_path and os.path.isdir(base.disk_path) and os.path.isdir(head.disk_path)):
+async def branch_commit(head: Repository, branch: str) -> str | None:
+    """The commit ``head``'s ``branch`` points at, or None."""
+    if not (head.disk_path and os.path.isdir(head.disk_path)):
         return None
     if not await is_branch_name(branch):
         return None
-    temp_ref = f"refs/emulator/compare/{uuid.uuid4().hex}"
     process = await asyncio.create_subprocess_exec(
-        "git", "--git-dir", base.disk_path, "fetch", "--no-tags", "--quiet",
-        "--no-write-fetch-head", head.disk_path, f"refs/heads/{branch}:{temp_ref}",
+        "git", "--git-dir", head.disk_path, "rev-parse", "--verify", "--quiet",
+        f"refs/heads/{branch}^{{commit}}",
         stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
     )
-    await process.communicate()
-    if process.returncode != 0:
-        return None
+    out, _ = await process.communicate()
+    sha = out.decode().strip()
+    return sha if process.returncode == 0 and sha else None
+
+
+@contextlib.asynccontextmanager
+async def object_view(*repositories: Repository):
+    """A temporary bare repository that reads the objects of ``repositories``.
+
+    GitHub keeps a fork network's objects together; the emulator keeps one
+    bare repository per fork. A comparison across forks runs in this view,
+    which borrows both object databases through git's alternates and holds
+    nothing of its own, so no fork object is copied into another
+    repository. The view is deleted on exit.
+    """
+    path = tempfile.mkdtemp(prefix="compare-view-")
     try:
         process = await asyncio.create_subprocess_exec(
-            "git", "--git-dir", base.disk_path, "rev-parse", "--verify", "--quiet", f"{temp_ref}^{{commit}}",
-            stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
-        )
-        out, _ = await process.communicate()
-        sha = out.decode().strip()
-        return sha if process.returncode == 0 and sha else None
-    finally:
-        process = await asyncio.create_subprocess_exec(
-            "git", "--git-dir", base.disk_path, "update-ref", "-d", temp_ref,
+            "git", "init", "--bare", "--quiet", path,
             stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.DEVNULL,
         )
         await process.wait()
+        alternates = [os.path.join(os.path.abspath(repo.disk_path), "objects") for repo in repositories]
+        with open(os.path.join(path, "objects", "info", "alternates"), "w") as handle:
+            handle.write("\n".join(alternates) + "\n")
+        yield path
+    finally:
+        shutil.rmtree(path, ignore_errors=True)
 
 
 async def sync_head_ref(

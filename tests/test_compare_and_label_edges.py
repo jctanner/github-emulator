@@ -2,7 +2,8 @@
 
 - Compare reads repository contents, so an App or job token needs
   ``contents: read`` for it.
-- A fork side is compared at the commit that was actually fetched.
+- A fork side is read in place, and none of its objects is copied into
+  the base repository.
 - Unpaged, compare lists the most recent 250 commits.
 - ``files`` keep any file name exactly and carry each blob's sha.
 - ``labels`` must be an array.
@@ -77,39 +78,57 @@ def test_a_job_token_needs_contents_read_for_compare():
     assert job_permissions.check("GET", path, {"contents": "read"}) is None
 
 
-# 2. The fork side is the commit that was fetched.
+# 2. A fork side is read in place, never copied into the base.
 
-async def test_a_fork_branch_that_moves_mid_fetch_is_compared_where_it_was_fetched(tmp_path, monkeypatch):
-    """The head branch is force-pushed to an unrelated commit just before the
-    fetch runs. The commit returned must be the one fetched, which the base
-    repository then has."""
-    import asyncio
-
+async def test_a_cross_fork_view_reads_both_and_copies_nothing(tmp_path):
+    """The comparison view borrows both object databases. The base repository
+    gains no object, and the view is gone afterwards."""
     from app.services import cross_repo_pulls
 
     base_dir, head_dir = str(tmp_path / "base.git"), str(tmp_path / "head.git")
     for git_dir in (base_dir, head_dir):
         subprocess.run(["git", "init", "--bare", "-q", git_dir], check=True)
-    first = _commit(head_dir, None, "first")
-    _git(head_dir, "update-ref", "refs/heads/topic", first)
-    rewritten = _commit(head_dir, None, "rewritten")
+    base_commit = _commit(base_dir, None, "base")
+    fork_commit = _commit(head_dir, None, "fork")
+    _git(head_dir, "update-ref", "refs/heads/topic", fork_commit)
+    base, head = SimpleNamespace(disk_path=base_dir), SimpleNamespace(disk_path=head_dir)
 
-    real_exec = asyncio.create_subprocess_exec
+    assert await cross_repo_pulls.branch_commit(head, "topic") == fork_commit
+    async with cross_repo_pulls.object_view(base, head) as view:
+        _git(view, "cat-file", "-e", f"{base_commit}^{{commit}}")
+        _git(view, "cat-file", "-e", f"{fork_commit}^{{commit}}")
+        view_path = view
 
-    async def exec_moving_the_branch(*args, **kwargs):
-        if "fetch" in args:
-            _git(head_dir, "update-ref", "refs/heads/topic", rewritten)
-        return await real_exec(*args, **kwargs)
+    import os
 
-    monkeypatch.setattr(cross_repo_pulls.asyncio, "create_subprocess_exec", exec_moving_the_branch)
-    sha = await cross_repo_pulls.fetch_branch_objects(
-        SimpleNamespace(disk_path=base_dir), SimpleNamespace(disk_path=head_dir), "topic"
-    )
+    assert not os.path.exists(view_path)
+    missing = subprocess.run(["git", "--git-dir", base_dir, "cat-file", "-e", fork_commit], capture_output=True)
+    assert missing.returncode != 0
 
-    assert sha == rewritten
-    _git(base_dir, "cat-file", "-e", f"{sha}^{{commit}}")
-    # The temporary ref is gone; only the objects stay.
-    assert _git(base_dir, "for-each-ref", "refs/emulator") == ""
+
+async def test_a_private_fork_commit_stays_out_of_the_public_base(client, db_session, test_token, admin_token):
+    """After the fork's owner compares the public base with their private
+    fork, the fork commit is still unreadable through the base by its SHA."""
+    admin = auth_headers(admin_token)
+    created = await client.post(f"{API}/user/repos", json={"name": "open-base", "auto_init": True}, headers=auth_headers(test_token))
+    assert created.status_code == 201, created.text
+    assert (await client.post(f"{API}/repos/testuser/open-base/forks", json={}, headers=admin)).status_code == 202
+    main = await _main_sha(client, admin_token, "admin/open-base")
+    await _branch(client, admin_token, "admin/open-base", "secret", main)
+    fork_sha = await _put(client, admin_token, "admin/open-base", "secret.txt", "hidden\n", "secret")
+    assert (await client.patch(f"{API}/repos/admin/open-base", json={"private": True}, headers=admin)).status_code == 200
+
+    compared = await client.get(f"{API}/repos/testuser/open-base/compare/main...admin:secret", headers=admin)
+    assert compared.status_code == 200, compared.text
+    assert [c["sha"] for c in compared.json()["commits"]] == [fork_sha]
+
+    base_dir = await _disk_path(db_session, "testuser/open-base")
+    assert subprocess.run(["git", "--git-dir", base_dir, "cat-file", "-e", fork_sha], capture_output=True).returncode != 0
+    reader = auth_headers(test_token)
+    by_sha = await client.get(f"{API}/repos/testuser/open-base/contents/secret.txt", params={"ref": fork_sha}, headers=reader)
+    assert by_sha.status_code == 404
+    compare_by_sha = await client.get(f"{API}/repos/testuser/open-base/compare/main...{fork_sha}", headers=reader)
+    assert compare_by_sha.status_code == 404
 
 
 # 3. Unpaged, the most recent 250 commits.
@@ -308,3 +327,26 @@ async def test_a_non_utf8_file_name_is_compared(client, db_session, test_token):
     assert changed["sha"] == blob
     assert changed["raw_url"].endswith("caf%E9.txt")
     assert "path_bytes" not in changed
+
+
+async def test_control_characters_in_a_message_stay_in_the_message(client, db_session, test_token):
+    import os
+
+    headers = auth_headers(test_token)
+    await client.post(f"{API}/user/repos", json={"name": "control-chars", "auto_init": True}, headers=headers)
+    git_dir = await _disk_path(db_session, "testuser/control-chars")
+    main = _git(git_dir, "rev-parse", "refs/heads/main")
+    env = {**os.environ, "GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@example.com",
+           "GIT_COMMITTER_NAME": "t", "GIT_COMMITTER_EMAIL": "t@example.com"}
+    message = "Subject\x1fwith a unit separator\n\nBody\x1ewith a record separator"
+    first = _git(git_dir, "commit-tree", f"{main}^{{tree}}", "-p", main, "-m", message, env=env)
+    second = _git(git_dir, "commit-tree", f"{main}^{{tree}}", "-p", first, "-m", "plain", env=env)
+    _git(git_dir, "update-ref", "refs/heads/odd", second)
+
+    resp = await client.get(f"{API}/repos/testuser/control-chars/compare/main...odd", headers=headers)
+
+    assert resp.status_code == 200, resp.text
+    commits = resp.json()["commits"]
+    assert [(c["sha"], c["commit"]["message"]) for c in commits] == [(first, message), (second, "plain")]
+    assert commits[0]["parents"][0]["sha"] == main
+    assert commits[0]["commit"]["tree"]["sha"] == _git(git_dir, "rev-parse", f"{first}^{{tree}}")

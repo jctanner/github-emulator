@@ -47,13 +47,15 @@ More detail, as on GitHub:
 - Compare reads repository contents, so an App installation or job token
   needs `contents: read` for it (`compare` maps to `contents` in the shared
   permission map).
-- A fork side is fetched into a temporary ref and compared at the commit
-  that was fetched, even if the branch moves meanwhile.
+- A fork side is resolved in the fork and compared in a temporary view that
+  borrows both repositories' objects (git alternates), so no fork object is
+  copied into the base repository.
 - Unpaged, `commits` are the most recent 250, oldest first.
 - `files` come from NUL-delimited `--raw` and `--numstat` output: names are
   kept exactly (any encoding, spaces), each carries its blob `sha`, a
   removed file is `removed`, and `patch` is the hunks.
-- Each commit carries its full message, body included. A file name that is
+- Each commit carries its full message, body included, framed by NUL so no
+  character in a message can split it. A file name that is
   not UTF-8 is shown with replacement characters, and its URLs encode its
   own bytes.
 
