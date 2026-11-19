@@ -1991,9 +1991,11 @@ async def _local_action_repository(
     """Whether this emulator holds the repository a `uses:` reference names,
     and that repository when the job may use it as an action.
 
-    As on GitHub, a workflow may use an action from a public repository, from
-    its own repository, or from a private one with the same owner (GitHub
-    also requires that owner to allow it; this emulator has no such setting).
+    As GitHub does by default, a workflow may use an action from a public
+    repository or from its own repository. GitHub lets other repositories use
+    a private or internal repository's actions only when its owner enables
+    that access; this emulator has no such setting, so any other private or
+    internal repository, the same owner's included, is not usable.
     """
     repository = (await db.execute(
         select(Repository)
@@ -2009,20 +2011,13 @@ async def _local_action_repository(
         .join(WorkflowRun, WorkflowRun.repo_id == Repository.id)
         .where(WorkflowRun.id == job.run_id)
     )).scalars().first()
-    if job_repository is not None and (
-        job_repository.id == repository.id
-        or _owner_login(job_repository) == _owner_login(repository)
-    ):
+    if job_repository is not None and job_repository.id == repository.id:
         return True, repository
     return True, None
 
 
 def _is_public(repository: Repository) -> bool:
     return not repository.private and (repository.visibility or "public") == "public"
-
-
-def _owner_login(repository: Repository) -> str:
-    return repository.full_name.split("/", 1)[0].lower()
 
 
 @router.get("/_apis/distributedtask/actions/archives/{owner}/{repo}/{sha}/archive.{fmt}")

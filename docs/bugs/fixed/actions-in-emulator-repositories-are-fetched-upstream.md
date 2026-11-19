@@ -22,14 +22,14 @@ repository it lacks. A test stack that pushes its own actions needs the same.
   commit it lacks is `404`. Neither is looked up upstream under the same name,
   so a private action's name never resolves to a different upstream
   repository's code.
-- As on GitHub, a job may use a repository here as an action only when it is
-  public, is the job's own repository, or is private with the same owner as
-  the job's repository. GitHub also requires that owner to allow access to
-  its private actions; the emulator has no such setting. Another owner's
-  private repository is unresolvable (`404`
-  `UnresolvableActionDownloadInfoException`) and its name is not looked up
-  upstream. The archive URL applies the same rule (`404`), since a job can
-  request it directly.
+- A job may use a repository here as an action only when it is public or is
+  the job's own repository. GitHub lets other repositories use a private or
+  internal repository's actions only when its owner enables that access, and
+  the emulator has no such setting yet, so it allows only these two. Any
+  other private or internal repository, the same owner's included, is
+  unresolvable (`404` `UnresolvableActionDownloadInfoException`) and its name
+  is not looked up upstream. The archive URL applies the same rule (`404`),
+  since a job can request it directly.
 - The name is matched case-insensitively; when two repositories differ only
   in case, the first created is used.
 - The archive is built with `git archive`, with one top-level directory as in

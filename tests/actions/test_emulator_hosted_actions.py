@@ -7,9 +7,11 @@ but lacks the ref. A private repository here that lacks the ref or commit is
 unresolvable, and is not looked up upstream. Before, every reference was resolved upstream, so an action in
 a repository here failed with "does not exist upstream".
 
-As on GitHub, a job may use an action from a public repository, its own
-repository, or a private repository with the same owner. Another owner's
-private repository is not resolvable, and its name is not looked up upstream.
+A job may use an action from a public repository or from its own repository.
+GitHub lets other repositories use a private repository's actions only when
+its owner enables that access; this emulator has no such setting, so any
+other private or internal repository, the same owner's included, is not
+resolvable, and its name is not looked up upstream.
 """
 
 import base64
@@ -150,19 +152,60 @@ async def test_another_owners_private_repository_is_not_an_action_here(
 
 
 @pytest.mark.asyncio
-async def test_a_private_repository_with_the_jobs_owner_is_served(
+async def test_a_private_repository_with_the_jobs_owner_is_not_an_action_here(
     client, uses_workflow, test_token, monkeypatch  # noqa: F811
 ):
     await _private_repository(client, test_token, "own-private-action")
     _no_upstream(monkeypatch)
+    sha = (await client.get(
+        f"{API}/repos/testuser/own-private-action/commits/main", headers=auth_headers(test_token),
+    )).json()["sha"]
+    assert len(sha) == 40
 
     body = await _claim_job(client, test_token)
     token = body["variables"]["system.github.token"]["Value"]
     resp = await _download_info(client, body, token, "testuser/own-private-action", "main")
-    assert resp.status_code == 200, resp.text
-    sha = resp.json()["actions"]["testuser/own-private-action@main"]["resolvedSha"]
+    assert resp.status_code == 404
+    assert resp.json()["typeKey"] == "UnresolvableActionDownloadInfoException"
 
     archive = await _archive(client, token, "testuser/own-private-action", sha)
+    assert archive.status_code == 404
+
+
+async def _make_job_repository_private(client, token):
+    """The job's own repository (``uses_workflow``), made private, with a
+    commit on main to serve."""
+    resp = await client.patch(
+        f"{API}/repos/testuser/uses-step-repo", json={"private": True},
+        headers=auth_headers(token),
+    )
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["private"] is True
+    resp = await client.put(
+        f"{API}/repos/testuser/uses-step-repo/contents/action.yml",
+        json={
+            "message": "add action",
+            "content": base64.b64encode(b"runs: {using: node20, main: x.js}\n").decode(),
+        },
+        headers=auth_headers(token),
+    )
+    assert resp.status_code == 201, resp.text
+
+
+@pytest.mark.asyncio
+async def test_the_jobs_own_private_repository_is_served(
+    client, uses_workflow, test_token, monkeypatch  # noqa: F811
+):
+    await _make_job_repository_private(client, test_token)
+    _no_upstream(monkeypatch)
+
+    body = await _claim_job(client, test_token)
+    token = body["variables"]["system.github.token"]["Value"]
+    resp = await _download_info(client, body, token, "testuser/uses-step-repo", "main")
+    assert resp.status_code == 200, resp.text
+    sha = resp.json()["actions"]["testuser/uses-step-repo@main"]["resolvedSha"]
+
+    archive = await _archive(client, token, "testuser/uses-step-repo", sha)
     assert archive.status_code == 200, archive.text
 
 
@@ -170,7 +213,7 @@ async def test_a_private_repository_with_the_jobs_owner_is_served(
 async def test_a_ref_missing_from_a_private_repository_here_is_not_looked_up_upstream(
     client, uses_workflow, test_token, monkeypatch  # noqa: F811
 ):
-    await _private_repository(client, test_token, "own-private-action")
+    await _make_job_repository_private(client, test_token)
     looked_up = []
 
     async def upstream(name, ref):
@@ -180,7 +223,7 @@ async def test_a_ref_missing_from_a_private_repository_here_is_not_looked_up_ups
 
     body = await _claim_job(client, test_token)
     token = body["variables"]["system.github.token"]["Value"]
-    resp = await _download_info(client, body, token, "testuser/own-private-action", "v1")
+    resp = await _download_info(client, body, token, "testuser/uses-step-repo", "v1")
     assert resp.status_code == 404
     assert resp.json()["typeKey"] == "UnresolvableActionDownloadInfoException"
     assert looked_up == []
@@ -190,10 +233,10 @@ async def test_a_ref_missing_from_a_private_repository_here_is_not_looked_up_ups
 async def test_a_commit_missing_from_a_private_repository_here_is_not_fetched_upstream(
     client, uses_workflow, test_token, monkeypatch  # noqa: F811
 ):
-    await _private_repository(client, test_token, "own-private-action")
+    await _make_job_repository_private(client, test_token)
     _no_upstream(monkeypatch)
 
     body = await _claim_job(client, test_token)
     token = body["variables"]["system.github.token"]["Value"]
-    archive = await _archive(client, token, "testuser/own-private-action", SHA)
+    archive = await _archive(client, token, "testuser/uses-step-repo", SHA)
     assert archive.status_code == 404
