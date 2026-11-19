@@ -221,6 +221,13 @@ async def connection_data(request: Request):
                 "action download info",
                 "_apis/distributedtask/hubs/{hubName}/plans/{planId}/actionsdownloadinfo",
             ),
+            # TaskResourceIds.PlanEvents: the worker raises JobCompleted here,
+            # and that event is the only place the job's outputs travel.
+            _service_definition(
+                "557624af-b29e-4c20-8ab0-0399d2204f3f",
+                "events",
+                "_apis/distributedtask/hubs/{hubName}/plans/{planId}/events",
+            ),
         ],
     }
     location_service_data.update(
@@ -579,6 +586,10 @@ def _job_request_message(
         if may_mint
         else {}
     )
+    # gh does not read GITHUB_API_URL. Without GH_HOST every gh call in a step
+    # went to api.github.com with the emulator's token and failed with "Bad
+    # credentials" (the Python runner sets it per step for the same reason).
+    step_environment = {**oidc_environment, "GH_HOST": _gh_host(runner_base_url)}
     body = {
         "messageType": "PipelineAgentJobRequest",
         "jobId": job_guid,
@@ -588,15 +599,23 @@ def _job_request_message(
         "plan": {
             "planId": plan_guid,
             "planType": "Build",
-            "version": 1,
+            # From plan version 8 the worker raises JobCompleted, carrying the
+            # job's outputs, and the listener no longer finishes the request
+            # (PlanUtil.GetFeatures). Below 8 the outputs are never sent, so
+            # dt_raise_plan_event completes the job instead.
+            "version": 8,
         },
         "timeline": {
             "id": timeline_id,
         },
         "steps": [
-            _job_step_message(job, step, oidc_environment)
+            _job_step_message(job, step, step_environment)
             for step in (job.steps or [])
         ],
+        # The job's `outputs:`, which the runner evaluates against its steps
+        # when the job ends and reports in JobCompleted. Without them it has
+        # nothing to report, and needs.<job>.outputs stays empty.
+        **({"jobOutputs": _template_mapping(job.outputs_config)} if job.outputs_config else {}),
         "variables": {
             "system.github.token": _variable(access_token, is_secret=True),
             "system.github.job": _variable(job.name),
@@ -605,6 +624,13 @@ def _job_request_message(
             "system.github.ref": _variable(ref),
             "system.github.sha": _variable(sha),
             "system.github.workflow": _variable(workflow_name),
+            # actions/runner processes `::notice::` only when the server
+            # turns this on (ActionCommandManager: "Enhanced Annotations not
+            # enabled on the server: 'notice' command will not be
+            # processed"); without it the line stays raw in the log. GitHub
+            # documents notice as a workflow command beside warning and
+            # error, rendered as `##[notice]` in the job log.
+            "DistributedTask.EnhancedAnnotations": _variable("true"),
         },
         "contextData": {
             # The runner expands an expression only when every context the
@@ -734,11 +760,37 @@ def _job_step_message(
         "condition": step.get("if") or "success()",
         # The step's own env wins, so a workflow can still override these.
         "environment": _template_mapping(
-            {**(extra_environment or {}), **(step.get("env") or {})}
+            _with_gh_enterprise_token({**(extra_environment or {}), **(step.get("env") or {})})
         ),
         "reference": reference,
         "inputs": _template_mapping(inputs),
     }
+
+
+def _gh_host(base_url: str) -> str:
+    """The emulator's host as gh's GH_HOST takes it: no scheme, no default port."""
+    parts = urlsplit(base_url)
+    default = {"http": 80, "https": 443}.get(parts.scheme)
+    if parts.port and parts.port != default:
+        return f"{parts.hostname}:{parts.port}"
+    return parts.hostname or ""
+
+
+def _with_gh_enterprise_token(environment: dict) -> dict:
+    """Mirror the token the workflow chose into gh's enterprise variables.
+
+    gh treats any host but github.com as GitHub Enterprise and reads its
+    credential from GH_ENTERPRISE_TOKEN, ignoring GH_TOKEN. Only a token the
+    workflow declared is mirrored, as the same expression so the runner
+    resolves it when the step starts: an ambient job token here would outrank
+    a narrower token a step mints for itself (the Python runner learnt the
+    same). A workflow that sets the enterprise variables itself wins.
+    """
+    token = environment.get("GH_TOKEN") or environment.get("GITHUB_TOKEN")
+    if token:
+        environment.setdefault("GH_ENTERPRISE_TOKEN", token)
+        environment.setdefault("GITHUB_ENTERPRISE_TOKEN", token)
+    return environment
 
 
 def _unsupported_uses_script(uses: str) -> str:
@@ -1301,6 +1353,60 @@ def _wrapped_exception(status: int, type_key: str, message: str) -> JSONResponse
     )
 
 
+@router.post("/_apis/distributedtask/hubs/{hub_name}/plans/{plan_id}/events")
+@router.post("/{owner}/{repo}/_apis/distributedtask/hubs/{hub_name}/plans/{plan_id}/events")
+async def dt_raise_plan_event(
+    hub_name: str, plan_id: str, request: Request, db: DbSession,
+):
+    """Complete the job from the worker's JobCompleted event.
+
+    The upstream runner resolves a job's ``outputs:`` itself and sends them
+    only in this event, which it raises from plan version 8; at that version
+    the listener no longer finishes the job request, so this event is the
+    job's completion too. The outputs are stored first, so the jobs that need
+    this one are released with them. A secret output is left out, as GitHub
+    leaves it out. The event completes a job and sets the outputs the jobs
+    that need it read, so the job token's signature and expiry are checked.
+    """
+    auth = request.headers.get("Authorization", "")
+    validated = await validate_job_token(db, auth[7:]) if auth.startswith("Bearer ") else None
+    if validated is None:
+        raise HTTPException(
+            status_code=401, detail="Authentication required", headers={"WWW-Authenticate": "Bearer"}
+        )
+    job, _run = validated
+    # The plan in the path is the job's own run, as on every job-server route.
+    if plan_id != _workflow_guid("run", job.run_id):
+        raise HTTPException(status_code=404, detail="Plan not found")
+    body = await request.json()
+    name = body.get("name", body.get("Name", ""))
+    if name != "JobCompleted":
+        return Response(status_code=200)
+    event_job = str(body.get("jobId", body.get("JobId", "")) or "")
+    if event_job and event_job.lower() != _workflow_guid("job", job.id).lower():
+        raise HTTPException(status_code=403, detail="Event is for another job")
+    if job.status != "in_progress":
+        # Only a running job completes. A repeat after completion, or an event
+        # for a job that is queued again, changes neither its outputs nor its
+        # result: the jobs that need it may already have read them.
+        return Response(status_code=200)
+    outputs = body.get("outputs", body.get("Outputs")) or {}
+    resolved = {}
+    for key, value in outputs.items():
+        if isinstance(value, dict):
+            if value.get("isSecret", value.get("IsSecret")):
+                continue
+            value = value.get("value", value.get("Value"))
+        resolved[key] = "" if value is None else str(value)
+    runner = (await db.execute(select(Runner).where(Runner.id == job.runner_id))).scalar_one_or_none()
+    if runner is None:
+        raise HTTPException(status_code=409, detail="Job has no runner to complete it")
+    job.outputs = {**(job.outputs or {}), **resolved}
+    await _complete_job(job, runner, body.get("result", body.get("Result", "Succeeded")), db)
+    await db.commit()
+    return Response(status_code=200)
+
+
 @router.post("/_apis/distributedtask/hubs/{hub_name}/plans/{plan_id}/actionsdownloadinfo")
 @router.post("/{owner}/{repo}/_apis/distributedtask/hubs/{hub_name}/plans/{plan_id}/actionsdownloadinfo")
 async def dt_resolve_action_download_info(
@@ -1367,24 +1473,55 @@ async def dt_action_archive(
 async def dt_create_hub_plan_log(
     hub_name: str, plan_id: str, request: Request, db: DbSession,
 ):
-    """Create a log placeholder or append raw log bytes from the upstream runner."""
+    """Create a log for one of the job's timeline records.
+
+    The worker creates a log per step, then appends the step's whole log file
+    to it (JobServerQueue.UploadFile). It deserializes the answer into a
+    TaskLog, whose constructor requires the path: an answer without one threw
+    "Value cannot be null. (Parameter 'path')" and no step log was uploaded.
+    """
     job = await _job_for_plan(request, db, plan_id)
     content_type = request.headers.get("content-type", "")
     if "application/octet-stream" in content_type:
-        log_data = await request.body()
-        log_path = _job_log_path(job.id)
-        os.makedirs(os.path.dirname(log_path), exist_ok=True)
-        with open(log_path, "ab") as f:
-            f.write(log_data)
-
-        return {"id": 1, "lineCount": 0}
+        log_id = _next_step_log_id(job.id)
+        _append_step_log(job.id, log_id, await request.body())
+        return _task_log(log_id, f"logs/{log_id}")
 
     body = await request.json()
-    return {
-        "id": body.get("id", body.get("Id", 1)),
-        "lineCount": 0,
-        "createdOn": datetime.now(timezone.utc).isoformat(),
-    }
+    log_id = _next_step_log_id(job.id)
+    return _task_log(log_id, str(body.get("path", body.get("Path", "")) or f"logs/{log_id}"))
+
+
+def _step_log_dir(job_id: int) -> str:
+    """Where a job's uploaded step logs live, one file per log id.
+
+    Kept apart from the job log, which the live console feed already writes:
+    the uploaded step logs repeat those lines, and appending them there
+    printed every line twice.
+    """
+    return os.path.join(os.path.dirname(_job_log_path(job_id)), str(job_id))
+
+
+def _next_step_log_id(job_id: int) -> int:
+    directory = _step_log_dir(job_id)
+    os.makedirs(directory, exist_ok=True)
+    taken = [int(name.split(".")[0]) for name in os.listdir(directory) if name.split(".")[0].isdigit()]
+    log_id = max(taken, default=0) + 1
+    # Reserve the id now: the worker appends to it in a later request.
+    open(os.path.join(directory, f"{log_id}.log"), "ab").close()
+    return log_id
+
+
+def _append_step_log(job_id: int, log_id: int, data: bytes) -> None:
+    directory = _step_log_dir(job_id)
+    os.makedirs(directory, exist_ok=True)
+    with open(os.path.join(directory, f"{log_id}.log"), "ab") as f:
+        f.write(data)
+
+
+def _task_log(log_id: int, path: str) -> dict:
+    now = datetime.now(timezone.utc).isoformat()
+    return {"id": log_id, "path": path, "lineCount": 0, "createdOn": now, "lastChangedOn": now}
 
 
 @router.post("/_apis/distributedtask/hubs/{hub_name}/plans/{plan_id}/logs/{log_id}")
@@ -1396,16 +1533,10 @@ async def dt_append_hub_plan_log(
     request: Request,
     db: DbSession,
 ):
-    """Append uploaded log file bytes from the upstream runner worker."""
+    """Append an uploaded step log file to the log the worker created for it."""
     job = await _job_for_plan(request, db, plan_id)
-
-    log_data = await request.body()
-    log_path = _job_log_path(job.id)
-    os.makedirs(os.path.dirname(log_path), exist_ok=True)
-    with open(log_path, "ab") as f:
-        f.write(log_data)
-
-    return {"id": log_id, "lineCount": 0}
+    _append_step_log(job.id, log_id, await request.body())
+    return _task_log(log_id, f"logs/{log_id}")
 
 
 @router.patch("/_apis/distributedtask/hubs/{hub_name}/plans/{plan_id}/timelines/{timeline_id}/records")
@@ -1423,4 +1554,8 @@ async def dt_update_hub_timeline_records(
 
     await _update_timeline_for_job(job, body, db)
     await db.commit()
-    return body.get("value", body.get("records", []))
+    # The worker reads this as VssJsonCollectionWrapper<List<TimelineRecord>>,
+    # {"count", "value"}. A bare array failed to deserialize, so it treated
+    # every update as failed and kept resending it.
+    records = body.get("value", body.get("records", []))
+    return {"count": len(records), "value": records}
