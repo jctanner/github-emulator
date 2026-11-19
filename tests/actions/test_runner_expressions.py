@@ -12,7 +12,6 @@ from pathlib import Path
 
 import pytest
 
-
 RUNNER_PATH = (
     Path(__file__).parents[2] / "src" / "runners" / "emulator" / "runner.py"
 )
@@ -263,7 +262,6 @@ def test_a_condition_without_a_status_function_implies_success():
     save ran after the copy before it had failed, and cached an empty
     directory that the next job restored as a hit.
     """
-    outputs = {"cli-cache": {"outputs": {"cache-hit": "false"}}}
     condition = "steps.cli-cache.outputs.cache-hit != 'true'"
     assert runner_module._evaluate_step_if(condition, {"cli-cache": {"cache-hit": "false"}})
     assert not runner_module._evaluate_step_if(condition, {"cli-cache": {"cache-hit": "false"}}, failed=True)
