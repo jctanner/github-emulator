@@ -11,9 +11,12 @@ from sqlalchemy.ext.asyncio import async_engine_from_config
 # -- Alembic Config object ---------------------------------------------------
 config = context.config
 
-# Interpret the config file for Python logging.
-if config.config_file_name is not None:
-    fileConfig(config.config_file_name)
+# Interpret the config file for Python logging, on the command line only:
+# the app runs migrations at startup with its logging set up already
+# (``configure_logger`` is False). Keep existing loggers either way; the
+# default disables them, the app's own included.
+if config.config_file_name is not None and config.attributes.get("configure_logger", True):
+    fileConfig(config.config_file_name, disable_existing_loggers=False)
 
 # -- Import models so Alembic sees every table --------------------------------
 from app.database import Base  # noqa: E402

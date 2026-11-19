@@ -148,6 +148,7 @@ Actions visibility and runner evaluation.
 - `docs/bugs/fixed/cancellation-never-reaches-a-runner-that-moved-on.md`
 - `docs/bugs/fixed/job-handed-to-an-abandoned-runner-poll.md`
 - `docs/bugs/fixed/runner-self-delete-leaves-jobs-pointing-at-it.md`
+- `docs/bugs/fixed/app-logs-silenced-after-the-startup-migration.md`
 
 ## Decisions
 
