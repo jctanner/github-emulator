@@ -1690,6 +1690,10 @@ class Mutation:
                 f"{current_user.login} does not have the correct permissions to execute `CreateCommitOnBranch`",
             )
 
+        from app.services.repository_lock import hold_repository_lock
+
+        # One ref write to this repository at a time, until the response is sent.
+        await hold_repository_lock(repo.id)
         changes = input.file_changes or FileChanges()
         additions: list[tuple[str, bytes]] = []
         for addition in changes.additions or []:

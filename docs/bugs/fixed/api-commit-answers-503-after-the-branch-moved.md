@@ -51,6 +51,11 @@ same file, used by the git/refs routes, both:
    newer push. If the heads' own update meets a lock that persists, the
    already committed write still answers 200 and the heads wait for the
    next push; that is logged.
+   API writes to one repository also run one at a time: each route takes the
+   repository's write lock (`app/services/repository_lock.py`) before it
+   reads the ref it will move, and holds it until the response is sent, so
+   no other API writer's ref move, record or rollback lands in between.
+   Git pushes take their own path and keep only the ordering rule above.
 3. If the lock persists, move the ref back before answering 503, so a
    retry finds the repository as it was. This happens only while the ref
    is still at the new commit: a ref another writer has moved since keeps

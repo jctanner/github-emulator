@@ -16,6 +16,7 @@ from app.schemas.browse import TagResponse
 from app.schemas.user import _make_node_id
 from app.services.branch_service import replay_ref_record
 from app.services.cross_repo_pulls import same_repository_head
+from app.services.repository_lock import hold_repository_lock
 
 router = APIRouter(tags=["git-refs"])
 
@@ -225,6 +226,7 @@ async def create_ref(
     # "heads/x" is refs/heads/x, as _branch_name reads it.
     ref = ref if ref.startswith("refs/") else f"refs/{ref}"
 
+    await hold_repository_lock(repository.id)
     # `git update-ref` moves a ref that is already there, so creating an
     # existing branch answered 201 and silently repointed it. GitHub refuses
     # with 422 "Reference already exists" and leaves the ref alone. The empty
@@ -273,6 +275,7 @@ async def update_ref(
         if force and not branch.protection.allow_force_pushes:
             raise ValidationError(message="Cannot force-update this protected branch")
 
+    await hold_repository_lock(repository.id)
     args = ["update-ref", full_ref, sha]
     try:
         old_sha = (await _git(repository.disk_path, "rev-parse", full_ref)).strip()

@@ -435,3 +435,60 @@ async def test_an_obsolete_commit_still_raises_its_push(client, test_token, test
     assert len(calls) == 1
     assert calls[0]["after_sha"] == head and calls[0]["update_heads"] is False
     assert first != head
+
+
+@pytest.mark.asyncio
+async def test_api_ref_writes_to_one_repository_run_one_at_a_time(client, test_token, db_session, monkeypatch):
+    """A second contents write waits until the first has recorded its ref,
+    moved the pull request heads and raised its push: the record and the
+    heads end at the later commit."""
+    import asyncio
+
+    from sqlalchemy import select
+
+    from app.models.pull_request import PullRequest
+    from app.services import api_push
+
+    name, head = await _repo(client, test_token, "serial-writes")
+    url, _first, _number = await _open_pull_request(client, test_token, name, head)
+    disk_path, _ = await _branch_row_sha(db_session, name, "topic")
+    h = auth_headers(test_token)
+
+    paused, release = asyncio.Event(), asyncio.Event()
+    real_after = api_push.after_api_commit
+
+    async def slow_after(db, repository, user, branch, before, after):
+        if not paused.is_set():
+            paused.set()
+            await release.wait()
+        return await real_after(db, repository, user, branch, before, after)
+
+    monkeypatch.setattr("app.api.contents.after_api_commit", slow_after)
+
+    async def put(path, text):
+        body = {"message": path, "content": base64.b64encode(text).decode(), "branch": "topic"}
+        return await client.put(f"{url}/contents/{path}", json=body, headers=h)
+
+    first = asyncio.create_task(put("a.txt", b"a\\n"))
+    await paused.wait()
+    at_pause = await _ref_at(disk_path, "refs/heads/topic")
+    second = asyncio.create_task(put("b.txt", b"b\\n"))
+    await asyncio.sleep(0.3)
+    # The second write has not moved the ref while the first is still running.
+    assert await _ref_at(disk_path, "refs/heads/topic") == at_pause
+    release.set()
+    a, b = await first, await second
+    assert a.status_code == 201 and b.status_code == 201, (a.text, b.text)
+    later = b.json()["commit"]["sha"]
+
+    _, recorded = await _branch_row_sha(db_session, name, "topic")
+    assert recorded == later
+    db_session.expire_all()
+    head_sha = (await db_session.execute(select(PullRequest.head_sha).where(PullRequest.head_ref == "topic"))).scalar_one()
+    assert head_sha == later
+
+
+async def _ref_at(disk_path, ref):
+    from app.services.git_service import ref_sha
+
+    return await ref_sha(disk_path, ref)

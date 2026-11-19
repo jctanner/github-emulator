@@ -276,7 +276,9 @@ async def _run_git_command_from_file(
 
 
 
-async def _recover_after_failed_step(db, step: str, repo_id: int, repository, user) -> None:
+async def _recover_after_failed_step(
+    db: AsyncSession, step: str, repo_id: int, repository: Repository, user: User | None,
+) -> None:
     """Log a failed post-push step and leave the session usable for the next.
 
     Each step used to swallow its error with no rollback and no log. On

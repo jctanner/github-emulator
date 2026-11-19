@@ -15,6 +15,7 @@ from app.schemas.browse import ContentResponse
 from app.schemas.user import _make_node_id
 from app.services.api_push import after_api_commit
 from app.services.branch_service import record_moved_branch
+from app.services.repository_lock import hold_repository_lock
 
 router = APIRouter(tags=["contents"])
 
@@ -205,6 +206,8 @@ async def create_or_update_file(
         raise HTTPException(status_code=422, detail="Invalid base64 content") from None
 
     repo_path = repository.disk_path
+    # One ref write to this repository at a time, until the response is sent.
+    await hold_repository_lock(repository.id)
 
     # Write blob
     blob_sha = (await _git(repo_path, "hash-object", "-w", "--stdin", input_data=content_bytes)).strip()
@@ -343,6 +346,7 @@ async def delete_file(
         raise HTTPException(status_code=422, detail="Invalid request. message and sha are required")
     branch = body.get("branch", repository.default_branch)
     repo_path = repository.disk_path
+    await hold_repository_lock(repository.id)
     try:
         parent_sha = (await _git(repo_path, "rev-parse", "--verify", f"refs/heads/{branch}")).strip()
         current = (await _git(repo_path, "rev-parse", f"{parent_sha}:{path}")).strip()

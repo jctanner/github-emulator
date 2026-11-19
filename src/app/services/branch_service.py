@@ -3,10 +3,14 @@
 Callers commit these updates together with their repository metadata.
 """
 
-from sqlalchemy import select
+from datetime import datetime, timezone
+
+from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.database_retry import commit_with_sqlite_retry
 from app.git.bare_repo import get_branches
+from app.middleware.error_handler import RetryableDatabaseError
 from app.models.branch import Branch
 from app.models.repository import Repository
 from app.services.git_service import full_ref, move_ref_back, ref_sha
@@ -58,10 +62,6 @@ async def commit_if_ref_unmoved(
     Returns whether this request's value was staged and committed. Raises
     RetryableDatabaseError if the lock persists.
     """
-    from sqlalchemy import update
-
-    from app.database_retry import commit_with_sqlite_retry
-
     staged = False
 
     async def lock_and_stage() -> None:
@@ -103,10 +103,6 @@ async def record_moved_branch(
     rollback expires them, so they are reloaded on replay. Returns the
     repository, reloaded if a replay happened.
     """
-    from datetime import datetime, timezone
-
-    from app.middleware.error_handler import RetryableDatabaseError
-
     repository_id, disk_path = repository.id, repository.disk_path
     current = repository
     await db.commit()  # nothing pending: ends the read snapshot
@@ -152,8 +148,6 @@ async def replay_ref_record(
     persists, the ref is put back (only while still at ``after``) before the
     503, so the client's retry finds the repository as it was.
     """
-    from app.middleware.error_handler import RetryableDatabaseError
-
     async def reload() -> None:
         for obj in refresh:
             await db.refresh(obj)
