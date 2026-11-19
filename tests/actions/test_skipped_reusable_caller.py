@@ -241,3 +241,71 @@ async def test_a_run_whose_jobs_all_skipped_is_skipped(
     assert [r.conclusion for r in rows] == ["skipped", "skipped"]
     run = await _reload(db_session, run)
     assert (run.status, run.conclusion) == ("completed", "skipped")
+
+
+SKIPPED_CALL = {
+    "on": {"workflow_call": {}},
+    "jobs": {"work": {"runs-on": ["self-hosted"], "steps": [{"run": "echo"}]}},
+}
+
+FORWARD_CALL = {
+    "on": {"workflow_call": {
+        "inputs": {"r": {"type": "string"}},
+        "outputs": {"o": {"value": "${{ inputs.r }}"}},
+    }},
+    "jobs": {"forward": {"runs-on": ["self-hosted"], "steps": [{"run": "echo"}]}},
+}
+
+
+@pytest.mark.asyncio
+async def test_a_job_behind_two_callers_reads_a_skipped_callers_result_through_the_second(
+    monkeypatch, executable_workflow, db_session, test_user,  # noqa: F811
+):
+    """``a`` is skipped, so ``b``'s ``needs.a.result`` is ``skipped``, and
+    ``c`` reads it back through ``needs.b.outputs.o``. ``c``'s copy of ``b``'s
+    alias holds one for ``a`` built from called jobs that were never created;
+    it must not replace ``a``'s own skipped row in ``needs``."""
+    _repo, workflow, _ = executable_workflow
+
+    async def fake_detect(path, ref="HEAD"):
+        return [
+            {"_path": ".github/workflows/a.yml", **SKIPPED_CALL},
+            {"_path": ".github/workflows/b.yml", **FORWARD_CALL},
+        ]
+
+    monkeypatch.setattr(workflow_service, "detect_workflows", fake_detect)
+    workflow_yaml = await workflow_service.materialize_reusable_workflows({
+        "name": "chain",
+        "jobs": {
+            "a": {"if": "false", "uses": "./.github/workflows/a.yml"},
+            "b": {
+                "needs": "a",
+                "if": "${{ always() }}",
+                "uses": "./.github/workflows/b.yml",
+                "with": {"r": "${{ needs.a.result }}"},
+            },
+            "c": {
+                "needs": "b",
+                "runs-on": ["self-hosted"],
+                "steps": [{"run": "echo ${{ needs.b.outputs.o }}"}],
+            },
+        },
+    }, "caller.git", "main", None)
+    run = await _run(
+        db_session, workflow, test_user, workflow_yaml,
+        {"ref": "refs/heads/main"}, event="push",
+    )
+
+    await dispatch_ready_jobs(db_session, run.id)
+    await db_session.commit()
+    rows = {r.job_key: r for r in await _rows(db_session, run)}
+    assert sorted(rows) == ["a", "b / forward", "c"]
+    assert rows["a"].conclusion == "skipped"
+    assert rows["b / forward"].status == "queued"
+
+    await _finish(db_session, rows["b / forward"], "success")
+    await dispatch_ready_jobs(db_session, run.id)
+    await db_session.commit()
+    rows = {r.job_key: r for r in await _rows(db_session, run)}
+    assert rows["c"].status == "queued"
+    assert rows["c"].steps[0]["run"] == "echo skipped"

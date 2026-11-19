@@ -618,14 +618,17 @@ def _alias_entry(alias: dict, needs_context: dict, run_context: dict, parent_inp
     # or a compound one on the caller's own inputs), rendered here as
     # ``_job_context`` renders them for the called jobs. A need on another
     # caller (``needs_aliases``) reads that caller's entry, as the called
-    # jobs' own needs.<caller> does.
-    needs = {
-        **needs_context,
-        **{
-            name: _alias_entry(upstream, needs_context, run_context, parent_inputs)
-            for name, upstream in (alias.get("needs_aliases") or {}).items()
-        },
-    }
+    # jobs' own needs.<caller> does. A run's caller skipped by its own
+    # ``if:`` has none of its called jobs in the run, only one skipped job
+    # under its key: that job's entry stands, as run creation keeps it for
+    # the caller's direct dependents.
+    needs = {**needs_context}
+    for name, upstream in (alias.get("needs_aliases") or {}).items():
+        if name in needs_context and not any(
+            outer in needs_context for outer in upstream.get("jobs", {}).values()
+        ):
+            continue
+        needs[name] = _alias_entry(upstream, needs_context, run_context, parent_inputs)
     inputs = render_expressions(alias.get("inputs") or {}, {
         "github": run_context.get("github") or {},
         "vars": run_context.get("vars") or {},
