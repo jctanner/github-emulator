@@ -285,6 +285,9 @@ async def set_team_membership(
             status_code=422,
             detail="the user must be an active member of the organization; team invitations are not emulated",
         )
+    if org_membership.role == "admin":
+        # GitHub makes an organization owner a maintainer of any team they join.
+        role = "maintainer"
     membership = await _team_membership(team, target, db)
     if membership is None:
         membership = TeamMembership(team_id=team.id, user_id=target.id, role=role)

@@ -16,7 +16,8 @@ every such check failed.
   site admins can see it. A secret team is visible only to its members,
   org admins and site admins, so to anyone else it answers 404.
 - `PUT` lets org admins, site admins and the team's maintainers add a user or change their team
-  role (`member` or `maintainer`). GitHub invites a user who is not yet in
+  role (`member` or `maintainer`). An organization owner always joins as
+  `maintainer`, as on GitHub. GitHub invites a user who is not yet in
   the organization. The emulator has no team invitations, so that case
   answers 422 rather than creating a membership that does not exist.
 - `DELETE` lets the same callers remove a user, and answers 204. A

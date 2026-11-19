@@ -175,3 +175,18 @@ async def test_an_app_reads_and_changes_team_memberships_by_its_members_grant(
     assert "Resource not accessible by integration" in refused.json()["message"]
     assert (await client.put(url, headers=other, json={})).status_code == 403
     assert (await client.delete(url, headers=writer)).status_code == 204
+
+
+@pytest.mark.asyncio
+async def test_an_organization_owner_joins_a_team_as_maintainer(client, admin_token, test_user, test_token):
+    """GitHub makes an organization owner a maintainer of any team they join."""
+    slug = await _org_with_team(client, admin_token)
+    owner = await client.put(f"{API}/orgs/acme/memberships/testuser", headers=auth_headers(admin_token), json={"role": "admin"})
+    assert owner.status_code == 200, owner.text
+    url = f"{API}/orgs/acme/teams/{slug}/memberships/testuser"
+
+    added = await client.put(url, headers=auth_headers(admin_token), json={})
+    assert added.status_code == 200, added.text
+    assert added.json()["role"] == "maintainer"
+    updated = await client.put(url, headers=auth_headers(admin_token), json={"role": "member"})
+    assert updated.json()["role"] == "maintainer"
