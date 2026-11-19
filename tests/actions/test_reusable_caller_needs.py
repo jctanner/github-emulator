@@ -674,3 +674,117 @@ async def test_a_nested_calls_compound_with_reads_its_own_workflows_inputs(
     report = await _promote_after(db_session, run, ["outer / inner / leaf"], "outer / report")
     assert report.status == "queued"
     assert report.steps[0]["run"] == "echo v2"
+
+
+THREE_LEVELS = {
+    "outer.yml": {
+        "on": {"workflow_call": {
+            "inputs": {"ver": {"type": "string"}},
+            "outputs": {
+                "tag": {"value": "${{ jobs.mid.outputs.tag }}"},
+                "plain": {"value": "${{ jobs.mid.outputs.plain }}"},
+            },
+        }},
+        "jobs": {"mid": {
+            "uses": "./.github/workflows/mid.yml",
+            "with": {"ver": "${{ format('{0}-mid', inputs.ver) }}"},
+        }},
+    },
+    "mid.yml": {
+        "on": {"workflow_call": {
+            "inputs": {"ver": {"type": "string"}},
+            "outputs": {
+                "tag": {"value": "${{ jobs.inner.outputs.tag }}"},
+                "plain": {"value": "${{ jobs.inner.outputs.plain }}"},
+            },
+        }},
+        "jobs": {
+            "inner": {
+                "uses": "./.github/workflows/inner.yml",
+                "with": {"tag": "${{ format('v{0}', inputs.ver) }}", "plain": "${{ inputs.ver }}"},
+            },
+            "show": {"runs-on": ["self-hosted"], "steps": [{"run": "echo ${{ inputs.ver }}"}]},
+            "report": {
+                "needs": "inner",
+                "runs-on": ["self-hosted"],
+                "steps": [{"run": "echo ${{ needs.inner.outputs.tag }} ${{ needs.inner.outputs.plain }} ${{ inputs.ver }}"}],
+            },
+        },
+    },
+    "inner.yml": {
+        "on": {"workflow_call": {
+            "inputs": {"tag": {"type": "string"}, "plain": {"type": "string"}},
+            "outputs": {
+                "tag": {"value": "${{ inputs.tag }}"},
+                "plain": {"value": "${{ inputs.plain }}"},
+            },
+        }},
+        "jobs": {"leaf": {
+            "runs-on": ["self-hosted"],
+            "steps": [{"run": "echo ${{ inputs.tag }} ${{ inputs.plain }}"}],
+        }},
+    },
+}
+
+
+async def _three_level_run(monkeypatch, executable_workflow, db_session, test_user):  # noqa: F811
+    caller = {"name": "caller", "jobs": {
+        "outer": {"uses": "./.github/workflows/outer.yml", "with": {"ver": "2"}},
+        "after": {
+            "needs": "outer",
+            "runs-on": ["self-hosted"],
+            "steps": [{"run": "echo ${{ needs.outer.outputs.tag }} ${{ needs.outer.outputs.plain }}"}],
+        },
+    }}
+
+    async def fake_detect(path, ref="HEAD"):
+        return [{"_path": f".github/workflows/{name}", **config} for name, config in THREE_LEVELS.items()]
+
+    monkeypatch.setattr(workflow_service, "detect_workflows", fake_detect)
+    inputs = {"ver": "run"}
+    workflow_yaml = await workflow_service.materialize_reusable_workflows(
+        caller, "caller.git", "main", None, inputs=inputs,
+    )
+    _repo, workflow, _ = executable_workflow
+    run = await create_workflow_run(
+        db_session, workflow, workflow_yaml, event="workflow_dispatch",
+        payload={"repository": {"full_name": "testuser/actions-exec-repo"}, "inputs": inputs},
+        actor=test_user, head_sha="caller123", head_branch="main",
+    )
+    await db_session.commit()
+    return run
+
+
+@pytest.mark.asyncio
+async def test_a_twice_nested_calls_compound_with_reads_each_levels_own_inputs(
+    monkeypatch, executable_workflow, db_session, test_user,  # noqa: F811
+):
+    """run (ver=run) -> outer (ver=2) -> mid (ver=format('{0}-mid', inputs.ver))
+    -> inner (tag=format('v{0}', inputs.ver), plain=inputs.ver). Each
+    ``with:`` reads the inputs of the workflow it is written in: mid's ver is
+    '2-mid', inner's tag 'v2-mid' and plain '2-mid', both for the called jobs
+    and for needs.inner in mid."""
+    run = await _three_level_run(monkeypatch, executable_workflow, db_session, test_user)
+    rows = await _rows(db_session, run)
+    assert rows["outer / mid / show"].steps[0]["run"] == "echo 2-mid"
+    assert rows["outer / mid / inner / leaf"].steps[0]["run"] == "echo v2-mid 2-mid"
+    report = await _promote_after(
+        db_session, run, ["outer / mid / inner / leaf"], "outer / mid / report",
+    )
+    assert report.status == "queued"
+    assert report.steps[0]["run"] == "echo v2-mid 2-mid 2-mid"
+
+
+@pytest.mark.asyncio
+async def test_an_output_forwarded_up_from_a_twice_nested_call(
+    monkeypatch, executable_workflow, db_session, test_user,  # noqa: F811
+):
+    """inner's output, forwarded by mid and by outer, reaches the run's own
+    dependent with the value inner received."""
+    run = await _three_level_run(monkeypatch, executable_workflow, db_session, test_user)
+    after = await _promote_after(
+        db_session, run,
+        ["outer / mid / inner / leaf", "outer / mid / show", "outer / mid / report"],
+    )
+    assert after.status == "queued"
+    assert after.steps[0]["run"] == "echo v2-mid 2-mid"

@@ -105,6 +105,7 @@ async def dispatch_ready_jobs(db: AsyncSession, run_id: int) -> list[WorkflowJob
         build_needs_context,
         build_run_expression_context,
         build_steps_data,
+        call_inputs_context,
         fail_refused_job,
         needs_alias_entries,
         render_job_labels,
@@ -216,13 +217,10 @@ async def dispatch_ready_jobs(db: AsyncSession, run_id: int) -> list[WorkflowJob
                         or github_ctx.get("sha", ""),
                     },
                 }
-                call_inputs = pending.get("_call_inputs") or {}
                 call_secrets = pending.get("_call_secrets") or {}
-                if call_inputs:
-                    context["inputs"] = {
-                        **(base_context.get("inputs") or {}),
-                        **render_expressions(call_inputs, context),
-                    }
+                inputs = call_inputs_context(pending, base_context.get("inputs") or {}, context)
+                if inputs is not None:
+                    context["inputs"] = inputs
                 if call_secrets:
                     context["secrets"] = {
                         **(base_context.get("secrets") or {}),

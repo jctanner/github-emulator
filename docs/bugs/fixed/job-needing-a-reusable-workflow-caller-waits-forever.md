@@ -62,8 +62,27 @@ the run. A job with `needs: <caller>`:
   jobs render their `with:` against. Before, the alias used `{}` there, so a
   compound expression such as `${{ format('{0}-x', inputs.ver) }}` gave the
   called job `1.0-x` but `needs.<caller>.outputs` `-x`. For a caller inside
-  a called workflow, they are that workflow's inputs, kept on the alias at
-  materialization (`parent_inputs`), not the run's.
+  a called workflow, they are that workflow's inputs, not the run's.
+- Calls nested at any depth resolve each `with:` in the terms of the
+  workflow it is written in. The alias keeps the `with:` of every enclosing
+  call (`parent_inputs_chain`, outermost first), and each called job keeps
+  the same chain (`_call_inputs_chain`). Both are rendered one level at a
+  time: the rendered inputs of one level are the `inputs` context of the
+  next, starting from the run's inputs. Before, the alias kept only the
+  innermost calling workflow's inputs and rendered them against the run's,
+  and the called jobs rendered all levels' merged inputs in one pass against
+  the run's. With the run's `ver=run`, `outer` called with `ver=2`, `mid`
+  with `ver=${{ format('{0}-mid', inputs.ver) }}` and `inner` with
+  `tag=${{ format('v{0}', inputs.ver) }}`, a job in `mid` read `run-mid`
+  for `inputs.ver` and `vrun-mid` for `needs.inner.outputs.tag`; they are now
+  `2-mid` and `v2-mid`.
+- A bare `${{ inputs.x }}` in a called workflow is substituted at
+  materialization only when the passed value is a literal. A value that is
+  itself an expression is in the calling workflow's terms, so the reference
+  is kept and reads the job's rendered inputs. Before, the expression was
+  copied in and then rendered against the called workflow's inputs: with
+  `ver=${{ format('{0}-mid', inputs.ver) }}`, `${{ inputs.ver }}` in `mid`
+  became `2-mid-mid`.
 - A caller that needs another caller (A → B → C, B with
   `x: ${{ needs.A.outputs.o }}`) keeps the aliases of the callers it needs
   (`needs_aliases`, in any job order; a needs cycle is cut). Its `with:` is

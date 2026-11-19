@@ -336,6 +336,7 @@ def build_job_graph(workflow_yaml: dict) -> list[dict]:
             "concurrency": config.get("concurrency"),
             "outputs": config.get("outputs", {}),
             "_call_inputs": config.get("_call_inputs", {}),
+            "_call_inputs_chain": config.get("_call_inputs_chain") or [],
             "_call_secrets": config.get("_call_secrets", {}),
             "_workflow_repository": config.get("_workflow_repository", ""),
             "_workflow_sha": config.get("_workflow_sha", ""),
@@ -420,6 +421,13 @@ def _render_reusable_call_context(
             if not _BARE_CONTEXT_PATH_RE.fullmatch(expression):
                 return match.group(0)
             if expression.startswith("inputs."):
+                # An input that is itself an unrendered expression is in the
+                # calling workflow's terms. Substituted here, it would be
+                # rendered against this workflow's inputs instead; kept, it
+                # reads this workflow's rendered inputs (``_call_inputs_chain``).
+                passed = inputs.get(expression.split(".", 2)[1])
+                if isinstance(passed, str) and "${{" in passed:
+                    return match.group(0)
                 return _lookup_context({"inputs": inputs}, expression)
             if expression.startswith("secrets."):
                 if secrets is None:
@@ -550,7 +558,8 @@ def needs_alias_entries(aliases: dict, needs_context: dict, run_context: dict | 
     A ``with:`` expression on ``inputs`` reads the calling workflow's
     inputs: for the run's own callers, the run's (``run_context['inputs']``),
     as the called jobs' ``_job_context`` does; for a caller inside a called
-    workflow, that workflow's (``parent_inputs``, kept at materialization).
+    workflow, that workflow's, resolved from the inputs of each enclosing
+    call (``parent_inputs_chain``, kept at materialization).
     """
     run_context = run_context or {}
     return {
@@ -561,19 +570,36 @@ def needs_alias_entries(aliases: dict, needs_context: dict, run_context: dict | 
     }
 
 
+def resolve_call_inputs_chain(chain: list, inputs: dict, context: dict) -> list[dict]:
+    """Render the inputs of nested calls, outermost first.
+
+    ``chain[k]`` is the ``with:`` of the call at level k+1, written in the
+    terms of the workflow at level k. Each level is rendered with ``inputs``
+    set to the level before it, starting from ``inputs`` (the run's), and the
+    rendered levels are returned in the same order. Rendering every level
+    against the run's inputs read a nested ``with:`` in the wrong workflow's
+    terms once calls nested more than one level.
+    """
+    resolved: list[dict] = []
+    for level in chain or []:
+        rendered = render_expressions(level or {}, {**context, "inputs": inputs})
+        inputs = rendered if isinstance(rendered, dict) else {}
+        resolved.append(inputs)
+    return resolved
+
+
 def _alias_parent_inputs(alias: dict, needs_context: dict, run_context: dict) -> dict:
     run_inputs = run_context.get("inputs") or {}
-    if "parent_inputs" not in alias:
+    chain = alias.get("parent_inputs_chain") or []
+    if not chain:
         return run_inputs
-    # The enclosing call's resolved inputs; a value still holding an
-    # expression is in the run's terms one level up.
-    parent = render_expressions(alias["parent_inputs"] or {}, {
+    # The inputs of the workflow holding the caller, each enclosing call's
+    # ``with:`` rendered in its own calling workflow's terms.
+    return resolve_call_inputs_chain(chain, run_inputs, {
         "github": run_context.get("github") or {},
         "vars": run_context.get("vars") or {},
         "needs": needs_context,
-        "inputs": run_inputs,
-    })
-    return parent if isinstance(parent, dict) else {}
+    })[-1]
 
 
 def alias_result(alias: dict, results: dict) -> str:
@@ -631,10 +657,17 @@ def _alias_entry(alias: dict, needs_context: dict, run_context: dict, parent_inp
     return {"result": result, "outputs": outputs}
 
 
-def _prefix_alias(alias: dict, prefix: str, keys: set) -> dict:
+def _prefix_alias(alias: dict, prefix: str, keys: set, call_inputs: dict | None = None) -> dict:
     """An alias from a called workflow with its job keys as this level names
-    them, its own nested callers included."""
-    return {
+    them, its own nested callers included.
+
+    ``call_inputs`` is the ``with:`` of the call this level makes into that
+    workflow. It goes in front of the alias's ``parent_inputs_chain``, so at
+    the run's level the chain holds the inputs of every enclosing call,
+    outermost first. A nested caller in ``callers`` or ``needs_aliases`` gets
+    its inputs from the entry built around it, so it needs no chain.
+    """
+    prefixed = {
         **alias,
         "jobs": {
             inner: f"{prefix}{outer}" if outer in keys else outer
@@ -649,6 +682,11 @@ def _prefix_alias(alias: dict, prefix: str, keys: set) -> dict:
             for name, upstream in (alias.get("needs_aliases") or {}).items()
         },
     }
+    if call_inputs is not None:
+        prefixed["parent_inputs_chain"] = [
+            copy.deepcopy(call_inputs), *(alias.get("parent_inputs_chain") or []),
+        ]
+    return prefixed
 
 
 def _declared_call_inputs(called: dict) -> dict:
@@ -848,10 +886,6 @@ async def _materialize_reusable_jobs(
                 for name, nested in nested_callers.items()
             },
         }
-        if depth > 0:
-            # The calling workflow's inputs, which a compound ``with:``
-            # expression reads when a sibling's needs.<key> is built.
-            callers[key]["parent_inputs"] = copy.deepcopy(inputs)
         declared_needs = config.get("needs") or []
         caller_needs[key] = [declared_needs] if isinstance(declared_needs, str) else list(declared_needs)
         for called_key, called_config in called_jobs.items():
@@ -861,7 +895,7 @@ async def _materialize_reusable_jobs(
             # there; this level prefixes those keys, so prefix them here too.
             aliases = child.get("_needs_aliases") or {}
             for name, alias in aliases.items():
-                aliases[name] = _prefix_alias(alias, prefix, called_keys)
+                aliases[name] = _prefix_alias(alias, prefix, called_keys, call_inputs)
             caller_condition = config.get("if")
             child_condition = child.get("if")
             if caller_condition is not None:
@@ -874,6 +908,12 @@ async def _materialize_reusable_jobs(
             # substituted lexically, so the called workflow's inputs and
             # secrets travel with the job and enter its expression context.
             child["_call_inputs"] = {**call_inputs, **(child.get("_call_inputs") or {})}
+            # The same inputs by level, outermost first: a nested call's
+            # ``with:`` is in its own calling workflow's terms, so the job's
+            # inputs are rendered one level at a time (``call_inputs_context``).
+            child["_call_inputs_chain"] = [
+                copy.deepcopy(call_inputs), *(child.get("_call_inputs_chain") or []),
+            ]
             child["_call_secrets"] = {
                 **(call_secrets or {}), **(child.get("_call_secrets") or {}),
             }
@@ -1004,6 +1044,28 @@ def _instance_strategy(job_config: dict, context: dict) -> dict:
     return strategy_context(job_config.get("strategy"), context=context)
 
 
+def call_inputs_context(job_config: dict, run_inputs: dict, context: dict) -> dict | None:
+    """The ``inputs`` context of a job an inlined reusable workflow defined.
+
+    Each enclosing call's ``with:`` (``_call_inputs_chain``, outermost first)
+    is rendered against the inputs of the workflow it is written in, as
+    ``needs_alias_entries`` renders them for needs.<caller>. Keys of outer
+    levels stay visible under inner ones, as the merged ``_call_inputs`` has
+    them. A job with only ``_call_inputs`` has it rendered in one pass. None
+    when the job carries no call inputs.
+    """
+    chain = job_config.get("_call_inputs_chain") or []
+    if chain:
+        merged = dict(run_inputs)
+        for level in resolve_call_inputs_chain(chain, run_inputs, context):
+            merged.update(level)
+        return merged
+    call_inputs = job_config.get("_call_inputs") or {}
+    if call_inputs:
+        return {**run_inputs, **render_expressions(call_inputs, context)}
+    return None
+
+
 def _job_context(base_context: dict, job_config: dict) -> dict:
     """Build a job's expression context, layering any reusable-call values.
 
@@ -1026,11 +1088,10 @@ def _job_context(base_context: dict, job_config: dict) -> dict:
             "workflow_sha": job_config.get("_workflow_sha") or github.get("sha", ""),
         },
     }
-    call_inputs = job_config.get("_call_inputs") or {}
     call_secrets = job_config.get("_call_secrets") or {}
-    if call_inputs:
-        rendered_inputs = render_expressions(call_inputs, context)
-        context["inputs"] = {**(base_context.get("inputs") or {}), **rendered_inputs}
+    inputs = call_inputs_context(job_config, base_context.get("inputs") or {}, context)
+    if inputs is not None:
+        context["inputs"] = inputs
     if call_secrets:
         rendered_secrets = render_expressions(call_secrets, context)
         context["secrets"] = {**(base_context.get("secrets") or {}), **rendered_secrets}
@@ -1563,6 +1624,7 @@ async def create_workflow_run(
                     "matrix": job_config.get("_matrix", {}),
                     "strategy": job_expression_context["strategy"],
                     "_call_inputs": job_config.get("_call_inputs") or {},
+                    "_call_inputs_chain": job_config.get("_call_inputs_chain") or [],
                     "_call_secrets": job_config.get("_call_secrets") or {},
                     "_workflow_repository": job_config.get("_workflow_repository") or "",
                     "_workflow_sha": job_config.get("_workflow_sha") or "",
