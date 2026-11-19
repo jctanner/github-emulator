@@ -325,6 +325,7 @@ async def dt_oauth_token(request: Request, db: DbSession, runner_id: int = Query
 
     access_token = f"ghp_runner_{secrets.token_urlsafe(32)}"
     runner.token_hash = hash_token(access_token)
+    runner.registration_broker = False
     runner.status = "online"
     runner.last_heartbeat = datetime.now(timezone.utc)
     await db.commit()
@@ -434,6 +435,8 @@ async def dt_register_pool_agent(
         )
         runner.labels = _labels_from_body(body) or runner.labels
         runner.public_key = public_key_pem_from_agent(body) or runner.public_key
+        # The broker becomes the registered agent here and stops being a broker.
+        runner.registration_broker = False
         runner.status = "online"
         runner.last_heartbeat = datetime.now(timezone.utc)
         await db.commit()
@@ -515,16 +518,19 @@ async def dt_update_pool_agent(
     runner = result.scalar_one_or_none()
     if runner is None:
         raise HTTPException(status_code=404, detail="Agent not found")
-    if authenticated_runner.id != runner.id and (
-        authenticated_runner.repo_id != runner.repo_id
-        or authenticated_runner.enterprise_slug != runner.enterprise_slug
+    if authenticated_runner.id != runner.id and not (
+        authenticated_runner.registration_broker
+        and authenticated_runner.repo_id == runner.repo_id
+        and authenticated_runner.org_id == runner.org_id
+        and authenticated_runner.enterprise_slug == runner.enterprise_slug
     ):
-        # An ordinary runner token may update only its own agent. The
-        # config.sh --replace broker identity is registered in the target's
-        # scope, so a token from another repository or enterprise is refused
-        # before anything (including the public key) is changed.
+        # An ordinary runner token may update only its own agent. Replacing
+        # another runner (config.sh --replace) needs the registration broker
+        # identity, which was issued against a registration token for the
+        # target's own scope. Sharing a repository or enterprise is not enough.
+        # Refused before anything (including the public key) is changed.
         raise HTTPException(
-            status_code=403, detail="Agent belongs to another registration scope"
+            status_code=403, detail="Only the runner itself or its registration broker may update an agent"
         )
 
     runner.name = body.get("name", body.get("Name", runner.name))

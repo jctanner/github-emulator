@@ -28,6 +28,16 @@ its enterprise counterpart took no credential at all.
   the URL the request was sent to), and `exp`/`nbf`, with 60 seconds of
   clock skew. The exchange answers 400
   `{"error": "invalid_client", ...}` when any check fails.
+- `PUT`/`PATCH` of an agent is allowed for the runner itself, or for the
+  `config.sh --replace` broker identity. The broker is the identity created
+  by `POST /actions/runner-registration` (`runners.registration_broker`,
+  migration `0019_runner_registration_broker`) and only counts for a target
+  in the same repository, organization and enterprise scope. It stops being
+  a broker once it registers as the agent or exchanges a token. Two ordinary
+  runners that share a repository or enterprise cannot replace each other's
+  key.
+- Assertion times that are huge integers no longer escape as a 500: they are
+  finite NumericDates and are compared as integers.
 - The pipelines deregister routes require the runner's own token: none is
   401, another runner's is 403.
 
@@ -46,7 +56,9 @@ the exchange, so they are unaffected.
   agent deletion `config.sh remove` makes. These are refused: a wrong key,
   an expired assertion, another runner's id, another runner's key, the
   wrong audience, no assertion, garbage, and a runner without a key.
-  Replacing a runner takes the new key. The deregister routes, repository
+  Replacing a runner takes the new key; another ordinary runner (other or
+  same repository) and a broker from another repository are refused with
+  403. The deregister routes, repository
   and enterprise, accept only the runner's own token.
 - `tests/test_database_migrations.py`: 0018 adds the column to a database
   at 0017 and keeps existing runners.

@@ -425,3 +425,119 @@ async def test_a_runner_cannot_replace_the_key_of_a_runner_in_another_repository
         headers=attacker_headers,
     )
     assert own.status_code == 200
+
+
+def _signed_assertion_with(key, pem_claims: str) -> str:
+    header = _b64url(json.dumps({"alg": "RS256"}).encode())
+    payload = _b64url(('{"iss": "c", "sub": "c", "aud": "a", %s}' % pem_claims).encode())
+    signature = key.sign(f"{header}.{payload}".encode(), padding.PKCS1v15(), hashes.SHA256())
+    return f"{header}.{payload}.{_b64url(signature)}"
+
+
+def test_assertion_with_a_huge_integer_time_raises_only_invalid_client_assertion():
+    key = _new_key()
+    pem = public_key_pem_from_agent({"authorization": {"publicKey": _public_key_json(key)}})
+    huge = "9" * 401
+    kwargs = {"public_key_pem": pem, "client_id": "c", "audiences": {"a"}}
+
+    # A far-future expiry is a valid NumericDate, not an overflow.
+    claims = verify_client_assertion(
+        _signed_assertion_with(key, f'"exp": {huge}'), **kwargs
+    )
+    assert claims["exp"] == int(huge)
+    with pytest.raises(InvalidClientAssertion):
+        verify_client_assertion(
+            _signed_assertion_with(key, f'"exp": {int(time.time()) + 300}, "nbf": {huge}'),
+            **kwargs,
+        )
+    with pytest.raises(InvalidClientAssertion):
+        verify_client_assertion(
+            _signed_assertion_with(key, f'"exp": -{huge}'), **kwargs
+        )
+
+
+@pytest.mark.asyncio
+async def test_a_runner_cannot_replace_the_key_of_a_runner_in_the_same_repository(
+    client, executable_workflow, test_token,  # noqa: F811
+):
+    victim_key = _new_key()
+    victim = await _configure_runner(client, test_token, "victim-runner", victim_key)
+    client_id = victim["authorization"]["clientId"]
+    audience = victim["authorization"]["authorizationUrl"]
+
+    # An ordinary runner registered in the very same repository.
+    token_resp = await client.post(
+        f"{API}/repos/testuser/actions-exec-repo/actions/runners/registration-token",
+        headers=auth_headers(test_token),
+    )
+    attacker = await client.post(
+        "/_apis/distributedtask/pools/1/agents",
+        json={"token": token_resp.json()["token"], "name": "attacker-runner"},
+    )
+    assert attacker.status_code == 200
+    attacker_headers = {"Authorization": f"Bearer {attacker.json()['token']}"}
+
+    # So is a configured runner that finished config.sh: its broker identity
+    # was promoted to an ordinary runner and loses the right to replace others.
+    peer_key = _new_key()
+    peer = await _configure_runner(client, test_token, "peer-runner", peer_key)
+    peer_exchange = await _exchange(client, peer["id"], _assertion(
+        peer_key, peer["authorization"]["clientId"], peer["authorization"]["authorizationUrl"]
+    ))
+    assert peer_exchange.status_code == 200
+    peer_headers = {"Authorization": f"Bearer {peer_exchange.json()['access_token']}"}
+
+    attacker_key = _new_key()
+    for headers in (attacker_headers, peer_headers):
+        for method in (client.put, client.patch):
+            refused = await method(
+                f"/_apis/distributedtask/pools/1/agents/{victim['id']}",
+                json={
+                    "name": "victim-runner",
+                    "authorization": {"publicKey": _public_key_json(attacker_key)},
+                },
+                headers=headers,
+            )
+            assert refused.status_code == 403
+
+    _assert_invalid_client(await _exchange(
+        client, victim["id"], _assertion(attacker_key, client_id, audience)
+    ))
+    accepted = await _exchange(client, victim["id"], _assertion(victim_key, client_id, audience))
+    assert accepted.status_code == 200
+
+
+@pytest.mark.asyncio
+async def test_a_broker_from_another_repository_cannot_replace_a_runner(
+    client, executable_workflow, test_token,  # noqa: F811
+):
+    victim_key = _new_key()
+    victim = await _configure_runner(client, test_token, "victim-runner", victim_key)
+    client_id = victim["authorization"]["clientId"]
+    audience = victim["authorization"]["authorizationUrl"]
+
+    created = await client.post(
+        f"{API}/user/repos", json={"name": "other-repo"}, headers=auth_headers(test_token)
+    )
+    assert created.status_code == 201
+    token_resp = await client.post(
+        f"{API}/repos/testuser/other-repo/actions/runners/registration-token",
+        headers=auth_headers(test_token),
+    )
+    broker = await client.post(
+        f"{API}/actions/runner-registration",
+        json={"url": "http://testserver/testuser/other-repo", "runner_event": "register"},
+        headers={"Authorization": f"RemoteAuth {token_resp.json()['token']}"},
+    )
+    assert broker.status_code == 200, broker.text
+
+    attacker_key = _new_key()
+    refused = await client.put(
+        f"/_apis/distributedtask/pools/1/agents/{victim['id']}",
+        json={"authorization": {"publicKey": _public_key_json(attacker_key)}},
+        headers={"Authorization": f"Bearer {broker.json()['token']}"},
+    )
+    assert refused.status_code == 403
+    _assert_invalid_client(await _exchange(
+        client, victim["id"], _assertion(attacker_key, client_id, audience)
+    ))

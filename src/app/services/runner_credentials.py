@@ -62,11 +62,13 @@ def public_key_pem_from_agent(body: dict) -> str | None:
 
 
 def _is_number(value) -> bool:
-    return (
-        isinstance(value, (int, float))
-        and not isinstance(value, bool)
-        and math.isfinite(value)
-    )
+    if isinstance(value, bool):
+        return False
+    if isinstance(value, int):
+        # Always finite. math.isfinite would convert to float and raise
+        # OverflowError for a huge integer.
+        return True
+    return isinstance(value, float) and math.isfinite(value)
 
 
 def verify_client_assertion(

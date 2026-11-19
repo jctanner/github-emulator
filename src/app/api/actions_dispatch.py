@@ -407,6 +407,12 @@ async def register_runner_for_actions_service(request: Request, db: DbSession):
     if not reg_token:
         raise HTTPException(status_code=401, detail="Registration token required")
     runner, runner_token = await _create_runner_from_registration(reg_token, body, db)
+    # config.sh registers this identity first and then uses it to register the
+    # agent, or with --replace to update an existing one. It is the only
+    # identity allowed to replace another runner's key (dt_update_pool_agent).
+    runner.registration_broker = True
+    await db.commit()
+    await db.refresh(runner)
     request_base = f"{request.url.scheme}://{request.headers.get('host', request.url.netloc)}"
     server_url = str(body.get("url") or request_base).rstrip("/")
     return _registration_response(runner, runner_token, server_url)
