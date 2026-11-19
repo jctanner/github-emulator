@@ -212,3 +212,16 @@ def test_a_doubled_quote_and_a_trailing_backslash_parse_on_both_sides():
     )
     rendered = _emulator_runner()._render_local_action(steps[0]["run"], {}, {})
     assert rendered.startswith("echo C:\\ok|")
+
+
+def test_the_emulator_runner_finishes_relational_join_and_negation():
+    context = {**CONTEXT, "inputs": {"items": ["a", "b"]}}
+    steps = build_steps_data(
+        [{"run": "echo ${{ github.workspace && join(inputs.items, ',') }}",
+          "env": {"BIG": "${{ github.workspace != '' && 2 > 1 }}", "NOT": "${{ !github.workspace }}"}}],
+        {}, context,
+    )
+    render = _emulator_runner()._render_local_action
+    assert render(steps[0]["run"], {}, {}) == "echo a,b"
+    assert render(steps[0]["env"]["BIG"], {}, {}) == "true"
+    assert render(steps[0]["env"]["NOT"], {}, {}) == "false"

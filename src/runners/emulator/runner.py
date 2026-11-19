@@ -541,7 +541,7 @@ class _StepIfParser:
     """Evaluate the small Actions expression subset needed by the runner."""
 
     _TOKEN_RE = re.compile(
-        r"(?P<space>\s+)|(?P<op>\|\||&&|==|!=|[!(),])|"
+        r"(?P<space>\s+)|(?P<op>\|\||&&|==|!=|<=|>=|[!(),<>])|"
         r"(?P<string>'(?:''|[^'])*'|\"(?:\\.|[^\"])*\")|"
         r"(?P<number>\d+(?:\.\d+)?)|(?P<name>[A-Za-z_][A-Za-z0-9_.-]*)"
     )
@@ -626,6 +626,10 @@ class _StepIfParser:
             right = self._parse_primary()
             equal = left == right
             return equal if operator == "==" else not equal
+        for operator in ("<=", ">=", "<", ">"):
+            if self._peek(operator):
+                self._take(operator)
+                return _relational(operator, left, self._parse_primary())
         return left
 
     def _parse_primary(self):
@@ -686,6 +690,12 @@ class _StepIfParser:
             return str(arguments[0] or "").startswith(str(arguments[1] or ""))
         if name == "endsWith" and len(arguments) == 2:
             return str(arguments[0] or "").endswith(str(arguments[1] or ""))
+        if name == "join" and len(arguments) in (1, 2):
+            items = arguments[0]
+            separator = "," if len(arguments) == 1 else _expression_string(arguments[1])
+            if isinstance(items, list):
+                return separator.join(_expression_string(item) for item in items)
+            return _expression_string(items)
         if name == "fromJSON" and len(arguments) == 1:
             try:
                 return json.loads(str(arguments[0]))
@@ -697,6 +707,52 @@ class _StepIfParser:
             haystack, needle = arguments
             return needle in haystack if isinstance(haystack, (list, dict, str)) else False
         raise ValueError(f"unsupported function {name}")
+
+
+def _expression_string(value) -> str:
+    """A value as Actions writes it into a string."""
+    if value is None:
+        return ""
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    if isinstance(value, float) and value.is_integer():
+        return str(int(value))
+    if isinstance(value, (dict, list)):
+        return json.dumps(value, separators=(",", ":"))
+    return str(value)
+
+
+def _expression_number(value) -> float:
+    """Actions' coercion of a value to a number."""
+    if value is None:
+        return 0.0
+    if isinstance(value, bool):
+        return 1.0 if value else 0.0
+    if isinstance(value, (int, float)):
+        return float(value)
+    if isinstance(value, str):
+        text = value.strip()
+        if not text:
+            return 0.0
+        try:
+            return float(int(text, 16)) if text.lower().startswith("0x") else float(text)
+        except ValueError:
+            return float("nan")
+    return float("nan")
+
+
+def _relational(operator: str, left, right) -> bool:
+    """Actions' <, >, <= and >=: strings case-insensitively, anything else as
+    numbers (NaN compares false); arrays and objects never order."""
+    if isinstance(left, (list, dict)) or isinstance(right, (list, dict)):
+        return False
+    if isinstance(left, str) and isinstance(right, str):
+        a, b = left.lower(), right.lower()
+    else:
+        a, b = _expression_number(left), _expression_number(right)
+        if a != a or b != b:
+            return False
+    return {"<": a < b, ">": a > b, "<=": a <= b, ">=": a >= b}[operator]
 
 
 class StepConditionError(ValueError):
@@ -824,7 +880,7 @@ def _evaluate_step_if(
 
 # An expression needs the real parser once it contains an operator, a string
 # literal, or a call. A plain dotted path keeps the cheaper lookup below.
-_NEEDS_PARSER_RE = re.compile(r"\|\||&&|==|!=|\(|'|\"")
+_NEEDS_PARSER_RE = re.compile(r"\|\||&&|[=!<>]|\(|'|\"")
 
 
 def _render_local_action(

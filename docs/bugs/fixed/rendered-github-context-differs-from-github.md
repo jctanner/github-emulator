@@ -59,7 +59,8 @@ Two authentication answers differed as well:
   value may end in a backslash.
 - The emulator's own runner finishes what the server leaves: it reads `''`
   inside a string, writes a false result as `false`, knows `job.status`, has
-  `fromJSON` and `toJSON`, and gives `github.env`, `github.output`,
+  `fromJSON`, `toJSON` and `join`, the `<`, `>`, `<=` and `>=` operators and
+  a leading `!`, and gives `github.env`, `github.output`,
   `github.path` and `github.event_path` their file paths.
 - `GET /installation/repositories` with a job token lists the run's
   repository with `repository_selection: selected`. A personal access token
