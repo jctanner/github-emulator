@@ -14,9 +14,10 @@ from app.middleware.error_handler import NotFoundError, ValidationError
 from app.models.import_job import ImportJob
 from app.models.token import PersonalAccessToken
 from app.models.user import User
-from app.schemas.user import UserCreate, UserResponse, UserUpdate, public_repo_counts
+from app.schemas.user import UserCreate, UserResponse, UserUpdate
 from app.services.auth_service import hash_password
 from app.services.import_service import start_single_import
+from app.services.user_service import public_repo_counts
 
 router = APIRouter(tags=["users"])
 

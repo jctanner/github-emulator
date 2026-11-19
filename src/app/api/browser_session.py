@@ -8,13 +8,14 @@ from app.api.deps import AuthUser, DbSession
 from app.config import settings
 from app.db_loaders import scalar_only_options
 from app.models.user import User
-from app.schemas.user import UserResponse, public_repo_counts
+from app.schemas.user import UserResponse
 from app.services.auth_service import verify_password
 from app.services.browser_session_service import (
     COOKIE_NAME,
     csrf_token_for,
     sign_browser_session,
 )
+from app.services.user_service import public_repo_counts
 
 router = APIRouter(prefix="/api/_ui", tags=["ui-session"])
 

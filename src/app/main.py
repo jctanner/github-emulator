@@ -184,7 +184,7 @@ def create_app() -> FastAPI:
         from app.middleware.memory_watch import MemoryWatchMiddleware
         app.add_middleware(MemoryWatchMiddleware)
     # Names the request in the writer-lock logging.
-    from app.database_diag import RequestContextMiddleware
+    from app.middleware.request_context import RequestContextMiddleware
     app.add_middleware(RequestContextMiddleware)
     # Outermost of all: a raw.githubusercontent.com path is rewritten before
     # anything else reads it.

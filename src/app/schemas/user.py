@@ -150,7 +150,7 @@ class UserResponse(BaseModel):
     def from_db(cls, user, base_url: str, public_repos: int | None = None) -> "UserResponse":
         """Construct a full UserResponse from a DB user object.
 
-        ``public_repos`` comes from ``public_repo_counts``; without it the
+        ``public_repos`` comes from ``user_service.public_repo_counts``; without it the
         count is taken from ``user.repositories`` if that is loaded, else 0.
         """
         avatar = user.avatar_url or f"{base_url}/avatars/{user.login}"
@@ -202,20 +202,3 @@ class UserResponse(BaseModel):
             created_at=_fmt_dt(user.created_at),
             updated_at=_fmt_dt(user.updated_at),
         )
-
-
-async def public_repo_counts(db, user_ids) -> dict[int, int]:
-    """Each user's public repositories, by user id, in one query."""
-    from sqlalchemy import func, select
-
-    from app.models.repository import Repository
-
-    ids = list(user_ids)
-    if not ids:
-        return {}
-    rows = await db.execute(
-        select(Repository.owner_id, func.count(Repository.id))
-        .where(Repository.owner_id.in_(ids), Repository.private.is_(False))
-        .group_by(Repository.owner_id)
-    )
-    return {owner_id: count for owner_id, count in rows.all()}

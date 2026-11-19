@@ -175,7 +175,7 @@ async def search_users(
     query = query.offset((page - 1) * per_page).limit(per_page)
     users = (await db.execute(query)).scalars().all()
 
-    from app.schemas.user import public_repo_counts
+    from app.services.user_service import public_repo_counts
 
     counts = await public_repo_counts(db, [u.id for u in users])
     return {

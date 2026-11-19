@@ -131,22 +131,3 @@ async def watch_event_loop_lag(interval: float = 0.25) -> None:
             logger.warning("event loop ran %.0f ms late (worst in the last %.0f s)", worst * 1000,
                            now - last_log if last_log else 10)
             worst, last_log = 0.0, now
-
-
-class RequestContextMiddleware:
-    """Record "METHOD /path" for the database logging above."""
-
-    def __init__(self, app):
-        self.app = app
-
-    async def __call__(self, scope, receive, send):
-        if scope["type"] != "http":
-            await self.app(scope, receive, send)
-            return
-        # repr-style escaping: a path's CR, LF or ESC can't start a new log line.
-        path = scope["path"].encode("unicode_escape").decode("ascii")
-        token = current_request.set(f"{scope['method']} {path}")
-        try:
-            await self.app(scope, receive, send)
-        finally:
-            current_request.reset(token)
