@@ -1299,13 +1299,24 @@ async def _runner_moved_on(runner: Runner, job: WorkflowJob, db) -> bool:
     return other is not None
 
 
-async def _complete_job(job: WorkflowJob, runner: Runner, result_str: str, db) -> None:
+async def _complete_job(
+    job: WorkflowJob, runner: Runner, result_str: str, db, outputs: dict | None = None,
+) -> None:
     # A job cancelled while it ran keeps that conclusion when its runner
     # reports the end; the report still frees the runner, unless the runner
     # has already taken another job. The write is conditional on the stored
     # row, not on ``job``: cancellation writers do not take the runner's
-    # lock, so one can commit after the caller loaded the job.
+    # lock, so one can commit after the caller loaded the job. Reported
+    # outputs are written by the same conditional UPDATE, so a cancelled job
+    # keeps the outputs it had.
     await db.flush()
+    values = {
+        "status": "completed",
+        "conclusion": _result_to_conclusion(result_str),
+        "completed_at": datetime.now(timezone.utc),
+    }
+    if outputs:
+        values["outputs"] = {**(job.outputs or {}), **outputs}
     finished = await db.execute(
         update(WorkflowJob)
         .where(
@@ -1316,11 +1327,7 @@ async def _complete_job(job: WorkflowJob, runner: Runner, result_str: str, db) -
                 WorkflowJob.conclusion != "cancelled",
             ),
         )
-        .values(
-            status="completed",
-            conclusion=_result_to_conclusion(result_str),
-            completed_at=datetime.now(timezone.utc),
-        )
+        .values(**values)
         .execution_options(synchronize_session=False)
     )
     await db.refresh(job)
@@ -1345,7 +1352,9 @@ async def _complete_job(job: WorkflowJob, runner: Runner, result_str: str, db) -
     await db.flush()
 
 
-async def _report_job_end(job: WorkflowJob, runner: Runner, result_str: str, db) -> bool:
+async def _report_job_end(
+    job: WorkflowJob, runner: Runner, result_str: str, db, outputs: dict | None = None,
+) -> bool:
     """A runner's report of a job's end, serialised with its polls.
 
     Under the runner's lock, so the report sees a job a poll handed the
@@ -1367,7 +1376,7 @@ async def _report_job_end(job: WorkflowJob, runner: Runner, result_str: str, db)
             await db.commit()
             logger.info("Runner %s reported job %s, which it no longer holds; ignored", runner.name, job.id)
             return False
-        await _complete_job(job, runner, result_str, db)
+        await _complete_job(job, runner, result_str, db, outputs)
         await db.commit()
         return True
 
@@ -1844,20 +1853,19 @@ async def dt_raise_plan_event(
     if runner is None:
         raise HTTPException(status_code=409, detail="Job has no runner to complete it")
     result_str = body.get("result", body.get("Result", "Succeeded"))
+    resolved = {}
     if job.status != "completed":
         outputs = body.get("outputs", body.get("Outputs")) or {}
-        resolved = {}
         for key, value in outputs.items():
             if isinstance(value, dict):
                 if value.get("isSecret", value.get("IsSecret")):
                     continue
                 value = value.get("value", value.get("Value"))
             resolved[key] = "" if value is None else str(value)
-        job.outputs = {**(job.outputs or {}), **resolved}
     # Under the runner's lock, as every report of a job's end. A job that
-    # moved off the runner while this waited is left as it is, as a job
-    # queued again is above.
-    await _report_job_end(job, runner, result_str, db)
+    # moved off the runner, or was cancelled, while this waited is left as
+    # it is, outputs included, as a job queued again is above.
+    await _report_job_end(job, runner, result_str, db, resolved)
     return Response(status_code=200)
 
 
