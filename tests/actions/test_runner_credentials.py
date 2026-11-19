@@ -348,3 +348,80 @@ def test_assertion_without_expiry_is_refused():
             client_id="c",
             audiences={"a"},
         )
+
+
+@pytest.mark.parametrize("claims", [
+    '"exp": NaN',
+    '"exp": Infinity',
+    '"exp": 1e309',
+    '"exp": %d, "nbf": NaN',
+    '"exp": %d, "nbf": -Infinity',
+    '"exp": %d, "nbf": 1e309',
+])
+def test_assertion_with_non_finite_times_is_refused(claims):
+    key = _new_key()
+    pem = public_key_pem_from_agent({"authorization": {"publicKey": _public_key_json(key)}})
+    if "%d" in claims:
+        claims = claims % (int(time.time()) + 300)
+    header = _b64url(json.dumps({"alg": "RS256"}).encode())
+    payload = _b64url(
+        ('{"iss": "c", "sub": "c", "aud": "a", %s}' % claims).encode()
+    )
+    signature = key.sign(f"{header}.{payload}".encode(), padding.PKCS1v15(), hashes.SHA256())
+    with pytest.raises(InvalidClientAssertion):
+        verify_client_assertion(
+            f"{header}.{payload}.{_b64url(signature)}",
+            public_key_pem=pem,
+            client_id="c",
+            audiences={"a"},
+        )
+
+
+@pytest.mark.asyncio
+async def test_a_runner_cannot_replace_the_key_of_a_runner_in_another_repository(
+    client, executable_workflow, test_token,  # noqa: F811
+):
+    victim_key = _new_key()
+    victim = await _configure_runner(client, test_token, "victim-runner", victim_key)
+    client_id = victim["authorization"]["clientId"]
+    audience = victim["authorization"]["authorizationUrl"]
+
+    created = await client.post(
+        f"{API}/user/repos", json={"name": "other-repo"}, headers=auth_headers(test_token)
+    )
+    assert created.status_code == 201
+    token_resp = await client.post(
+        f"{API}/repos/testuser/other-repo/actions/runners/registration-token",
+        headers=auth_headers(test_token),
+    )
+    attacker = await client.post(
+        "/_apis/distributedtask/pools/1/agents",
+        json={"token": token_resp.json()["token"], "name": "attacker-runner"},
+    )
+    assert attacker.status_code == 200
+    attacker_headers = {"Authorization": f"Bearer {attacker.json()['token']}"}
+
+    attacker_key = _new_key()
+    for method in (client.put, client.patch):
+        refused = await method(
+            f"/_apis/distributedtask/pools/1/agents/{victim['id']}",
+            json={
+                "name": "victim-runner",
+                "authorization": {"publicKey": _public_key_json(attacker_key)},
+            },
+            headers=attacker_headers,
+        )
+        assert refused.status_code == 403
+
+    # The victim keeps its key, and the attacker's runner was left alone.
+    _assert_invalid_client(await _exchange(
+        client, victim["id"], _assertion(attacker_key, client_id, audience)
+    ))
+    accepted = await _exchange(client, victim["id"], _assertion(victim_key, client_id, audience))
+    assert accepted.status_code == 200
+    own = await client.put(
+        f"/_apis/distributedtask/pools/1/agents/{attacker.json()['id']}",
+        json={"name": "attacker-runner"},
+        headers=attacker_headers,
+    )
+    assert own.status_code == 200

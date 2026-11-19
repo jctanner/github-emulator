@@ -11,6 +11,7 @@ that assertion verifies against the key stored at registration.
 import base64
 import binascii
 import json
+import math
 import time
 from collections.abc import Iterable
 
@@ -61,7 +62,11 @@ def public_key_pem_from_agent(body: dict) -> str | None:
 
 
 def _is_number(value) -> bool:
-    return isinstance(value, (int, float)) and not isinstance(value, bool)
+    return (
+        isinstance(value, (int, float))
+        and not isinstance(value, bool)
+        and math.isfinite(value)
+    )
 
 
 def verify_client_assertion(

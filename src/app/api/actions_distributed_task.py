@@ -515,6 +515,17 @@ async def dt_update_pool_agent(
     runner = result.scalar_one_or_none()
     if runner is None:
         raise HTTPException(status_code=404, detail="Agent not found")
+    if authenticated_runner.id != runner.id and (
+        authenticated_runner.repo_id != runner.repo_id
+        or authenticated_runner.enterprise_slug != runner.enterprise_slug
+    ):
+        # An ordinary runner token may update only its own agent. The
+        # config.sh --replace broker identity is registered in the target's
+        # scope, so a token from another repository or enterprise is refused
+        # before anything (including the public key) is changed.
+        raise HTTPException(
+            status_code=403, detail="Agent belongs to another registration scope"
+        )
 
     runner.name = body.get("name", body.get("Name", runner.name))
     runner.os = normalise_runner_os(
