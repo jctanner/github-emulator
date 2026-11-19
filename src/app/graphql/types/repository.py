@@ -8,6 +8,7 @@ from strawberry.types import Info
 from sqlalchemy import select, func as sa_func
 
 from app.graphql.connections import Connection, build_connection
+from app.graphql.types.node import Node
 from app.graphql.types.user import GitHubUser, user_from_model, _node_id
 from app.graphql.types.enums import (
     IssueState,
@@ -113,7 +114,7 @@ def ref_from_branch(branch) -> Ref:
 
 
 @strawberry.type
-class Repository:
+class Repository(Node):
     """A GitHub repository."""
     database_id: int
     name: str

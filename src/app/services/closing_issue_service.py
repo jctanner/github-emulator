@@ -125,6 +125,39 @@ async def resolve_closing_issues(
     return issues
 
 
+async def resolve_closing_pull_requests(
+    db: AsyncSession, issue: Issue
+) -> list[PullRequest]:
+    """Pull requests whose description closes ``issue``, oldest first.
+
+    The reverse of :func:`resolve_closing_issues`, with the same rules: a
+    closing keyword in the description, a base on the default branch, and a
+    same- or cross-repository reference.
+    """
+    # Every closing reference holds "#"; the parser then keeps only the
+    # descriptions that name this number, in any form it accepts ("#01" too),
+    # before the per-pull-request queries.
+    candidates = (
+        await db.execute(
+            select(PullRequest, Issue.body)
+            .join(Issue, PullRequest.issue_id == Issue.id)
+            .options(selectinload(PullRequest.repository))
+            .where(Issue.body.contains("#"))
+            .order_by(PullRequest.id)
+        )
+    ).all()
+    linked: list[PullRequest] = []
+    for pull_request, body in candidates:
+        if pull_request.repository is None:
+            continue
+        if not any(number == issue.number for _owner, _repo, number in parse_closing_references(body)):
+            continue
+        issues = await resolve_closing_issues(db, pull_request, pull_request.repository)
+        if any(linked_issue.id == issue.id for linked_issue in issues):
+            linked.append(pull_request)
+    return linked
+
+
 def close_linked_issues(
     issues: list[Issue],
     actor: User,

@@ -4,13 +4,14 @@ from datetime import datetime
 from typing import Annotated, Optional
 
 import strawberry
+from sqlalchemy import func as sa_func
+from sqlalchemy import select
 from strawberry.types import Info
-from sqlalchemy import select, func as sa_func
 
 from app.graphql.connections import Connection, build_connection
+from app.graphql.types.enums import IssueState, IssueStateReason
 from app.graphql.types.minimizable import Minimizable
-from app.graphql.types.user import GitHubUser, user_from_model, _node_id
-from app.graphql.types.enums import IssueState
+from app.graphql.types.node import Node
 from app.graphql.types.repository import (
     Label,
     MilestoneType,
@@ -18,12 +19,13 @@ from app.graphql.types.repository import (
     milestone_from_model,
 )
 from app.graphql.types.stubs import (
-    ReactionGroup,
     STANDARD_REACTION_GROUPS,
     ProjectCardStub,
     ProjectV2Stub,
+    ReactionGroup,
     empty_connection,
 )
+from app.graphql.types.user import Actor, GitHubUser, _node_id, actor_from_model, user_from_model
 
 
 @strawberry.type
@@ -43,13 +45,13 @@ class IssueComment(Minimizable):
         return _node_id("IssueComment", self.database_id)
 
     @strawberry.field
-    async def author(self, info: Info) -> Optional[GitHubUser]:
+    async def author(self, info: Info) -> Optional[Actor]:
         from app.models.user import User
         db = info.context["db"]
         result = await db.execute(select(User).where(User.id == self._user_id))
         user = result.scalar_one_or_none()
         if user:
-            return user_from_model(user)
+            return actor_from_model(user)
         return None
 
     @strawberry.field
@@ -82,7 +84,7 @@ def comment_from_model(comment) -> IssueComment:
 
 
 @strawberry.type
-class Issue:
+class Issue(Node):
     """A GitHub issue."""
     database_id: int
     number: int
@@ -118,21 +120,25 @@ class Issue:
         return False
 
     @strawberry.field
-    def state_reason(self) -> Optional[str]:
-        return self._state_reason
+    def state_reason(self) -> Optional[IssueStateReason]:
+        # Stored as REST reports it ("not_planned"); GraphQL has the enum.
+        try:
+            return IssueStateReason((self._state_reason or "").upper())
+        except ValueError:
+            return None
 
     @strawberry.field
     def reaction_groups(self) -> list[ReactionGroup]:
         return list(STANDARD_REACTION_GROUPS)
 
     @strawberry.field
-    async def author(self, info: Info) -> Optional[GitHubUser]:
+    async def author(self, info: Info) -> Optional[Actor]:
         from app.models.user import User
         db = info.context["db"]
         result = await db.execute(select(User).where(User.id == self._user_id))
         user = result.scalar_one_or_none()
         if user:
-            return user_from_model(user)
+            return actor_from_model(user)
         return None
 
     @strawberry.field
@@ -160,8 +166,8 @@ class Issue:
         last: Optional[int] = None,
         before: Optional[str] = None,
     ) -> Connection[Label]:
-        from app.models.label import Label as LabelModel
         from app.models.issue import IssueLabel
+        from app.models.label import Label as LabelModel
 
         db = info.context["db"]
         result = await db.execute(
@@ -185,8 +191,8 @@ class Issue:
         last: Optional[int] = None,
         before: Optional[str] = None,
     ) -> Connection[GitHubUser]:
-        from app.models.user import User
         from app.models.issue import IssueAssignee
+        from app.models.user import User
 
         db = info.context["db"]
         result = await db.execute(
@@ -233,14 +239,65 @@ class Issue:
         )
 
     @strawberry.field
-    def closed_by_pull_requests_references(
+    async def closed_by_pull_requests_references(
+        self,
+        info: Info,
+        first: Optional[int] = 10,
+        after: Optional[str] = None,
+        last: Optional[int] = None,
+        before: Optional[str] = None,
+        include_closed_prs: Optional[bool] = False,
+        order_by_state: Optional[bool] = False,
+        user_linked_only: Optional[bool] = False,
+    ) -> Connection[Annotated["PullRequest", strawberry.lazy("app.graphql.types.pull_request")]]:
+        """Pull requests whose description closes this issue. Pull requests
+        closed without merging are left out unless ``includeClosedPrs``.
+        Links made by hand in the web UI are not emulated, so
+        ``userLinkedOnly`` finds none."""
+        if user_linked_only:
+            return empty_connection()
+        from app.graphql.authz import visible
+        from app.graphql.types.pull_request import pull_request_from_model
+        from app.models.issue import Issue as IssueModel
+        from app.services.closing_issue_service import resolve_closing_pull_requests
+
+        db = info.context["db"]
+        issue = (
+            await db.execute(select(IssueModel).where(IssueModel.id == self.database_id))
+        ).scalar_one_or_none()
+        if issue is None:
+            return empty_connection()
+        pulls = [
+            pull
+            for pull in await resolve_closing_pull_requests(db, issue)
+            if (include_closed_prs or pull.merged or pull.issue.state == "open")
+            and await visible(info, pull.repository)
+        ]
+        if order_by_state:
+            # Open first, then merged, then closed; oldest first within each.
+            pulls.sort(key=lambda pull: 0 if pull.issue.state == "open" else 1 if pull.merged else 2)
+        return build_connection(
+            pulls, pull_request_from_model, len(pulls),
+            first=first, after=after, last=last, before=before,
+        )
+
+    @strawberry.field
+    def sub_issues(
         self,
         first: Optional[int] = 10,
         after: Optional[str] = None,
         last: Optional[int] = None,
         before: Optional[str] = None,
-    ) -> Connection[Annotated["PullRequest", strawberry.lazy("app.graphql.types.pull_request")]]:
+    ) -> Connection[Annotated["Issue", strawberry.lazy("app.graphql.types.issue")]]:
+        """GitHub's sub-issues. Not modelled here, so always empty: clients
+        that ask whether an issue has sub-issues get totalCount 0 instead
+        of a validation error for an unknown field."""
         return empty_connection()
+
+    @strawberry.field
+    def parent(self) -> Optional[Annotated["Issue", strawberry.lazy("app.graphql.types.issue")]]:
+        """The issue this one is a sub-issue of; never set here."""
+        return None
 
     @strawberry.field
     def project_cards(self) -> Connection[ProjectCardStub]:
