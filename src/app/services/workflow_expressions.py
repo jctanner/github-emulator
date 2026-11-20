@@ -158,11 +158,51 @@ _EXPRESSION_RE = _ExpressionScanner()
 _NEEDS_PARSER_RE = re.compile(r"\(|&&|==|!=|'|\"")
 # A reference to the runner context root, as a whole path segment.
 _RUNNER_CONTEXT_RE = re.compile(r"(?<![\w.])runner\.")
+# Context values only the runner knows: where it checked out, which action is
+# running, its file commands, and the job's own status. Rendered here they came
+# out empty; the runner fills them in when they are left for it.
+_RUNNER_GITHUB = (
+    r"(?:token|workspace|action|action_path|action_ref|action_repository|action_status"
+    r"|event_path|path|env|output|state|step_summary|job)"
+)
+# job.workflow_* are the server's (the runner gets no job context for them).
+_RUNNER_JOB = r"(?:status|container|services|check_run_id)"
+# Dot or index notation: github.workspace or github['workspace'].
+_RUNNER_FILLED = (
+    rf"github(?:\.{_RUNNER_GITHUB}(?![\w])|\[\s*'{_RUNNER_GITHUB}'\s*\])"
+    rf"|job(?:\.{_RUNNER_JOB}(?![\w])|\[\s*'{_RUNNER_JOB}'\s*\])"
+)
+_RUNNER_FILLED_RE = re.compile(r"(?<![\w.])(?:" + _RUNNER_FILLED + ")")
+_RUNNER_INDEX_RE = re.compile(
+    rf"(?<![\w.])(github)\[\s*'({_RUNNER_GITHUB})'\s*\]|(?<![\w.])(job)\[\s*'({_RUNNER_JOB})'\s*\]"
+)
+
+
+def _runner_index_to_dot(expression: str) -> str:
+    """``github['workspace']`` as ``github.workspace``: the same value, in the
+    form every runner reads."""
+    return _RUNNER_INDEX_RE.sub(
+        lambda m: f"{m.group(1) or m.group(3)}.{m.group(2) or m.group(4)}", expression,
+    )
+_RUNNER_FILLED_PATH_RE = re.compile(r"^(?:" + _RUNNER_FILLED + ")")
+
+
+def ref_facts(ref: str) -> dict:
+    """github.ref_name and github.ref_type for a full ref, as GitHub sets them."""
+    ref = ref or ""
+    for prefix, kind in (("refs/heads/", "branch"), ("refs/tags/", "tag")):
+        if ref.startswith(prefix):
+            return {"ref_name": ref[len(prefix):], "ref_type": kind}
+    if ref.startswith("refs/pull/"):
+        return {"ref_name": ref[len("refs/pull/"):], "ref_type": "branch"}
+    return {"ref_name": ref, "ref_type": "branch" if ref else ""}
 
 def _lookup_context(context: dict, expression: str) -> str:
     value = _lookup_context_value(context, expression)
     if value is None:
         return ""
+    if isinstance(value, bool):
+        return "true" if value else "false"
     if isinstance(value, (dict, list)):
         import json
         return json.dumps(value, separators=(",", ":"))
@@ -401,7 +441,9 @@ class _IfExpressionParser:
     # name alternative requires a leading letter and consumes its own dots.
     _TOKEN_RE = re.compile(
         r"(?P<space>\s+)|(?P<op>\|\||&&|==|!=|<=|>=|[<>!(),\[\].*])|"
-        r"(?P<string>'(?:\\.|[^'])*'|\"(?:\\.|[^\"])*\")|"
+        # '...' escapes a quote only by doubling it (a backslash is plain);
+        # "..." keeps the backslash form older step records use.
+        r"(?P<string>'(?:''|[^'])*'|\"(?:\\.|[^\"])*\")|"
         r"(?P<number>\d+(?:\.\d+)?)|"
         # A dotted name never ends in a dot, so ``include.*.agent`` leaves
         # the ``.`` and ``*`` of its object filter as tokens of their own.
@@ -489,7 +531,7 @@ class _IfExpressionParser:
 
         kind, token = self._take()
         if kind == "string":
-            return token[1:-1].replace("\\'", "'").replace('\\"', '"')
+            return _string_literal(token)
         if kind == "number":
             return float(token) if "." in token else int(token)
         if kind != "name":
@@ -506,11 +548,11 @@ class _IfExpressionParser:
             self._take(")")
             return self._parse_accessors(self._call(token, arguments))
 
-        if token == "true":
+        if token == "true":  # noqa: S105 (an expression token, not a password)
             return True
-        if token == "false":
+        if token == "false":  # noqa: S105 (an expression token, not a password)
             return False
-        if token == "null":
+        if token == "null":  # noqa: S105 (an expression token, not a password)
             return None
         return self._parse_accessors(_lookup_context_value(self.context, token))
 
@@ -591,6 +633,18 @@ class _IfExpressionParser:
 _SERVER_CONTEXT_ROOTS = ("github", "inputs", "needs", "vars", "secrets", "matrix", "strategy", "job")
 
 
+def _string_literal(token: str) -> str:
+    """The value of a quoted literal. Actions quotes with ``'`` and escapes a
+    quote by doubling it; a backslash is an ordinary character, so bound
+    JSON such as ``fromJSON('{"t":"a \\"b\\""}')`` keeps its escapes.
+    Double-quoted literals, which only older step records carry, keep the
+    backslash form."""
+    body = token[1:-1]
+    if token[0] == "'":
+        return body.replace("''", "'")
+    return body.replace('\\"', '"').replace("\\'", "'")
+
+
 def _as_literal(value: object) -> str:
     """Render a resolved value as an expression literal."""
     if value is None:
@@ -604,16 +658,42 @@ def _as_literal(value: object) -> str:
         # ``github.event.issue.pull_request``, so collapse to a boolean rather
         # than inventing a comparable string.
         return "true" if value else "false"
-    text = str(value).replace("\\", "\\\\").replace("'", "\\'")
-    return f"'{text}'"
+    # Actions quotes a quote by doubling it; it has no backslash escapes.
+    text = str(value)
+    if "{" in text or "}" in text:
+        # A value with a brace could hold ``}}`` or ``${{`` and end the
+        # expression it is bound into early. As JSON, its braces are escapes.
+        return _json_literal(text)
+    return "'" + text.replace("'", "''") + "'"
+
+
+# Stand-ins for braces inside JSON strings while the JSON is encoded.
+_OPEN, _CLOSE = "\ufdd0", "\ufdd1"
+
+
+def _hide_braces(value: object) -> object:
+    if isinstance(value, str):
+        return value.replace("{", _OPEN).replace("}", _CLOSE)
+    if isinstance(value, dict):
+        return {_hide_braces(str(k)): _hide_braces(v) for k, v in value.items()}
+    if isinstance(value, list):
+        return [_hide_braces(item) for item in value]
+    return value
 
 
 def _json_literal(value: object) -> str:
-    """An array or object as an expression the runner can evaluate. Actions
-    has no array literal, so it is ``fromJSON('...')``, quoted the Actions
-    way (``''`` for a quote)."""
-    text = json.dumps(value, separators=(",", ":")).replace("'", "''")
-    return f"fromJSON('{text}')"
+    """A value as ``fromJSON('...')``, which the runner can evaluate. Actions
+    has no array or object literal. Quotes are doubled, the Actions way.
+
+    The text never holds ``${{`` or ``}}``, so data bound into an expression
+    cannot end it early: a brace inside a string is a ``\\u007b`` or
+    ``\\u007d`` escape, and two structural closing braces get a space.
+    """
+    text = json.dumps(_hide_braces(value), separators=(",", ":"))
+    text = text.replace("\\ufdd0", "\\u007b").replace("\\ufdd1", "\\u007d")
+    while "}}" in text:
+        text = text.replace("}}", "} }")
+    return "fromJSON('" + text.replace("'", "''") + "')"
 
 
 def _accessor_chain_end(tokens: list, index: int) -> int:
@@ -691,12 +771,17 @@ def bind_server_context(expression: str, context: dict) -> str:
             continue
         if text.split(".", 1)[0] not in _SERVER_CONTEXT_ROOTS:
             continue
+        if _RUNNER_FILLED_PATH_RE.match(text):
+            continue
         # A path with trailing accessors (``labels.*.name``, ``labels[0]``)
         # is bound whole: binding the path alone turned the array into
         # ``true`` and left ``true.*.name`` for the runner.
         last = _accessor_chain_end(tokens, index)
         if last > index:
             span = expression[start:tokens[last][3]]
+            if _RUNNER_FILLED_PATH_RE.match(span):
+                skip_until = last
+                continue
             try:
                 value = _IfExpressionParser(span, context).evaluate()
             except _ExpressionError:
@@ -709,7 +794,13 @@ def bind_server_context(expression: str, context: dict) -> str:
                 out.append((start, tokens[last][3], literal))
                 skip_until = last
                 continue
-        out.append((start, end, _as_literal(_lookup_context_value(context, text))))
+        value = _lookup_context_value(context, text)
+        # An object or array is bound whole: a function may take it, and
+        # ``a && b`` yields an operand, not a boolean. The runner applies
+        # truthiness itself.
+        out.append((start, end, (
+            _json_literal(value) if isinstance(value, (dict, list)) else _as_literal(value)
+        )))
 
     if not out:
         return expression
@@ -757,28 +848,54 @@ def evaluate_expression_value(value: object, context: dict) -> object:
     return render_expressions(value, context)
 
 
-def render_expressions(value: object, context: dict, resolve_steps: bool = False) -> object:
+class _Deferred(str):
+    """An expression render_expressions leaves for the runner on purpose. A
+    type, not a marker in the text, so resolved data can never pose as one."""
+
+
+def render_expressions(
+    value: object, context: dict, resolve_steps: bool = False, for_runner: bool = False,
+) -> object:
     """Render the small expression subset needed by the M2 runner contract.
 
     ``resolve_steps`` renders ``steps.*`` references instead of preserving
     them. Job ``outputs:`` are resolved server-side after the job finishes, at
     which point its step outputs are known, so that caller opts in.
+
+    ``for_runner`` marks a value the runner evaluates again (a step's run,
+    with and env): an expression reading a value only the runner knows is
+    left for it, with the server's own contexts bound in.
     """
     if isinstance(value, str):
         def replace(match):
+            text = resolve(match)
+            if isinstance(text, _Deferred):
+                return str(text)
+            if for_runner and any(char in text for char in "${}"):
+                # The runner renders this value again, so text the server
+                # resolved (an issue title, say) must not hold an expression,
+                # nor a piece of one that the text next to it could complete
+                # (``$`` then ``{{ github.token }}``). It goes as an
+                # expression that yields the text itself.
+                return "${{ " + _json_literal(text) + " }}"
+            return text
+
+        def resolve(match):
             expression = match.group(1).strip()
+            if for_runner and _RUNNER_FILLED_RE.search(expression):
+                return _Deferred("${{ " + bind_server_context(_runner_index_to_dot(expression), context) + " }}")
             # Step outputs only exist after a prior step has run. Preserve the
             # expression for the runner's runtime renderer.
             if expression == "github.token":
-                return match.group(0)
+                return _Deferred(match.group(0))
             if expression.startswith("steps.") and not resolve_steps:
-                return match.group(0)
+                return _Deferred(match.group(0))
             # The runner context describes the machine a job lands on, so
             # only the runner can resolve it. Rendering it here produced an
             # empty string: ``${{ runner.temp }}/fullsend-cache`` reached the
             # runner as ``/fullsend-cache`` and actions/cache saved nothing.
             if _RUNNER_CONTEXT_RE.search(expression):
-                return match.group(0)
+                return _Deferred(match.group(0))
             # Anything with an operator, a literal, or a call needs the real
             # parser. A job's ``outputs:`` routinely combines several step
             # outputs, as in
@@ -794,27 +911,30 @@ def render_expressions(value: object, context: dict, resolve_steps: bool = False
                         "Unable to render expression %r: %s", expression, exc
                     )
                     return ""
-                if value is None or value is False:
+                # GitHub writes a false result as "false" and a null one as "".
+                if value is None:
                     return ""
-                if value is True:
-                    return "true"
+                if isinstance(value, bool):
+                    return "true" if value else "false"
                 if isinstance(value, (dict, list)):
                     return json.dumps(value, separators=(",", ":"))
                 return str(value)
             # Keep one workflow usable for both an automatic event and an
             # explicit workflow_dispatch. This is the common GitHub Actions
-            # fallback form used by the Fullsend fixtures.
-            for alternative in expression.split("||"):
-                resolved = _lookup_context(context, alternative)
-                if resolved:
-                    return resolved
-            return ""
+            # fallback form used by the Fullsend fixtures. ``a || b`` is the
+            # first truthy alternative, else the last one.
+            alternatives = expression.split("||")
+            for alternative in alternatives:
+                raw = _lookup_context_value(context, alternative)
+                if _expression_truthy(raw):
+                    return _lookup_context(context, alternative)
+            return _lookup_context(context, alternatives[-1])
         return _EXPRESSION_RE.sub(replace, value)
     if isinstance(value, dict):
         return {
-            key: render_expressions(item, context, resolve_steps)
+            key: render_expressions(item, context, resolve_steps, for_runner)
             for key, item in value.items()
         }
     if isinstance(value, list):
-        return [render_expressions(item, context, resolve_steps) for item in value]
+        return [render_expressions(item, context, resolve_steps, for_runner) for item in value]
     return value

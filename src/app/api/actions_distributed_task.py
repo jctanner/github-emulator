@@ -55,7 +55,12 @@ from app.services.action_download_service import (
 )
 from app.services.auth_service import hash_token
 from app.services.job_token_service import validate_job_token
-from app.services.workflow_service import check_run_completion, dispatch_ready_jobs
+from app.services.workflow_service import (
+    _branch_protected,
+    check_run_completion,
+    dispatch_ready_jobs,
+    static_github_facts,
+)
 
 router = APIRouter(tags=["actions-distributed-task"])
 # Under github_emulator, which app.main sends to the server log: job
@@ -569,11 +574,22 @@ async def dt_delete_pool_agent(
     return {"status": "removed"}
 
 
+def _message_ref(run: WorkflowRun | None) -> str:
+    """The full ref the job message names: the event's, else the run's branch."""
+    ref = (
+        (run.trigger_payload or {}).get("ref")
+        if run and isinstance(run.trigger_payload, dict)
+        else None
+    )
+    return ref or f"refs/heads/{run.head_branch if run else 'main'}"
+
+
 def _job_request_message(
     job: WorkflowJob,
     run: WorkflowRun | None,
     repo: Repository | None = None,
     base_url: str | None = None,
+    ref_protected: bool = False,
 ) -> dict:
     timeline_id = _workflow_guid("timeline", job.id)
     job_guid = _workflow_guid("job", job.id)
@@ -582,12 +598,7 @@ def _job_request_message(
     access_token = _job_access_token(job)
     repo_full_name = repo.full_name if repo else "unknown/unknown"
     repo_owner = repo_full_name.split("/", 1)[0]
-    ref = (
-        (run.trigger_payload or {}).get("ref")
-        if run and isinstance(run.trigger_payload, dict)
-        else None
-    )
-    ref = ref or f"refs/heads/{run.head_branch if run else 'main'}"
+    ref = _message_ref(run)
     sha = run.head_sha if run else "0" * 40
     workflow_name = job.workflow_name or job.name
     # Actions OIDC, as the upstream runner sees it. The runner's own plumbing
@@ -651,6 +662,9 @@ def _job_request_message(
             # documents notice as a workflow command beside warning and
             # error, rendered as `##[notice]` in the job log.
             "DistributedTask.EnhancedAnnotations": _variable("true"),
+            # runner.environment and RUNNER_ENVIRONMENT. The jobs stand in for
+            # GitHub-hosted ones, which is what workflows here are written for.
+            "system.runnerEnvironment": _variable("github-hosted"),
         },
         "contextData": {
             # The runner expands an expression only when every context the
@@ -671,6 +685,8 @@ def _job_request_message(
             }),
             "matrix": None,
             "github": _context_dictionary({
+                "actor": run.actor.login if run and run.actor else "",
+                "actor_id": str(run.actor_id) if run and run.actor_id else "",
                 "api_url": f"{runner_base_url}/api/v3",
                 "base_ref": "",
                 "event_name": run.event if run else "workflow_dispatch",
@@ -691,8 +707,18 @@ def _job_request_message(
                 "server_url": runner_base_url,
                 "sha": sha,
                 "token": access_token,
+                "triggering_actor": run.actor.login if run and run.actor else "",
                 "workflow": workflow_name,
+                "workflow_ref": (
+                    f"{repo_full_name}/{run.workflow.path}@{ref}"
+                    if run and run.workflow and run.workflow.path else ""
+                ),
                 "workspace": "",
+                # ref_name, ref_type, ref_protected, workflow_sha and the
+                # rest: the runner exports the first four as GITHUB_* env.
+                **static_github_facts(
+                    ref, sha, repo_full_name, repo.private if repo else None, ref_protected,
+                ),
             }),
         },
         "resources": {
@@ -916,7 +942,11 @@ async def _claim_next_job(
         repo_result = await db.execute(select(Repository).where(Repository.id == run.repo_id))
         repo = repo_result.scalar_one_or_none()
 
-    return _job_request_message(job, run, repo, base_url)
+    # Looked up here, on the async session, rather than through
+    # repo.branches: the message builder is synchronous and must not load a
+    # relationship.
+    ref_protected = await _branch_protected(db, run.repo_id if run else None, _message_ref(run))
+    return _job_request_message(job, run, repo, base_url, ref_protected)
 
 
 async def _update_timeline_for_job(job: WorkflowJob, body: dict, db) -> None:

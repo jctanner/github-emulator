@@ -206,5 +206,8 @@ def test_bound_step_conditions_keep_filters():
     assert bound == "contains(fromJSON('[\"bug\",\"x\"]'), 'bug') && steps.check.outputs.ok == 'yes'"
     assert bind_server_context("github.event.issue.labels[0].name == 'bug' && steps.a.outputs.b", ctx) == \
         "'bug' == 'bug' && steps.a.outputs.b"
-    # Plain paths bind as before.
-    assert bind_server_context("github.event.issue && steps.a.outputs.b", ctx) == "true && steps.a.outputs.b"
+    # A plain path to an object binds whole; the runner applies truthiness
+    # (``a && b`` yields an operand, so collapsing it to true lost the value).
+    assert bind_server_context("github.event.issue && steps.a.outputs.b", ctx) == (
+        "fromJSON('{\"labels\":[{\"name\":\"bug\"},{\"name\":\"x\"}]}') && steps.a.outputs.b"
+    )

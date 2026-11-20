@@ -1,7 +1,7 @@
 """Shared FastAPI dependencies for the GitHub Emulator REST API."""
 
-import re
 import base64
+import re
 from typing import Annotated, Optional
 
 from fastapi import Depends, HTTPException, Request
@@ -10,8 +10,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database import get_db
 from app.db_loaders import repository_identity_options, scalar_only_options
-from app.models.user import User
 from app.models.repository import Repository
+from app.models.user import User
 from app.services import job_permissions, repository_access
 from app.services.auth_service import (
     get_installation_actor,
@@ -19,14 +19,13 @@ from app.services.auth_service import (
     validate_installation_token,
     validate_token,
 )
-from app.services.job_token_service import validate_job_token
 from app.services.browser_session_service import (
     COOKIE_NAME,
     CSRF_HEADER,
     csrf_token_matches,
     verify_browser_session,
 )
-
+from app.services.job_token_service import validate_job_token
 
 # ---------------------------------------------------------------------------
 # Database session dependency
@@ -162,6 +161,7 @@ async def _resolve_user(
     if validated is not None:
         job, run = validated
         request.state.workflow_job = job
+        request.state.workflow_run = run
         request.state.workflow_job_permissions = job.permissions
         # A job token is scoped by the permissions its job declared. Enforcing
         # here covers every route without touching them individually, and

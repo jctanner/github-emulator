@@ -7,6 +7,8 @@ keyed by YAML job key, and readable through ``fromJSON`` for structured
 payloads.
 """
 
+import contextlib
+
 import pytest
 
 from app.services.workflow_expressions import evaluate_job_if, render_expressions
@@ -312,13 +314,12 @@ def test_workflow_token_is_mirrored_for_the_gh_enterprise_variable():
     original = subprocess.Popen
     subprocess.Popen = fake_run
     try:
-        client._run_step(
-            {"number": 1, "name": "s", "run": "true", "env": {"GH_TOKEN": "tok-1"}},
-            {"job_id": 1, "repository": "o/r"},
-            {},
-        )
-    except Exception:
-        pass
+        with contextlib.suppress(Exception):
+            client._run_step(
+                {"number": 1, "name": "s", "run": "true", "env": {"GH_TOKEN": "tok-1"}},
+                {"job_id": 1, "repository": "o/r"},
+                {},
+            )
     finally:
         subprocess.Popen = original
 
@@ -507,12 +508,14 @@ def test_mixed_step_conditions_bind_server_context_before_deferring():
     }
     bound_comment = _resolve_step_condition(condition, comment)
     assert "'issue_comment' == 'issue_comment'" in bound_comment
-    assert bound_comment.rstrip().endswith("true")
+    # The object is bound whole; the runner applies truthiness to it.
+    assert bound_comment.rstrip().endswith("fromJSON('{\"url\":\"u\"}')")
 
 
 def test_bound_conditions_are_evaluable_by_the_runner():
-    from app.services.workflow_service import _resolve_step_condition
     import importlib.util
+
+    from app.services.workflow_service import _resolve_step_condition
 
     spec = importlib.util.spec_from_file_location(
         "runner_for_bound", "src/runners/emulator/runner.py"
@@ -533,7 +536,8 @@ def test_literal_binding_escapes_quotes():
         "github.event.issue.title == 'x'",
         {"github": {"event": {"issue": {"title": "it's here"}}}},
     )
-    assert bound.startswith("'it\\'s here'")
+    # Actions doubles a quote inside a string; the runner rejects a backslash.
+    assert bound.startswith("'it''s here'")
 
 
 def test_runner_parser_consumes_both_operands_of_and_or():
@@ -556,7 +560,8 @@ def test_runner_parser_consumes_both_operands_of_and_or():
     # The parser takes a context rather than raw step outputs, so that one
     # expression can read steps, inputs, and github.token together.
     context = runner_module._runner_context(None, outputs)
-    parse = lambda e: runner_module._StepIfParser(e, context).parse()
+    def parse(e):
+        return runner_module._StepIfParser(e, context).parse()
 
     # Falsy left operand, more terms after it.
     assert parse("steps.route.outputs.stage != '' && 'a' == 'b' && ''") is False

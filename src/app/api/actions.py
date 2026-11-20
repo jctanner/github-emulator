@@ -5,26 +5,26 @@ import zipfile
 
 from fastapi import APIRouter, HTTPException, Query, Request
 from fastapi.responses import FileResponse, JSONResponse, PlainTextResponse, Response, StreamingResponse
-from sqlalchemy import select, func, or_
+from sqlalchemy import func, or_, select
 
 from app.api.deps import AuthUser, CurrentUser, DbSession, get_repo_or_404
 from app.api.pagination import pagination_links
-from app.services import artifact_storage, repository_access
 from app.config import settings
-from app.models.actions import Workflow, WorkflowRun, WorkflowJob, Secret, Variable
+from app.models.actions import Secret, Variable, Workflow, WorkflowJob, WorkflowRun
 from app.models.artifact import WorkflowArtifact
-from app.services.secret_crypto import (
-    SecretDecryptError,
-    open_sealed_secret,
-    repo_public_key,
-)
-from app.schemas.user import SimpleUser, _fmt_dt, _make_node_id
 from app.schemas.actions import (
     WorkflowJobListResponse,
     WorkflowJobResponse,
     WorkflowListResponse,
     WorkflowRunListResponse,
     WorkflowRunResponse,
+)
+from app.schemas.user import SimpleUser, _fmt_dt, _make_node_id
+from app.services import artifact_storage, repository_access
+from app.services.secret_crypto import (
+    SecretDecryptError,
+    open_sealed_secret,
+    repo_public_key,
 )
 
 router = APIRouter(tags=["actions"])
@@ -46,6 +46,21 @@ def _workflow_json(w: Workflow, owner: str, repo: str) -> dict:
         "html_url": f"{BASE}/{owner}/{repo}/actions/workflows/{w.path}",
         "badge_url": f"{BASE}/{owner}/{repo}/workflows/{w.name}/badge.svg",
     }
+
+
+def _display_title(r: WorkflowRun) -> str:
+    """GitHub's event-specific run title: the head commit's first line for a
+    push, the pull request's or issue's title for those events, and the
+    workflow's name otherwise (a dispatch, for one)."""
+    payload = r.trigger_payload or {}
+    for key in ("pull_request", "issue"):
+        title = (payload.get(key) or {}).get("title")
+        if title:
+            return str(title)
+    message = (payload.get("head_commit") or {}).get("message")
+    if message:
+        return str(message).splitlines()[0]
+    return r.workflow.name if r.workflow else ""
 
 
 def _run_json(
@@ -73,6 +88,9 @@ def _run_json(
         "html_url": f"{BASE}/{owner}/{repo}/actions/runs/{r.id}",
         "created_at": _fmt_dt(r.created_at),
         "updated_at": _fmt_dt(r.updated_at),
+        # This emulator starts an attempt when it creates it.
+        "run_started_at": _fmt_dt(r.created_at),
+        "display_title": _display_title(r),
         "actor": actor,
     }
 
@@ -84,8 +102,11 @@ def _job_json(j: WorkflowJob, owner: str, repo: str) -> dict:
         "run_id": j.run_id,
         "name": j.name,
         "workflow_name": j.workflow_name,
+        "head_sha": j.run.head_sha if j.run else None,
+        "head_branch": j.run.head_branch if j.run else None,
         "status": j.status,
         "conclusion": j.conclusion,
+        "created_at": _fmt_dt(j.created_at),
         "started_at": _fmt_dt(j.started_at),
         "completed_at": _fmt_dt(j.completed_at),
         "steps": j.steps or [],
@@ -417,7 +438,7 @@ async def list_workflows(
     """List workflows."""
     repository = await get_repo_or_404(owner, repo, db)
     await _check_read_access(db, repository, current_user)
-    from app.services.workflow_service import materialize_reusable_workflows, sync_workflows_to_db
+    from app.services.workflow_service import sync_workflows_to_db
 
     await sync_workflows_to_db(db, repository, "HEAD")
     await db.commit()
@@ -626,7 +647,9 @@ async def rerun_workflow(
     rerun sat with every dependent waiting forever (2026-09-27, run 1589).
     """
     from app.services.workflow_service import (
-        create_workflow_run, detect_workflows, materialize_reusable_workflows,
+        create_workflow_run,
+        detect_workflows,
+        materialize_reusable_workflows,
     )
     repository = await get_repo_or_404(owner, repo, db)
     await _require_repository_role(request, db, repository, user, "push")
@@ -659,9 +682,8 @@ async def rerun_workflow(
     )
     new_run = await create_workflow_run(
         db, workflow, workflow_yaml, run.event, payload, user,
-        run.head_sha, run.head_branch,
+        run.head_sha, run.head_branch, run_attempt=run.run_attempt + 1,
     )
-    new_run.run_attempt = run.run_attempt + 1
     await db.commit()
     await db.refresh(new_run)
     from app.services.workflow_service import dispatch_ready_jobs
