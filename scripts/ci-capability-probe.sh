@@ -10,7 +10,16 @@ set -uo pipefail
 
 EMU="${EMU:-http://127.0.0.1:8000}"
 API="$EMU/api/v3"
-TOKEN="${GITHUB_EMULATOR_DEFAULT_ADMIN_TOKEN:-ghp_admin_default_token}"
+# The site admin's token: the caller's, else the one ci-stack.sh made for
+# its state directory, else the emulator's published default (make up).
+STACK_DIR="${CI_STACK_DIR:-$(cd "$(dirname "$0")/.." && pwd)/.ci-stack}"
+if [ -n "${GITHUB_EMULATOR_DEFAULT_ADMIN_TOKEN:-}" ]; then
+  TOKEN="$GITHUB_EMULATOR_DEFAULT_ADMIN_TOKEN"
+elif [ -s "$STACK_DIR/admin-token" ]; then
+  TOKEN="$(cat "$STACK_DIR/admin-token")"
+else
+  TOKEN="ghp_admin_default_token"
+fi
 # With CI_STACK_TLS=1, point EMU_CA at the stack's tls/ca.pem.
 if [ -n "${EMU_CA:-}" ]; then export CURL_CA_BUNDLE="$EMU_CA" GIT_SSL_CAINFO="$EMU_CA"; fi
 GIT_BASE="${EMU%%://*}://admin:$TOKEN@${EMU#*://}"
@@ -264,6 +273,23 @@ FEATURES=(composite reusable reusable-missing emuhost githubcom gh-cli clean-wor
 
 # Features the emulator refuses on purpose, and the message that says so. A
 # run that fails with it is the intended result, not a gap.
+# The exact line a working feature prints. A composite or reusable workflow
+# that loses its output prints "MARK-" alone, so only the full marker counts.
+marker_for() {
+  case "$1" in
+    emuhost) echo "MARK-emuhost-ok" ;;
+    reusable-missing) ;;
+    *) echo "MARK-$1" ;;
+  esac
+}
+
+# Whether a log line is the marker as printed output. The runner also echoes
+# each step's command (echo "MARK-x"), which ends in a quote, so the marker
+# must end the line.
+has_marker() {
+  [ -n "$1" ] && tr -d '\r' <<<"$2" | grep -qE "(^|[[:space:]])$1\$"
+}
+
 refusal_for() {
   case "$1" in
     container) echo "not supported by this emulator's runners" ;;
@@ -330,7 +356,7 @@ row() { echo "| $1 | $2 | $3 |"; }
       extra="$(jq -r '[.jobs[] | {s: .started_at, c: .completed_at}] | sort_by(.s) |
         if length == 2 and .[1].s < .[0].c then "jobs overlapped" else "jobs ran one after the other" end' <<<"$jobs")"
     fi
-    if [ "$conclusion" = success ] && grep -q "MARK-" <<<"$logs"; then
+    if [ "$conclusion" = success ] && has_marker "$(marker_for "$f")" "$logs"; then
       if [ "$f" = concurrency ] && [ "$extra" != "jobs overlapped" ]; then
         row "$f" "fails" "both jobs passed but $extra"
       else

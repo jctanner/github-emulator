@@ -8,7 +8,11 @@
 #   scripts/ci-stack.sh stop    # stop both
 #
 # Settings (all optional):
-#   CI_STACK_DIR    state directory: SQLite file, git repos, logs, pids
+#   CI_STACK_DIR    state directory: SQLite file, git repos, logs, pids, and
+#                   the site admin's token (admin-token) and password
+#                   (admin-password), made per stack unless
+#                   GITHUB_EMULATOR_DEFAULT_ADMIN_TOKEN or
+#                   GITHUB_EMULATOR_ADMIN_PASSWORD is set
 #   CI_STACK_PORT   API port (default 8000)
 #   CI_STACK_PYTHON python with the locked dependencies installed (default
 #                   python3), e.g. a `uv sync --frozen` .venv
@@ -120,8 +124,49 @@ esac
 # machine cannot reach itself (one inside a VM), and only clients use it.
 LOCAL="$SCHEME://127.0.0.1:$PORT"
 if [ "$BIND" != 0.0.0.0 ]; then LOCAL="$SCHEME://$BIND:$PORT"; fi
-ADMIN_TOKEN="${GITHUB_EMULATOR_DEFAULT_ADMIN_TOKEN:-ghp_admin_default_token}"
 CA="$DIR/tls/ca.pem"
+
+# The site admin's token and password for this stack, never the published
+# defaults: with CI_STACK_LOCALHOST_DNS the emulator listens beyond loopback.
+# A caller's GITHUB_EMULATOR_DEFAULT_ADMIN_TOKEN or GITHUB_EMULATOR_ADMIN_PASSWORD
+# wins; otherwise each is made once per state directory and kept in
+# $DIR/admin-token and $DIR/admin-password (mode 600), so a restart on the
+# same database keeps working and clients read the token from the file.
+admin_credentials() {
+  if [ -z "${GITHUB_EMULATOR_DEFAULT_ADMIN_TOKEN:-}" ]; then
+    if [ -s "$DIR/admin-token" ]; then
+      GITHUB_EMULATOR_DEFAULT_ADMIN_TOKEN="$(cat "$DIR/admin-token")"
+    else
+      GITHUB_EMULATOR_DEFAULT_ADMIN_TOKEN="ghp_$(openssl rand -hex 20)"
+    fi
+  fi
+  if [ -z "${GITHUB_EMULATOR_ADMIN_PASSWORD:-}" ]; then
+    if [ -s "$DIR/admin-password" ]; then
+      GITHUB_EMULATOR_ADMIN_PASSWORD="$(cat "$DIR/admin-password")"
+    else
+      GITHUB_EMULATOR_ADMIN_PASSWORD="$(openssl rand -hex 16)"
+    fi
+  fi
+  (umask 077
+   printf '%s\n' "$GITHUB_EMULATOR_DEFAULT_ADMIN_TOKEN" >"$DIR/admin-token"
+   printf '%s\n' "$GITHUB_EMULATOR_ADMIN_PASSWORD" >"$DIR/admin-password")
+  export GITHUB_EMULATOR_DEFAULT_ADMIN_TOKEN GITHUB_EMULATOR_ADMIN_PASSWORD
+  ADMIN_TOKEN="$GITHUB_EMULATOR_DEFAULT_ADMIN_TOKEN"
+}
+
+# EXIT trap during start: a start that fails stops what it launched.
+stop_after_failed_start() {
+  local status=$?
+  if [ "$status" != 0 ]; then
+    echo "start failed; stopping what it launched" >&2
+    stop
+  fi
+}
+
+# A pid file whose process is still alive.
+live_pid() {
+  [ -s "$1" ] && kill -0 "$(cat "$1")" 2>/dev/null
+}
 
 # A throwaway CA and a server certificate for HOST and loopback.
 make_tls() {
@@ -258,6 +303,24 @@ read_runner_env() {
 start() {
   read_runner_env
   mkdir -p "$DIR/data" "$DIR/runner"
+  # Refuse before touching any pid file: overwriting a live stack's pids
+  # would leave `stop` unable to reach it.
+  local f
+  for f in $(pidfiles); do
+    if live_pid "$f"; then
+      echo "a stack is already running in $DIR ($(basename "$f" .pid) pid $(cat "$f")); run '$0 stop' first" >&2
+      exit 1
+    fi
+    rm -f "$f"
+  done
+  # Something else on the port would answer the readiness check for us.
+  if curl -s -k -m 2 -o /dev/null "$LOCAL/api/v3"; then
+    echo "$LOCAL already answers; another server holds port $PORT" >&2
+    exit 1
+  fi
+  admin_credentials
+  # From here on, a failed start stops what it launched.
+  trap stop_after_failed_start EXIT
   localhost_dns
   local tls_args=() curl_ca=()
   if [ "$TLS" = 1 ]; then
@@ -280,12 +343,19 @@ start() {
       ${tls_args[@]+"${tls_args[@]}"} >"$DIR/emulator.log" 2>&1 &
   echo $! >"$DIR/emulator.pid"
 
+  # Ready when this emulator answers: it must still be alive, so a server
+  # that failed to bind cannot pass on another one's answer.
+  local ready=0
   for _ in $(seq 1 60); do
-    if curl -sf -m 2 ${curl_ca[@]+"${curl_ca[@]}"} "$LOCAL/api/v3" >/dev/null; then break; fi
+    if ! live_pid "$DIR/emulator.pid"; then break; fi
+    if curl -sf -m 2 ${curl_ca[@]+"${curl_ca[@]}"} "$LOCAL/api/v3" >/dev/null; then ready=1; break; fi
     sleep 0.5
   done
-  curl -sf -m 2 ${curl_ca[@]+"${curl_ca[@]}"} "$LOCAL/api/v3" >/dev/null ||
-    { tail -50 "$DIR/emulator.log"; exit 1; }
+  if [ "$ready" != 1 ] || ! live_pid "$DIR/emulator.pid"; then
+    echo "the emulator did not start; last lines of $DIR/emulator.log:" >&2
+    tail -50 "$DIR/emulator.log" >&2
+    exit 1
+  fi
 
   # One runner executes one job at a time, so job concurrency is the number
   # of runner processes. Each gets its own work directory.
@@ -311,7 +381,9 @@ start() {
       [ "$failed" = 0 ] || exit 1 ;;
     *) echo "CI_STACK_RUNNER_KIND must be python or upstream, got $KIND" >&2; exit 2 ;;
   esac
+  trap - EXIT
   echo "emulator $BASE (pid $(cat "$DIR/emulator.pid")), $RUNNERS $KIND runner(s)"
+  echo "admin token in $DIR/admin-token"
   if [ "$TLS" = 1 ]; then
     echo "trust $CA (CURL_CA_BUNDLE/NODE_EXTRA_CA_CERTS) or $DIR/tls/bundle.pem (SSL_CERT_FILE/GIT_SSL_CAINFO)"
   fi

@@ -45,7 +45,6 @@ APP_PERMISSIONS = {
     "pull_requests": "write", "workflows": "write", "administration": "write", "secrets": "write",
     "variables": "write", "members": "read",
 }
-APP_ID_BASE = 910000
 
 
 def app_set() -> str:
@@ -88,6 +87,19 @@ def install(base: str, token: str, app_id: str, org: str, what: str) -> Any:
     }), (200, 201), what)
 
 
+def create_app(base: str, token: str, prefix: str, role: str, slug: str) -> Any:
+    """Create the App with an id the emulator picks, so app sets and later
+    runs never ask for the same id. A picked id that is already taken (409
+    "App id already exists") is picked again."""
+    body = {"name": f"{prefix} {role}", "slug": slug, "permissions": APP_PERMISSIONS}
+    for _ in range(5):
+        status, payload = call(base, token, "POST", "/admin/apps", body)
+        if status == 409 and "App id" in str(payload):
+            continue
+        return must(status, payload, (201,), f"create App {slug}")
+    sys.exit(f"create App {slug}: no free App id after 5 tries")
+
+
 def seed(base: str, token: str, org: str, pem_dir: str, roles: list[str]) -> None:
     prefix = app_set()
     os.makedirs(pem_dir, mode=0o700, exist_ok=True)
@@ -102,11 +114,7 @@ def seed(base: str, token: str, org: str, pem_dir: str, roles: list[str]) -> Non
         slug = f"{prefix}-{role}"
         status, app = call(base, token, "GET", f"/apps/{slug}")
         if status == 404:
-            index = (MINT_ROLES + NON_ROLE_APPS).index(role) + 1 if role in MINT_ROLES + NON_ROLE_APPS else 50 + len(role_app_ids)
-            app = must(*call(base, token, "POST", "/admin/apps", {
-                "app_id": str(APP_ID_BASE + index), "name": f"{prefix} {role}", "slug": slug,
-                "permissions": APP_PERMISSIONS,
-            }), (201,), f"create App {slug}")
+            app = create_app(base, token, prefix, role, slug)
             app_id = str(app["id"])
             key = app["private_key"]
         else:

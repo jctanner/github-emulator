@@ -9,7 +9,16 @@ set -euo pipefail
 
 EMU="${EMU:-http://127.0.0.1:8000}"
 API="$EMU/api/v3"
-TOKEN="${GITHUB_EMULATOR_DEFAULT_ADMIN_TOKEN:-ghp_admin_default_token}"
+# The site admin's token: the caller's, else the one ci-stack.sh made for
+# its state directory, else the emulator's published default (make up).
+STACK_DIR="${CI_STACK_DIR:-$(cd "$(dirname "$0")/.." && pwd)/.ci-stack}"
+if [ -n "${GITHUB_EMULATOR_DEFAULT_ADMIN_TOKEN:-}" ]; then
+  TOKEN="$GITHUB_EMULATOR_DEFAULT_ADMIN_TOKEN"
+elif [ -s "$STACK_DIR/admin-token" ]; then
+  TOKEN="$(cat "$STACK_DIR/admin-token")"
+else
+  TOKEN="ghp_admin_default_token"
+fi
 # With CI_STACK_TLS=1, point EMU_CA at the stack's tls/ca.pem.
 if [ -n "${EMU_CA:-}" ]; then export CURL_CA_BUNDLE="$EMU_CA" GIT_SSL_CAINFO="$EMU_CA"; fi
 GIT_BASE="${EMU%%://*}://admin:$TOKEN@${EMU#*://}"
