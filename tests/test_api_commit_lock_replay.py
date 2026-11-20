@@ -199,8 +199,10 @@ async def test_update_ref_replay_does_not_record_over_a_newer_move(client, test_
     url = f"{API}/repos/testuser/{name}/git/refs"
     assert (await client.post(url, json={"ref": "refs/heads/feature", "sha": head},
                               headers=auth_headers(test_token))).status_code == 201
-    first = (await _put(client, test_token, name, text=b"one\n")).json()["commit"]["sha"]
-    second = (await _put(client, test_token, name, text=b"two\n")).json()["commit"]["sha"]
+    created = (await _put(client, test_token, name, text=b"one\n")).json()
+    first = created["commit"]["sha"]
+    # An update names the blob it replaces, as GitHub requires.
+    second = (await _put(client, test_token, name, sha=created["content"]["sha"], text=b"two\n")).json()["commit"]["sha"]
     assert second != first
     disk_path, _ = await _branch_row_sha(db_session, name, "feature")
 
