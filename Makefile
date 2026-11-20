@@ -75,47 +75,79 @@ frontend-check: frontend-api
 frontend-build: frontend-api
 	cd src/frontend && npm run build
 
+SMOKE_API = http://localhost:$(PORT)/api/v3
+SMOKE_DIR := /tmp/smoke-api
+SMOKE_RESP := $(SMOKE_DIR)/response.json
+# (smoke) smoke_status prints the response and exits 1 unless the HTTP status
+# that the step's curl wrote to $code matches the case pattern $(1);
+# smoke_expect then prints the start of a passing response. Each step checks
+# the status itself, because the status of a `| head` pipeline is head's.
+smoke_status = case "$$code" in $(1)) ;; *) \
+		echo "FAIL: HTTP $$code, expected $(1)"; cat $(SMOKE_RESP) 2>/dev/null; echo; exit 1;; \
+	esac
+smoke_expect = $(call smoke_status,$(1)); python3 -m json.tool $(SMOKE_RESP) | head -5
+
 ## Quick smoke test against the running container
 smoke:
+	@rm -rf $(SMOKE_DIR) && mkdir -p $(SMOKE_DIR)
 	@echo "=== Creating token ==="
-	$(eval TOKEN := $(shell curl -sf -X POST 'http://localhost:$(PORT)/api/v3/admin/tokens' \
-		-H 'Content-Type: application/json' \
-		-d '{"login":"admin","name":"smoke-token","scopes":["repo","user"]}' \
-		| python3 -c "import sys,json; print(json.load(sys.stdin)['token'])"))
-	@echo "Token: $(TOKEN)"
+	@rm -f $(SMOKE_RESP); \
+		code=$$(curl -sS -o $(SMOKE_RESP) -w '%{http_code}' -X POST $(SMOKE_API)/admin/tokens \
+			-H 'Content-Type: application/json' \
+			-d '{"login":"admin","name":"smoke-token","scopes":["repo","user"]}'); \
+		$(call smoke_status,201); \
+		python3 -c "import sys,json; print(json.load(sys.stdin)['token'])" \
+			< $(SMOKE_RESP) > $(SMOKE_DIR)/token
+	@echo "Token: $$(cat $(SMOKE_DIR)/token)"
 	@echo ""
 	@echo "=== GET /user ==="
-	@curl -sf -H "Authorization: token $(TOKEN)" http://localhost:$(PORT)/api/v3/user | python3 -m json.tool | head -5
+	@TOKEN=$$(cat $(SMOKE_DIR)/token); rm -f $(SMOKE_RESP); \
+		code=$$(curl -sS -o $(SMOKE_RESP) -w '%{http_code}' -H "Authorization: token $$TOKEN" \
+			$(SMOKE_API)/user); \
+		$(call smoke_expect,200)
 	@echo ""
 	@echo "=== Create repo ==="
-	@curl -sf -X POST -H "Authorization: token $(TOKEN)" -H "Content-Type: application/json" \
-		-d '{"name":"smoke-repo","description":"Smoke test"}' \
-		http://localhost:$(PORT)/api/v3/user/repos | python3 -m json.tool | head -5
+	@TOKEN=$$(cat $(SMOKE_DIR)/token); rm -f $(SMOKE_RESP); \
+		code=$$(curl -sS -o $(SMOKE_RESP) -w '%{http_code}' -X POST -H "Authorization: token $$TOKEN" \
+			-H "Content-Type: application/json" -d '{"name":"smoke-repo","description":"Smoke test"}' \
+			$(SMOKE_API)/user/repos); \
+		if [ "$$code" = 422 ]; then \
+			echo "smoke-repo already exists (HTTP 422), checking it"; rm -f $(SMOKE_RESP); \
+			code=$$(curl -sS -o $(SMOKE_RESP) -w '%{http_code}' -H "Authorization: token $$TOKEN" \
+				$(SMOKE_API)/repos/admin/smoke-repo); \
+			$(call smoke_expect,200); \
+		else \
+			$(call smoke_expect,201); \
+		fi
 	@echo ""
 	@echo "=== Create issue ==="
-	@curl -sf -X POST -H "Authorization: token $(TOKEN)" -H "Content-Type: application/json" \
-		-d '{"title":"Smoke test issue","body":"Testing"}' \
-		http://localhost:$(PORT)/api/v3/repos/admin/smoke-repo/issues | python3 -m json.tool | head -5
+	@TOKEN=$$(cat $(SMOKE_DIR)/token); rm -f $(SMOKE_RESP); \
+		code=$$(curl -sS -o $(SMOKE_RESP) -w '%{http_code}' -X POST -H "Authorization: token $$TOKEN" \
+			-H "Content-Type: application/json" -d '{"title":"Smoke test issue","body":"Testing"}' \
+			$(SMOKE_API)/repos/admin/smoke-repo/issues); \
+		$(call smoke_expect,201)
 	@echo ""
 	@echo "=== List issues ==="
-	@curl -sf http://localhost:$(PORT)/api/v3/repos/admin/smoke-repo/issues | python3 -m json.tool | head -5
+	@rm -f $(SMOKE_RESP); \
+		code=$$(curl -sS -o $(SMOKE_RESP) -w '%{http_code}' $(SMOKE_API)/repos/admin/smoke-repo/issues); \
+		$(call smoke_expect,200)
 	@echo ""
 	@echo "=== Git clone + push ==="
 	@rm -rf /tmp/smoke-clone
 	@git clone http://localhost:$(PORT)/admin/smoke-repo.git /tmp/smoke-clone 2>&1
-	@cd /tmp/smoke-clone && git checkout -B main && \
+	@TOKEN=$$(cat $(SMOKE_DIR)/token) && cd /tmp/smoke-clone && git checkout -B main && \
 		echo "# Smoke Test" > README.md && \
 		git add README.md && \
 		git -c commit.gpgsign=false -c user.name="Smoke" -c user.email="smoke@test.com" \
 			commit --allow-empty -m "smoke test" 2>&1 && \
-		git -c commit.gpgsign=false push http://admin:$(TOKEN)@localhost:$(PORT)/admin/smoke-repo.git main 2>&1
+		git -c commit.gpgsign=false push http://admin:$$TOKEN@localhost:$(PORT)/admin/smoke-repo.git main 2>&1
 	@echo ""
 	@echo "=== Verify clone ==="
 	@rm -rf /tmp/smoke-verify
 	@git clone http://localhost:$(PORT)/admin/smoke-repo.git /tmp/smoke-verify 2>&1
 	@cat /tmp/smoke-verify/README.md 2>/dev/null && echo "PASS: File content verified" \
-		|| { echo "FAIL: File not found"; rm -rf /tmp/smoke-clone /tmp/smoke-verify; exit 1; }
-	@rm -rf /tmp/smoke-clone /tmp/smoke-verify
+		|| { echo "FAIL: File not found"; rm -rf $(SMOKE_DIR) /tmp/smoke-clone /tmp/smoke-verify; exit 1; }
+	@rm -rf $(SMOKE_DIR) /tmp/smoke-clone /tmp/smoke-verify
 	@echo ""
 	@echo "=== Smoke test complete ==="
 

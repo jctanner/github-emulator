@@ -185,6 +185,7 @@ Actions visibility and runner evaluation.
 - `docs/bugs/fixed/failed-post-push-step-drops-the-push-event.md`
 - `docs/bugs/fixed/pull-request-workflows-never-run.md`
 - `docs/bugs/fixed/search-returns-unreadable-private-repositories.md`
+- `docs/bugs/fixed/make-smoke-api-steps-cannot-fail.md`
 
 ## Decisions
 
