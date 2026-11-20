@@ -3,6 +3,7 @@ repository write locks it took (app/services/repository_lock.py)."""
 
 from app.database_diag import current_request
 from app.services import repository_lock
+from app.services.job_token_scope import job_repository_id
 
 
 class RequestContextMiddleware:
@@ -20,9 +21,12 @@ class RequestContextMiddleware:
         token = current_request.set(f"{scope['method']} {path}")
         locks: dict = {}
         held_token = repository_lock.held.set(locks)
+        # Set by app.api.deps for a job-token request; never carried over.
+        job_token = job_repository_id.set(None)
         try:
             await self.app(scope, receive, send)
         finally:
+            job_repository_id.reset(job_token)
             repository_lock.release_held(locks)
             repository_lock.held.reset(held_token)
             current_request.reset(token)

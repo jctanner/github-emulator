@@ -1391,6 +1391,10 @@ class RunnerClient:
         may_mint = not isinstance(permissions, dict) or (
             permissions.get("id-token") == "write"
         )
+        if "id_token" in job:
+            # The emulator says outright whether the job may mint (it may not
+            # for a fork's pull_request run, whatever it declared).
+            may_mint = may_mint and bool(job["id_token"])
         job_oidc_token = str(job.get("token") or "")
         if may_mint and job_oidc_token:
             env["ACTIONS_ID_TOKEN_REQUEST_URL"] = OIDC_TOKEN_URL

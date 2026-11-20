@@ -21,6 +21,7 @@ from app.config import settings
 from app.models.actions import OrgVariable, OrgVariableRepository
 from app.models.repository import Repository
 from app.schemas.user import _fmt_dt
+from app.services.job_token_scope import visible_repositories
 from app.services.org_variables import VISIBILITIES, visible_to
 
 router = APIRouter(tags=["actions"])
@@ -219,6 +220,7 @@ async def list_selected_repositories(
             Repository.organization_id == organisation.id,
         )
     )
+    query = visible_repositories(query)
     total = (await db.execute(select(func.count()).select_from(query.subquery()))).scalar_one()
     repositories = (await db.execute(
         query.order_by(Repository.id).offset((page - 1) * per_page).limit(per_page)

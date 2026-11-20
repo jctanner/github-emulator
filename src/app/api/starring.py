@@ -4,11 +4,12 @@ from fastapi import APIRouter, HTTPException, Query, Response
 from sqlalchemy import select
 
 from app.api.deps import AuthUser, CurrentUser, DbSession, get_repo_or_404
-from app.config import settings
-from app.models.repository import Repository, StarredRepo
-from app.models.user import User
-from app.schemas.user import SimpleUser, _fmt_dt
 from app.api.repos import _repo_json
+from app.config import settings
+from app.models.repository import StarredRepo
+from app.models.user import User
+from app.schemas.user import SimpleUser
+from app.services.job_token_scope import visible_repository_ids
 
 router = APIRouter(tags=["starring"])
 
@@ -128,5 +129,6 @@ async def list_user_starred(
         .offset((page - 1) * per_page)
         .limit(per_page)
     )
+    query = visible_repository_ids(query, StarredRepo.repo_id)
     stars = (await db.execute(query)).scalars().all()
     return [_repo_json(s.repository, BASE) for s in stars if s.repository]

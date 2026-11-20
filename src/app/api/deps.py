@@ -5,7 +5,7 @@ import re
 from typing import Annotated, Optional
 
 from fastapi import Depends, HTTPException, Request
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database import get_db
@@ -25,7 +25,9 @@ from app.services.browser_session_service import (
     csrf_token_matches,
     verify_browser_session,
 )
+from app.services.job_token_scope import set_job_repository
 from app.services.job_token_service import validate_job_token
+from app.services.pull_request_runs import is_fork_pull_request_run
 
 # ---------------------------------------------------------------------------
 # Database session dependency
@@ -160,6 +162,13 @@ async def _resolve_user(
     validated = await validate_job_token(db, token_value)
     if validated is not None:
         job, run = validated
+        if _is_user_scoped(request.url.path):
+            # GitHub's GITHUB_TOKEN is an installation token: /user and
+            # /user/* are not for it, whoever triggered the run.
+            raise HTTPException(status_code=403, detail="Resource not accessible by integration")
+        # Listings and search narrow to this repository plus public ones
+        # (app.services.job_token_scope).
+        set_job_repository(run.repo_id)
         request.state.workflow_job = job
         request.state.workflow_run = run
         request.state.workflow_job_permissions = job.permissions
@@ -170,13 +179,18 @@ async def _resolve_user(
         # so the run's repository has to be consulted rather than assuming
         # permissive.
         repo_default = None
-        if job.permissions in (None, {}):
+        if job.permissions in (None, {}) or is_fork_pull_request_run(run):
             repo = (await db.execute(
                 select(Repository).where(Repository.id == run.repo_id)
             )).scalar_one_or_none()
             repo_default = repo.default_workflow_permissions if repo else None
+        declared = job.permissions
+        if is_fork_pull_request_run(run):
+            # GitHub gives a fork's pull_request run a read-only token,
+            # whatever the workflow asks for.
+            declared = job_permissions.read_only(job.permissions, repo_default)
         refusal = job_permissions.check(
-            request.method, request.url.path, job.permissions, repo_default
+            request.method, request.url.path, declared, repo_default
         )
         if refusal is not None:
             raise HTTPException(
@@ -199,6 +213,12 @@ async def _resolve_user(
                     detail=f"Resource not accessible by integration: "
                            f"job token for {own} cannot write to {target}",
                 )
+        # Nor does it read another repository that is not public, whoever
+        # triggered the run: the token is the run's, not the actor's. A
+        # repository that does not exist is left to the route.
+        target = _repository_read_in_path(request.url.path)
+        if target is not None and request.method in ("GET", "HEAD", "OPTIONS"):
+            await _refuse_other_non_public_repository(db, run, target)
         return run.actor
     return await validate_token(db, token_value)
 
@@ -211,6 +231,43 @@ def _repository_in_path(path: str) -> str | None:
     """owner/repo named by a repository API route or a git transport route."""
     m = _REPO_PATH.match(path) or _GIT_PATH.match(path)
     return f"{m.group(1)}/{m.group(2)}" if m else None
+
+
+_USER_SCOPED = re.compile(r"^/(?:api/v3/)?(?:user|notifications)(?:/|$)")
+
+
+def _is_user_scoped(path: str) -> bool:
+    """/user, /user/... and /notifications: the authenticated user's own endpoints."""
+    return bool(_USER_SCOPED.match(path))
+
+
+# Root-mounted routes that serve a repository's content to a token too.
+_CONTENT_PATH = re.compile(r"^/([^/_][^/]*)/([^/]+)/(?:raw|releases/download)/")
+
+
+def _repository_read_in_path(path: str) -> str | None:
+    """owner/repo whose content a request reads: the repository API and git
+    routes, plus the raw and release-download routes."""
+    target = _repository_in_path(path)
+    if target is None:
+        m = _CONTENT_PATH.match(path)
+        target = f"{m.group(1)}/{m.group(2)}" if m else None
+    return target
+
+
+async def _refuse_other_non_public_repository(db: AsyncSession, run, target: str) -> None:
+    """404 for a job token reading a repository other than its run's that is
+    not public (private or internal), as GitHub's GITHUB_TOKEN gets."""
+    owner, _, name = target.partition("/")
+    other = (await db.execute(
+        select(Repository.id, Repository.private, Repository.visibility).where(
+            func.lower(Repository.full_name) == f"{owner}/{name.removesuffix('.git')}".lower()
+        )
+    )).first()
+    if other is None or other.id == run.repo_id:
+        return
+    if other.private or (other.visibility or "public") != "public":
+        raise HTTPException(status_code=404, detail="Not Found")
 
 
 _INSTALLATION_SCOPES = (

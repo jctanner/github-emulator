@@ -10,6 +10,7 @@ from app.models.repository import Repository
 from app.models.user import User
 from app.services.job_token_service import validate_job_token
 from app.services.oidc_service import issue_for_job, issuer, jwks, subject_for
+from app.services.pull_request_runs import is_fork_pull_request_run
 
 router = APIRouter(tags=["oidc"])
 
@@ -82,6 +83,16 @@ async def actions_token(request: Request, db: DbSession, audience: str | None = 
     if validated is None:
         raise HTTPException(status_code=401, detail="invalid Actions OIDC request token")
     job, run = validated
+
+    if is_fork_pull_request_run(run):
+        # GitHub gives a fork's pull_request run no id-token: write.
+        raise HTTPException(
+            status_code=403,
+            detail=(
+                "Resource not accessible by integration: a pull_request run "
+                "for a fork's pull request has no id-token: write"
+            ),
+        )
 
     # GitHub refuses the request unless the job asked for id-token: write. A
     # job with no permissions block at all is treated as permissive, the same
