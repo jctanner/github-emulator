@@ -13,10 +13,10 @@ that a Busy poll is handed no new job.
 import json
 
 import pytest
-from sqlalchemy import select
+from sqlalchemy import delete, select
 
 from app.api import actions_distributed_task as dt
-from app.models.actions import WorkflowJob
+from app.models.actions import Runner, WorkflowJob
 from tests.actions.test_runner_broker_races import _ack, _cancel, _runner, _take_job
 from tests.actions.test_runner_lost_handout import _poll, _workflow
 
@@ -127,6 +127,56 @@ async def test_a_completed_job_keeps_its_first_conclusion_and_outputs(
         assert job.completed_at == completed_at
 
     assert (await _job_request(client, headers, job_id)).json()["result"] == "succeeded"
+
+
+def _delete_job_as_the_report_completes_it(monkeypatch, job_id):
+    """The repository's deletion lands after a report's ownership check."""
+    complete = dt._complete_job
+
+    async def deleted_meanwhile(job, runner, result_str, db, outputs=None):
+        # As another request's delete: the report's loaded job is untouched.
+        await db.execute(
+            delete(WorkflowJob).where(WorkflowJob.id == job_id).execution_options(synchronize_session=False)
+        )
+        await complete(job, runner, result_str, db, outputs)
+
+    monkeypatch.setattr(dt, "_complete_job", deleted_meanwhile)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("route", ["events", "jobrequest", "complete"])
+async def test_an_end_report_of_a_job_deleted_meanwhile_is_not_a_server_error(
+    client, db_session, test_user, test_token, monkeypatch, route
+):
+    await _workflow(client, db_session, test_user, test_token, jobs=1)
+    runner_id, headers, session_id = await _runner(client, test_token)
+    message = (await _poll(client, headers, session_id, 0)).json()
+    body = json.loads(message["body"])
+    job_id = int(body["requestId"])
+    assert (await _ack(client, headers, session_id, job_id)).status_code == 200
+    events = f"/_apis/distributedtask/hubs/Build/plans/{body['plan']['planId']}/events"
+    job_token = {"Authorization": f"Bearer {body['variables']['system.github.token']['Value']}"}
+    if route != "events":
+        # The first end report. An event for a finished job answers before
+        # it reaches _complete_job, so the event is sent as the first report.
+        assert (await _report(client, headers, job_id)).status_code == 200
+
+    _delete_job_as_the_report_completes_it(monkeypatch, job_id)
+    report = {
+        "events": lambda: client.post(events, json=_plan_event(body["jobId"], "failed", {}), headers=job_token),
+        "jobrequest": lambda: _report(client, headers, job_id, "failed"),
+        "complete": lambda: client.post(
+            f"/_apis/distributedtask/jobs/{job_id}/complete", json={"result": "Failed"}, headers=headers,
+        ),
+    }[route]
+    resp = await report()
+    assert resp.status_code == 200, resp.text
+
+    db_session.expire_all()
+    assert (await db_session.execute(select(WorkflowJob).where(WorkflowJob.id == job_id))).scalar_one_or_none() is None
+    runner = (await db_session.execute(select(Runner).where(Runner.id == runner_id))).scalar_one()
+    assert not runner.busy and runner.status == "online"
+    assert runner_id not in dt._holding
 
 
 @pytest.mark.asyncio
