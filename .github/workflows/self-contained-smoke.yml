@@ -1,0 +1,310 @@
+name: self-contained smoke
+
+# Start the emulator and its runner inside this job, execute a real workflow
+# run on them, and record what the stack costs: start-up time, peak memory
+# and CPU of the two processes.
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  smoke:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: astral-sh/setup-uv@e92bafb6253dcd438e0484186d7669ea7a8ca1cc # v6.4.3
+        with:
+          enable-cache: false
+      - name: Install the emulator's Python dependencies
+        id: deps
+        run: |
+          start=$(date +%s.%N)
+          python3 -m venv /tmp/emu-venv
+          uv export -q --frozen --no-dev --no-emit-project --format requirements-txt -o /tmp/emu-requirements.txt
+          /tmp/emu-venv/bin/pip install -q --require-hashes -r /tmp/emu-requirements.txt
+          echo "seconds=$(echo "$(date +%s.%N) - $start" | bc)" >> "$GITHUB_OUTPUT"
+
+      - name: Start the stack
+        id: start
+        env:
+          CI_STACK_PYTHON: /tmp/emu-venv/bin/python
+          CI_STACK_DIR: /tmp/ci-stack
+        run: |
+          start=$(date +%s.%N)
+          scripts/ci-stack.sh start
+          echo "seconds=$(echo "$(date +%s.%N) - $start" | bc)" >> "$GITHUB_OUTPUT"
+
+      - name: Run a workflow on the emulator
+        id: smoke
+        run: |
+          start=$(date +%s.%N)
+          scripts/ci-workflow-smoke.sh
+          echo "seconds=$(echo "$(date +%s.%N) - $start" | bc)" >> "$GITHUB_OUTPUT"
+
+      - name: Record cost
+        if: always()
+        env:
+          CI_STACK_DIR: /tmp/ci-stack
+        run: |
+          {
+            echo "### Stack cost on $(nproc) vCPU, $(free -g | awk '/Mem:/ {print $2}') GiB"
+            echo
+            echo "| step | seconds |"
+            echo "| --- | --- |"
+            echo "| pip install | ${{ steps.deps.outputs.seconds }} |"
+            echo "| stack start (until the API answers) | ${{ steps.start.outputs.seconds }} |"
+            echo "| smoke (org, repo, push, dispatch, 2-job run) | ${{ steps.smoke.outputs.seconds }} |"
+            echo
+            echo '```'
+            scripts/ci-stack.sh stats
+            echo '```'
+          } | tee -a "$GITHUB_STEP_SUMMARY"
+
+      - name: Stack logs
+        if: failure()
+        run: tail -n 200 /tmp/ci-stack/emulator.log /tmp/ci-stack/runner.log
+
+      - name: Stop the stack
+        if: always()
+        env:
+          CI_STACK_DIR: /tmp/ci-stack
+        run: scripts/ci-stack.sh stop
+
+  # The packaging a consumer would use: the composite action, then the smoke
+  # against its outputs. Step timings in the run show its start-up cost.
+  # "fast" is the Python runner; "fullsend" is the shape fullsend's jobs need:
+  # the real runner over https on a *.localhost name that resolves to the VM.
+  action:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - {preset: fast, kind: python, port: "8000", tls: "false", host: 127.0.0.1, dns: "false"}
+          - {preset: fullsend, kind: upstream, port: "443", tls: "true", host: ghemu.localhost, dns: "true", raw_addr: 185.199.108.200}
+    name: action (${{ matrix.preset }})
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - id: emu
+        uses: ./.github/actions/emulator
+        with:
+          runner-kind: ${{ matrix.kind }}
+          port: ${{ matrix.port }}
+          tls: ${{ matrix.tls }}
+          system-trust: ${{ matrix.tls }}
+          host: ${{ matrix.host }}
+          localhost-dns: ${{ matrix.dns }}
+          raw-host: ${{ matrix.dns }}
+          raw-addr: ${{ matrix.raw_addr || '' }}
+          upstream-token: ${{ github.token }}
+          runners: "2"
+          runner-env: |
+            SMOKE_RUNNER_ENV=a,b c
+      - name: Check every runner got runner-env
+        env:
+          STATE: ${{ runner.temp }}/github-emulator
+          KIND: ${{ matrix.kind }}
+        run: |
+          for i in 1 2; do
+            if [ "$KIND" = upstream ]; then
+              grep -qxF 'SMOKE_RUNNER_ENV=a,b c' "$STATE/runner-$i/.env"
+            else
+              tr '\0' '\n' <"/proc/$(cat "$STATE/runner-$i.pid")/environ" | grep -qxF 'SMOKE_RUNNER_ENV=a,b c'
+            fi
+          done
+      - name: Run a workflow on the emulator
+        env:
+          EMU: ${{ steps.emu.outputs.url }}
+          EMU_CA: ${{ steps.emu.outputs.ca-file }}
+        run: scripts/ci-workflow-smoke.sh
+      - name: Fetch a file through raw.githubusercontent.com
+        if: matrix.dns == 'true'
+        env:
+          EMU: ${{ steps.emu.outputs.url }}
+          TOKEN: ${{ steps.emu.outputs.token }}
+          RAW_ADDR: ${{ matrix.raw_addr }}
+        run: |
+          getent ahostsv4 raw.githubusercontent.com | awk 'NR == 1 { print "raw.githubusercontent.com ->", $1 }'
+          if [ -n "$RAW_ADDR" ]; then
+            getent ahostsv4 raw.githubusercontent.com | awk -v want="$RAW_ADDR" 'NR == 1 && $1 != want { exit 1 }'
+          fi
+          repo=$(curl -fsS -H "Authorization: token $TOKEN" "$EMU/api/v3/user/repos?per_page=1" | jq -r '.[0].full_name')
+          readme=$(curl -fsS -H "Authorization: token $TOKEN" "$EMU/api/v3/repos/$repo/readme" | jq -r .content | base64 -d)
+          raw=$(curl -fsS -H "Authorization: token $TOKEN" "https://raw.githubusercontent.com/$repo/HEAD/README.md")
+          if [ "$raw" != "$readme" ]; then
+            echo "raw.githubusercontent.com served something else for $repo" >&2
+            exit 1
+          fi
+          echo "raw.githubusercontent.com/$repo/HEAD/README.md matches the emulator"
+          # A repository the emulator does not have comes from the real host.
+          curl -fsS https://raw.githubusercontent.com/actions/runner/main/README.md | grep -m1 'GitHub Actions Runner'
+      - name: Keep the logs
+        if: failure()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: action-${{ matrix.preset }}
+          path: |
+            ${{ runner.temp }}/github-emulator/*.log
+            ${{ runner.temp }}/github-emulator/runner-*/_diag/*.log
+
+  # Which workflow features each runner executes. Informational: a feature
+  # failing here is a finding, not a broken build.
+  capabilities:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - {name: python, kind: python, port: "8000", tls: "0", host: 127.0.0.1}
+          # actions/runner drops the port from some emulator URLs and dials
+          # the scheme's default ("Connection refused (127.0.0.1:80)"), so
+          # the emulator itself serves on 80, or 443 with TLS.
+          - {name: upstream, kind: upstream, port: "80", tls: "0", host: 127.0.0.1}
+          # The shape a fullsend job needs: https, a host name, and the CA in
+          # the system store, which is all actions/runner (.NET) reads.
+          - {name: upstream-tls, kind: upstream, port: "443", tls: "1", host: ghemu.localhost}
+          # The same, with the host name resolving to the VM's own address
+          # rather than loopback, so a sandbox supervisor can reach it too.
+          - {name: upstream-tls-vm-ip, kind: upstream, port: "443", tls: "1", host: ghemu.localhost, localhost_dns: "1", dns_extra: "gw.ghemu.localhost=10.254.0.1"}
+    env:
+      CI_STACK_PYTHON: /tmp/emu-venv/bin/python
+      CI_STACK_DIR: /tmp/ci-stack
+      CI_STACK_RUNNERS: "2"
+      CI_STACK_RUNNER_KIND: ${{ matrix.kind }}
+      CI_STACK_PORT: ${{ matrix.port }}
+      CI_STACK_TLS: ${{ matrix.tls }}
+      CI_STACK_HOST: ${{ matrix.host }}
+      CI_STACK_SYSTEM_TRUST: ${{ matrix.tls }}
+      CI_STACK_LOCALHOST_DNS: ${{ matrix.localhost_dns || '0' }}
+      CI_STACK_DNS_EXTRA: ${{ matrix.dns_extra || '' }}
+      # Read-only job token, so resolving public actions does not share the
+      # anonymous API limit.
+      GITHUB_EMULATOR_ACTIONS_UPSTREAM_TOKEN: ${{ github.token }}
+      PROBE_WAIT_SECONDS: "180"
+      PROBE_LOG_DIR: /tmp/ci-stack/probe-logs
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@e92bafb6253dcd438e0484186d7669ea7a8ca1cc # v6.4.3
+        with:
+          enable-cache: false
+      - name: Install the emulator's Python dependencies
+        run: |
+          python3 -m venv /tmp/emu-venv
+          uv export -q --frozen --no-dev --no-emit-project --format requirements-txt -o /tmp/emu-requirements.txt
+          /tmp/emu-venv/bin/pip install -q --require-hashes -r /tmp/emu-requirements.txt
+      - name: Allow ports below 1024
+        run: sudo sysctl -w net.ipv4.ip_unprivileged_port_start=80
+      - name: Point the probe at the stack
+        run: |
+          scheme=http; [ "$CI_STACK_TLS" = 1 ] && scheme=https
+          echo "EMU=$scheme://$CI_STACK_HOST:$CI_STACK_PORT" >> "$GITHUB_ENV"
+          [ "$CI_STACK_TLS" = 1 ] && echo "EMU_CA=$CI_STACK_DIR/tls/ca.pem" >> "$GITHUB_ENV"
+          # Record whether *.localhost resolves without help (systemd-resolved).
+          getent hosts "$CI_STACK_HOST" || echo "$CI_STACK_HOST does not resolve"
+      - name: Start the stack
+        run: |
+          start=$(date +%s.%N)
+          scripts/ci-stack.sh start
+          echo "start_seconds=$(echo "$(date +%s.%N) - $start" | bc)" >> "$GITHUB_ENV"
+      - name: Check every client resolves the host to the VM address
+        if: matrix.localhost_dns == '1'
+        run: |
+          ip="$(ip -4 route get 1.1.1.1 | awk '{for (i = 1; i < NF; i++) if ($i == "src") { print $(i + 1); exit }}')"
+          got_glibc="$(getent ahostsv4 "$CI_STACK_HOST" | awk 'NR == 1 {print $1}')"
+          got_dns="$(dig +short "$CI_STACK_HOST" A | tail -1)"
+          got_node="$(node -e 'require("dns").lookup(process.argv[1], {family: 4}, (e, a) => console.log(e ? e.code : a))' "$CI_STACK_HOST")"
+          got_dotnet="$(pwsh -NoProfile -Command "([System.Net.Dns]::GetHostAddresses('$CI_STACK_HOST') | Where-Object AddressFamily -eq 'InterNetwork' | Select-Object -First 1).IPAddressToString")"
+          got_container="$(podman run --rm --network host docker.io/library/alpine:3.20 nslookup -type=a "$CI_STACK_HOST" 2>/dev/null | awk '/^Address: /{print $2}' | tail -1)"
+          # gh and fullsend are Go: check both Go resolvers.
+          mkdir -p /tmp/golookup && printf '%s\n' 'package main' 'import ("context";"fmt";"net";"os")' \
+            'func main() { for _, pure := range []bool{true, false} { r := &net.Resolver{PreferGo: pure}; a, err := r.LookupIP(context.Background(), "ip4", os.Args[1]); fmt.Println(a, err) } }' > /tmp/golookup/main.go
+          got_go_pure="$(cd /tmp/golookup && go run main.go "$CI_STACK_HOST" | sed -n 1p | tr -d '[]')"
+          got_go_cgo="$(cd /tmp/golookup && go run main.go "$CI_STACK_HOST" | sed -n 2p | tr -d '[]')"
+          got_go_pure="${got_go_pure% <nil>}"; got_go_cgo="${got_go_cgo% <nil>}"
+          # curl answers *.localhost with loopback itself (RFC 6761) and never
+          # asks DNS, so reach the stack the way Node does instead.
+          tls="$(NODE_EXTRA_CA_CERTS="$CI_STACK_DIR/tls/ca.pem" node -e '
+            const r = require("https").get("https://" + process.argv[1] + "/api/v3", res => { console.log(res.statusCode + " " + res.socket.remoteAddress); res.resume(); });
+            r.on("error", e => console.log("error " + e.code));' "$CI_STACK_HOST")"
+          github="$(curl -s -o /dev/null -w '%{http_code}' https://api.github.com/zen)"
+          {
+            echo "### ${{ matrix.name }}: $CI_STACK_HOST resolution (VM address $ip)"
+            echo
+            echo "| client | answer |"
+            echo "|---|---|"
+            echo "| glibc (getent) | $got_glibc |"
+            echo "| DNS (/etc/resolv.conf) | $got_dns |"
+            echo "| Node dns.lookup | $got_node |"
+            echo "| .NET Dns.GetHostAddresses (pwsh) | $got_dotnet |"
+            echo "| host-network container | $got_container |"
+            echo "| Go net, pure resolver | $got_go_pure |"
+            echo "| Go net, cgo resolver | $got_go_cgo |"
+            echo "| curl (resolves *.localhost itself) | $(curl -s -o /dev/null -w '%{remote_ip}' --cacert "$CI_STACK_DIR/tls/ca.pem" "https://$CI_STACK_HOST/api/v3") |"
+            echo "| Node https to https://$CI_STACK_HOST/api/v3 | $tls |"
+            echo "| https://api.github.com/zen | $github |"
+          } | tee -a "$GITHUB_STEP_SUMMARY"
+          for got in "$got_glibc" "$got_dns" "$got_node" "$got_dotnet" "$got_container" "$got_go_pure" "$got_go_cgo"; do
+            [ "$got" = "$ip" ] || { echo "::error::$CI_STACK_HOST resolved to '$got', not $ip"; exit 1; }
+          done
+          if [ "${tls%% *}" != 200 ] || [ "${tls##* }" != "$ip" ]; then
+            echo "::error::https to $CI_STACK_HOST: $tls"; exit 1
+          fi
+          # Any HTTP answer shows github.com still resolves and TLS works; an
+          # anonymous request may get 403 from GitHub's rate limit for the
+          # shared runner address. Only no answer (000) means DNS broke.
+          [ "$github" != 000 ] || { echo "::error::api.github.com unreachable"; exit 1; }
+          # A container must not get the host from a copied /etc/hosts: an
+          # OpenShell sandbox would then dial it directly, which its policy
+          # refuses, instead of going through policy DNS and the proxy.
+          if podman run --rm docker.io/library/alpine:3.20 cat /etc/hosts | grep -q "$CI_STACK_HOST"; then
+            echo "::error::$CI_STACK_HOST is in a container's /etc/hosts"; exit 1
+          fi
+          # CI_STACK_DNS_EXTRA: each extra name resolves to its own address,
+          # for glibc and for a host-network container.
+          for pair in ${CI_STACK_DNS_EXTRA:-}; do
+            name="${pair%%=*}" want="${pair#*=}"
+            g="$(getent ahostsv4 "$name" | awk 'NR == 1 {print $1}')"
+            c="$(podman run --rm --network host docker.io/library/alpine:3.20 nslookup -type=a "$name" 2>/dev/null | awk '/^Address: /{print $2}' | tail -1)"
+            echo "| $name (extra) | glibc $g, container $c, want $want |" | tee -a "$GITHUB_STEP_SUMMARY"
+            if [ "$g" != "$want" ] || [ "$c" != "$want" ]; then
+              echo "::error::$name resolved to '$g' / '$c', not $want"; exit 1
+            fi
+          done
+      - name: Probe
+        run: |
+          {
+            echo "### ${{ matrix.name }} runner x2 (stack start ${start_seconds}s)"
+            echo
+            scripts/ci-capability-probe.sh
+            echo
+            echo '```'
+            scripts/ci-stack.sh stats
+            echo '```'
+          } | tee -a "$GITHUB_STEP_SUMMARY"
+      - name: Stop the stack
+        if: always()
+        run: scripts/ci-stack.sh stop
+      - name: Keep the logs
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: capabilities-${{ matrix.name }}
+          path: |
+            /tmp/ci-stack/*.log
+            /tmp/ci-stack/probe-logs
+            /tmp/ci-stack/runner-*/_diag/*.log
