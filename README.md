@@ -106,6 +106,7 @@ For more about the seeded token, see the
 - [Actions runners](docs/guides/actions-runners.md): run workflow jobs and view them in the web UI.
 - [Configuration](docs/guides/configuration.md): every `GITHUB_EMULATOR_` setting.
 - [Default admin token](docs/guides/default-admin-pat.md): the seeded token and how to change it.
+- [Use it in CI](docs/guides/ci.md): start the emulator and its runners inside another repository's CI job.
 - [CONTRIBUTING](CONTRIBUTING.md): checks, policies and how to submit a change.
 - [Architecture boundaries](docs/notes/architecture-boundaries.md): modules, runners, migrations and write contention.
 - [Work ledger](PLAN.md): tasks, bugs and decisions.
