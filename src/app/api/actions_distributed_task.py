@@ -30,6 +30,7 @@ from app.api.actions_runner_protocol import (
     _agent_json,
     _context_dictionary,
     _job_access_token,
+    _runner_client_id,
     _service_definition,
     _template_mapping,
     _variable,
@@ -58,6 +59,12 @@ from app.services.action_download_service import (
 from app.services.auth_service import hash_token
 from app.services.job_token_service import validate_job_token
 from app.services.pull_request_runs import is_fork_pull_request_run
+from app.services.runner_credentials import (
+    CLIENT_ASSERTION_TYPE,
+    InvalidClientAssertion,
+    public_key_pem_from_agent,
+    verify_client_assertion,
+)
 from app.services.workflow_service import (
     _branch_protected,
     check_run_completion,
@@ -286,6 +293,23 @@ async def apis_root_options():
     )
 
 
+def _invalid_client(description: str) -> JSONResponse:
+    """OAuth 2.0 error response for a client that failed authentication."""
+    return JSONResponse(
+        status_code=400,
+        content={"error": "invalid_client", "error_description": description},
+    )
+
+
+def _token_audiences(request: Request, runner: Runner) -> set[str]:
+    """Audiences a runner's client assertion may name: the authorization URL
+    handed out at registration (see _agent_json), or the URL it was sent to."""
+    return {
+        f"{_request_base(request)}/_apis/oauth2/token?runner_id={runner.id}",
+        str(request.url),
+    }
+
+
 @router.post("/_apis/oauth2/token")
 @router.post("/{owner}/{repo}/_apis/oauth2/token")
 async def dt_oauth_token(request: Request, db: DbSession, runner_id: int = Query(...)):
@@ -301,8 +325,25 @@ async def dt_oauth_token(request: Request, db: DbSession, runner_id: int = Query
     if runner is None:
         raise HTTPException(status_code=404, detail="Runner not found")
 
+    assertion_type = form.get("client_assertion_type", [""])[-1]
+    assertion = form.get("client_assertion", [""])[-1]
+    if assertion_type and assertion_type != CLIENT_ASSERTION_TYPE:
+        return _invalid_client("Unsupported client_assertion_type")
+    if not assertion:
+        return _invalid_client("client_assertion is required")
+    try:
+        verify_client_assertion(
+            assertion,
+            public_key_pem=runner.public_key,
+            client_id=_runner_client_id(runner),
+            audiences=_token_audiences(request, runner),
+        )
+    except InvalidClientAssertion as exc:
+        return _invalid_client(str(exc))
+
     access_token = f"ghp_runner_{secrets.token_urlsafe(32)}"
     runner.token_hash = hash_token(access_token)
+    runner.registration_broker = False
     runner.status = "online"
     runner.last_heartbeat = datetime.now(timezone.utc)
     await db.commit()
@@ -418,6 +459,9 @@ async def dt_register_pool_agent(
             or runner.os
         )
         runner.labels = _labels_from_body(body) or runner.labels
+        runner.public_key = public_key_pem_from_agent(body) or runner.public_key
+        # The broker becomes the registered agent here and stops being a broker.
+        runner.registration_broker = False
         runner.status = "online"
         runner.last_heartbeat = datetime.now(timezone.utc)
         await db.commit()
@@ -454,6 +498,7 @@ async def dt_register_pool_agent(
         labels=_labels_from_body(body),
         busy=False,
         token_hash=hash_token(runner_token),
+        public_key=public_key_pem_from_agent(body),
         repo_id=reg.repo_id if reg is not None else None,
         enterprise_slug=(
             enterprise_reg.enterprise_slug if enterprise_reg is not None else None
@@ -504,12 +549,30 @@ async def dt_update_pool_agent(
     """Update an existing pool-scoped agent during runner replacement."""
     authenticated_runner = await _get_runner_from_token(request, db)
     body = await request.json()
-    result = await db.execute(select(Runner).where(
-        Runner.id == agent_id, _same_scope_as(authenticated_runner),
-    ))
-    runner = result.scalar_one_or_none()
+    # An ordinary runner sees only its own scope (#31): an agent outside it is
+    # 404. A registration broker (config.sh --replace) is looked up unscoped,
+    # so the broker authorization below can answer 403 for a target outside
+    # the token it was issued for (#44), as its tests pin.
+    query = select(Runner).where(Runner.id == agent_id)
+    if not authenticated_runner.registration_broker:
+        query = query.where(_same_scope_as(authenticated_runner))
+    runner = (await db.execute(query)).scalar_one_or_none()
     if runner is None:
         raise HTTPException(status_code=404, detail="Agent not found")
+    if authenticated_runner.id != runner.id and not (
+        authenticated_runner.registration_broker
+        and authenticated_runner.repo_id == runner.repo_id
+        and authenticated_runner.org_id == runner.org_id
+        and authenticated_runner.enterprise_slug == runner.enterprise_slug
+    ):
+        # An ordinary runner token may update only its own agent. Replacing
+        # another runner (config.sh --replace) needs the registration broker
+        # identity, which was issued against a registration token for the
+        # target's own scope. Sharing a repository or enterprise is not enough.
+        # Refused before anything (including the public key) is changed.
+        raise HTTPException(
+            status_code=403, detail="Only the runner itself or its registration broker may update an agent"
+        )
 
     runner.name = body.get("name", body.get("Name", runner.name))
     runner.os = normalise_runner_os(
@@ -517,6 +580,7 @@ async def dt_update_pool_agent(
         or runner.os
     )
     runner.labels = _labels_from_body(body) or runner.labels
+    runner.public_key = public_key_pem_from_agent(body) or runner.public_key
     runner.status = "online"
     runner.last_heartbeat = datetime.now(timezone.utc)
     if authenticated_runner.id != runner.id:
@@ -524,6 +588,10 @@ async def dt_update_pool_agent(
         # updates the existing named runner. GitHub does not expose that broker
         # as a second runner registration.
         await db.delete(authenticated_runner)
+        # The replaced runner's bearer token dies with its key: the new
+        # runner gets a token through the assertion exchange. A token nobody
+        # holds keeps the column populated without matching any request.
+        runner.token_hash = hash_token(f"ghp_runner_{secrets.token_urlsafe(32)}")
     await db.commit()
     await db.refresh(runner)
     return _agent_json(runner, base=_request_base(request))

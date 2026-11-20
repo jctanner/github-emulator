@@ -11,11 +11,13 @@ from datetime import datetime, timezone
 from fastapi import APIRouter, HTTPException, Request
 from sqlalchemy import select
 
+from app.api.actions_distributed_task import _get_runner_from_token
 from app.api.actions_runners import _delete_runner_and_detach_history, normalise_runner_os
 from app.api.deps import DbSession, get_repo_or_404
 from app.config import settings
 from app.models.actions import EnterpriseRunnerRegistrationToken, RegistrationToken, Runner
 from app.services.auth_service import hash_token
+from app.services.runner_credentials import public_key_pem_from_agent
 
 router = APIRouter(tags=["actions-pipelines"])
 
@@ -24,6 +26,14 @@ def _is_expired(value: datetime) -> bool:
     if value.tzinfo is None:
         value = value.replace(tzinfo=timezone.utc)
     return value < datetime.now(timezone.utc)
+
+
+def _require_own_runner(authenticated: Runner, runner_id: int) -> None:
+    """A runner's token removes that runner only."""
+    if authenticated.id != runner_id:
+        raise HTTPException(
+            status_code=403, detail="Runner token does not belong to this runner",
+        )
 
 
 def _request_base(request: Request) -> str:
@@ -64,6 +74,7 @@ async def pipelines_register_enterprise_runner(
         labels=labels,
         busy=False,
         token_hash=hash_token(runner_token),
+        public_key=public_key_pem_from_agent(body),
         enterprise_slug=enterprise,
         last_heartbeat=datetime.now(timezone.utc),
     )
@@ -86,8 +97,9 @@ async def pipelines_register_enterprise_runner(
 
 @router.delete("/_services/pipelines/enterprises/{enterprise}/_apis/pipelines/runs/{runner_id}")
 async def pipelines_deregister_enterprise_runner(
-    enterprise: str, runner_id: int, db: DbSession,
+    enterprise: str, runner_id: int, request: Request, db: DbSession,
 ):
+    _require_own_runner(await _get_runner_from_token(request, db), runner_id)
     result = await db.execute(select(Runner).where(
         Runner.id == runner_id,
         Runner.enterprise_slug == enterprise,
@@ -156,6 +168,7 @@ async def pipelines_register_runner(
         labels=labels,
         busy=False,
         token_hash=token_hash,
+        public_key=public_key_pem_from_agent(body),
         repo_id=repository.id,
         last_heartbeat=datetime.now(timezone.utc),
     )
@@ -179,9 +192,10 @@ async def pipelines_register_runner(
 
 @router.delete("/_services/pipelines/{owner}/{repo}/_apis/pipelines/runs/{runner_id}")
 async def pipelines_deregister_runner(
-    owner: str, repo: str, runner_id: int, db: DbSession,
+    owner: str, repo: str, runner_id: int, request: Request, db: DbSession,
 ):
     """Deregister a runner via GHES pipelines protocol."""
+    _require_own_runner(await _get_runner_from_token(request, db), runner_id)
     result = await db.execute(
         select(Runner).where(Runner.id == runner_id)
     )

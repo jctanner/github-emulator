@@ -1,6 +1,6 @@
 from datetime import datetime
 
-from sqlalchemy import Boolean, DateTime, ForeignKey, Integer, String, Text, UniqueConstraint, func
+from sqlalchemy import Boolean, DateTime, ForeignKey, Integer, String, Text, UniqueConstraint, false, func
 from sqlalchemy.dialects.sqlite import JSON
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -17,6 +17,14 @@ class Runner(Base):
     labels: Mapped[list] = mapped_column(JSON, default=list)
     busy: Mapped[bool] = mapped_column(Boolean, default=False)
     token_hash: Mapped[str | None] = mapped_column(String, nullable=True)
+    # PEM of the RSA key an upstream actions/runner registers; its OAuth
+    # client assertion must be signed with the matching private key.
+    public_key: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # True for the short-lived identity config.sh registers through
+    # /actions/runner-registration. Only it may replace another runner's key.
+    registration_broker: Mapped[bool] = mapped_column(
+        Boolean, default=False, server_default=false(), nullable=False
+    )
     last_heartbeat: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     repo_id: Mapped[int | None] = mapped_column(Integer, ForeignKey("repositories.id"), nullable=True)
     org_id: Mapped[int | None] = mapped_column(Integer, ForeignKey("organizations.id"), nullable=True)

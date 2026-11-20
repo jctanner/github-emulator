@@ -161,6 +161,10 @@ async def _create_runner_from_registration(
         existing.labels = labels
         existing.busy = False
         existing.token_hash = hash_token(runner_token)
+        # The row now belongs to a new identity: the key its previous holder
+        # registered must not exchange for, or invalidate, the new token.
+        existing.public_key = None
+        existing.registration_broker = False
         existing.last_heartbeat = datetime.now(timezone.utc)
         lost = await _release_held_jobs(db, existing)
         await db.commit()
@@ -420,6 +424,10 @@ async def register_site_wide_runner(body: dict, user: AuthUser, db: DbSession):
     runner.labels = _runner_labels(body)
     runner.busy = False
     runner.token_hash = hash_token(runner_token)
+    # A replaced runner's registered key must not exchange for, or invalidate,
+    # the replacement's token.
+    runner.public_key = None
+    runner.registration_broker = False
     runner.last_heartbeat = datetime.now(timezone.utc)
     await db.commit()
     await _conclude_runs(db, lost)
@@ -440,6 +448,12 @@ async def register_runner_for_actions_service(request: Request, db: DbSession):
     if not reg_token:
         raise HTTPException(status_code=401, detail="Registration token required")
     runner, runner_token = await _create_runner_from_registration(reg_token, body, db)
+    # config.sh registers this identity first and then uses it to register the
+    # agent, or with --replace to update an existing one. It is the only
+    # identity allowed to replace another runner's key (dt_update_pool_agent).
+    runner.registration_broker = True
+    await db.commit()
+    await db.refresh(runner)
     request_base = f"{request.url.scheme}://{request.headers.get('host', request.url.netloc)}"
     server_url = str(body.get("url") or request_base).rstrip("/")
     return _registration_response(runner, runner_token, server_url)

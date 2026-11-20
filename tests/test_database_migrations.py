@@ -379,3 +379,79 @@ def test_org_role_assignments_table_is_added_to_an_existing_database(tmp_path, m
         assert _without_autoincrement(connection) == []
         assert connection.execute(text("SELECT login FROM organizations WHERE id = 3")).scalar_one() == "acme"
     engine.dispose()
+
+
+def test_runner_public_key_column_is_added_to_an_existing_database(tmp_path, monkeypatch):
+    """0020 adds runners.public_key to a database at 0019 and keeps runners,
+    which start without a key."""
+    from pathlib import Path
+
+    from alembic import command
+    from alembic.config import Config
+
+    path = tmp_path / "runners.db"
+    monkeypatch.delenv("GITHUB_EMULATOR_DATABASE_URL", raising=False)
+    root = Path(__file__).resolve().parents[1]
+    config = Config(str(root / "alembic.ini"))
+    config.set_main_option("script_location", str(root / "alembic"))
+    config.set_main_option("sqlalchemy.url", _url(path))
+    command.upgrade(config, "0019_enterprise_remove_tokens")
+    engine = create_engine(f"sqlite:///{path}")
+    with engine.begin() as connection:
+        columns = {column["name"] for column in inspect(connection).get_columns("runners")}
+        if "public_key" in columns:
+            connection.execute(text("ALTER TABLE runners DROP COLUMN public_key"))
+        connection.execute(text(
+            "INSERT INTO runners (id, name, os, status, labels, busy) "
+            "VALUES (4, 'old-runner', 'linux', 'offline', '[]', 0)"
+        ))
+    engine.dispose()
+
+    upgrade_database_sync(_url(path))
+
+    engine = create_engine(f"sqlite:///{path}")
+    with engine.begin() as connection:
+        columns = {column["name"] for column in inspect(connection).get_columns("runners")}
+        assert "public_key" in columns
+        row = connection.execute(text("SELECT name, public_key FROM runners WHERE id = 4")).one()
+        assert tuple(row) == ("old-runner", None)
+    engine.dispose()
+
+
+def test_runner_registration_broker_column_is_added_to_an_existing_database(tmp_path, monkeypatch):
+    """0021 adds runners.registration_broker to a database at 0020 and keeps
+    runners, none of which is a broker."""
+    from pathlib import Path
+
+    from alembic import command
+    from alembic.config import Config
+
+    path = tmp_path / "runners-broker.db"
+    monkeypatch.delenv("GITHUB_EMULATOR_DATABASE_URL", raising=False)
+    root = Path(__file__).resolve().parents[1]
+    config = Config(str(root / "alembic.ini"))
+    config.set_main_option("script_location", str(root / "alembic"))
+    config.set_main_option("sqlalchemy.url", _url(path))
+    command.upgrade(config, "0020_runner_public_key")
+    engine = create_engine(f"sqlite:///{path}")
+    with engine.begin() as connection:
+        columns = {column["name"] for column in inspect(connection).get_columns("runners")}
+        if "registration_broker" in columns:
+            connection.execute(text("ALTER TABLE runners DROP COLUMN registration_broker"))
+        connection.execute(text(
+            "INSERT INTO runners (id, name, os, status, labels, busy) "
+            "VALUES (5, 'old-runner', 'linux', 'offline', '[]', 0)"
+        ))
+    engine.dispose()
+
+    upgrade_database_sync(_url(path))
+
+    engine = create_engine(f"sqlite:///{path}")
+    with engine.begin() as connection:
+        columns = {column["name"] for column in inspect(connection).get_columns("runners")}
+        assert "registration_broker" in columns
+        row = connection.execute(
+            text("SELECT name, registration_broker FROM runners WHERE id = 5")
+        ).one()
+        assert (row[0], bool(row[1])) == ("old-runner", False)
+    engine.dispose()
