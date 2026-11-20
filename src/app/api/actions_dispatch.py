@@ -424,6 +424,10 @@ async def register_site_wide_runner(body: dict, user: AuthUser, db: DbSession):
     runner.labels = _runner_labels(body)
     runner.busy = False
     runner.token_hash = hash_token(runner_token)
+    # A replaced runner's registered key must not exchange for, or invalidate,
+    # the replacement's token.
+    runner.public_key = None
+    runner.registration_broker = False
     runner.last_heartbeat = datetime.now(timezone.utc)
     await db.commit()
     await _conclude_runs(db, lost)

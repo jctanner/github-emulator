@@ -354,6 +354,48 @@ async def test_reregistering_a_runners_name_revokes_its_registered_key(
     assert still_valid.status_code == 200, still_valid.text
 
 
+@pytest.mark.asyncio
+async def test_replacing_a_site_wide_runner_revokes_its_registered_key(
+    client, admin_token,
+):
+    async def register_site_runner() -> dict:
+        resp = await client.post(
+            f"{API}/admin/actions/runners/register",
+            headers=auth_headers(admin_token),
+            json={"name": "site-keyed-runner", "labels": ["self-hosted", "linux"], "os": "linux"},
+        )
+        assert resp.status_code == 200, resp.text
+        return resp.json()
+
+    first = await register_site_runner()
+    old_key = _new_key()
+    agent = await client.post(
+        "/_apis/distributedtask/pools/1/agents",
+        json={
+            "name": "site-keyed-runner",
+            "authorization": {"publicKey": _public_key_json(old_key)},
+        },
+        headers={"Authorization": f"Bearer {first['token']}"},
+    )
+    assert agent.status_code == 200, agent.text
+    client_id = agent.json()["authorization"]["clientId"]
+    audience = agent.json()["authorization"]["authorizationUrl"]
+
+    replacement = await register_site_runner()
+    assert replacement["runner_id"] == first["runner_id"]
+
+    # The former holder's key cannot exchange for a token, which would
+    # invalidate the replacement's bearer token.
+    _assert_invalid_client(
+        await _exchange(client, first["runner_id"], _assertion(old_key, client_id, audience))
+    )
+    still_valid = await client.get(
+        "/_apis/distributedtask/pools",
+        headers={"Authorization": f"Bearer {replacement['token']}"},
+    )
+    assert still_valid.status_code == 200, still_valid.text
+
+
 async def _pipelines_runner(client, path: str, token: str, name: str) -> dict:
     resp = await client.post(
         f"/_services/pipelines/{path}/_apis/pipelines/runs/register",
