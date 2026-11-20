@@ -176,6 +176,13 @@ def actor_from_model(user) -> Actor:
     """The Actor for an account: a Bot for an App's bot account, else a User."""
     if getattr(user, "type", "User") != "Bot":
         return user_from_model(user)
+    from app.services.auth_service import ACTIONS_BOT_LOGIN
+
+    # The github-actions[bot] account is a job token's viewer and keeps its
+    # "[bot]" suffix there, so node(id:) must answer the same login for the
+    # same id. It authors nothing, so no author path shows it bare.
+    if user.login == ACTIONS_BOT_LOGIN:
+        return bot_from_model(user, login=user.login)
     return bot_from_model(user, login=user.login.removesuffix("[bot]"))
 
 

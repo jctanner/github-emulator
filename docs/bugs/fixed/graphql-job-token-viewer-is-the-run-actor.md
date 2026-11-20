@@ -36,7 +36,10 @@ detection (`... on User { id }`) is unaffected.
 
 The viewer Bot's login keeps the `[bot]` suffix, as GitHub's does; an
 author's Bot still shows the bare App slug
-(`graphql-app-authors-are-typed-as-users.md`).
+(`graphql-app-authors-are-typed-as-users.md`). `node(id:)` on the viewer's
+id answers the same `github-actions[bot]` login: that account keeps its suffix
+wherever it is shown, as it authors nothing, while other App bots keep the
+bare slug.
 
 ## Not changed
 

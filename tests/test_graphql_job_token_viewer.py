@@ -63,6 +63,31 @@ async def test_a_job_tokens_viewer_is_the_github_actions_bot(client, db_session,
     assert count == 1
 
 
+async def test_a_job_tokens_viewer_id_resolves_through_node_with_the_same_login(
+    client, db_session, test_user, test_token
+):
+    token = await _job_token(client, db_session, test_user, test_token)
+
+    body = await _gql(client, token, "{ viewer { id login } }")
+    assert "errors" not in body, body
+    viewer = body["data"]["viewer"]
+    assert viewer["login"] == "github-actions[bot]"
+
+    node = await client.post(
+        "/api/graphql",
+        json={
+            "query": "query($id: ID!) { node(id: $id) { __typename id ... on Bot { login } } }",
+            "variables": {"id": viewer["id"]},
+        },
+        headers=auth_headers(token),
+    )
+    result = node.json()
+    assert "errors" not in result, result
+    assert result["data"]["node"] == {
+        "__typename": "Bot", "id": viewer["id"], "login": "github-actions[bot]",
+    }
+
+
 async def test_a_job_tokens_viewer_shows_nothing_of_the_runs_actor(client, db_session, test_user, test_token):
     token = await _job_token(client, db_session, test_user, test_token)
 
