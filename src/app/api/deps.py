@@ -25,7 +25,7 @@ from app.services.browser_session_service import (
     csrf_token_matches,
     verify_browser_session,
 )
-from app.services.job_token_service import validate_job_token
+from app.services.job_token_service import job_token_revoked_for_api, validate_job_token
 
 # ---------------------------------------------------------------------------
 # Database session dependency
@@ -160,8 +160,13 @@ async def _resolve_user(
     validated = await validate_job_token(db, token_value)
     if validated is not None:
         job, run = validated
+        if job_token_revoked_for_api(token_value):
+            # Refused outright, as GitHub does: falling through to anonymous
+            # would let a revoked token still read public repositories.
+            raise HTTPException(status_code=401, detail="Bad credentials")
         request.state.workflow_job = job
         request.state.workflow_run = run
+        request.state.workflow_job_token = token_value
         request.state.workflow_job_permissions = job.permissions
         # A job token is scoped by the permissions its job declared. Enforcing
         # here covers every route without touching them individually, and
