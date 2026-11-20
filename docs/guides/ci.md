@@ -14,10 +14,11 @@ starts and stops the stack, and
 [`scripts/ci-workflow-smoke.sh`](../../scripts/ci-workflow-smoke.sh) checks
 that it executes a real workflow run.
 [`.github/workflows/self-contained-smoke.yml`](../../.github/workflows/self-contained-smoke.yml)
-runs both on every pull request. To use the stack from a workflow in another
-repository, the composite action
-[`.github/actions/emulator`](../../.github/actions/emulator/action.yml) wraps
-the same script; this guide does not cover it further.
+runs both on every pull request. From a workflow in another repository, run
+these scripts from a checkout of this repository, as below, or call the
+composite action
+[`.github/actions/emulator`](../../.github/actions/emulator/action.yml), which
+wraps `ci-stack.sh` for the common case.
 
 ## Prerequisites
 
@@ -130,6 +131,7 @@ upstream runner over https, as the smoke workflow starts it:
 
 ```bash
 sudo sysctl -w net.ipv4.ip_unprivileged_port_start=80
+export CI_STACK_DIR=/tmp/ci-stack
 CI_STACK_RUNNER_KIND=upstream CI_STACK_PORT=443 CI_STACK_TLS=1 \
   CI_STACK_HOST=ghemu.localhost CI_STACK_SYSTEM_TRUST=1 \
   scripts/ci-stack.sh start
@@ -140,7 +142,8 @@ EMU=https://ghemu.localhost:443 EMU_CA="$CI_STACK_DIR/tls/ca.pem" \
 ## Seed GitHub Apps
 
 [`scripts/ci-seed-mint-apps.py`](../../scripts/ci-seed-mint-apps.py) creates
-the GitHub Apps a fullsend standalone mint needs on a running stack. It uses
+the GitHub Apps that a token-minting service (for example fullsend's
+standalone mint) needs on a running stack. It uses
 only the Python standard library.
 
 ```text
