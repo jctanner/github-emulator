@@ -1,0 +1,10 @@
+# gitleaks (and Betterleaks, which reads the same file) with the default
+# rules, plus the one value this repository publishes on purpose.
+[extend]
+useDefault = true
+
+[allowlist]
+description = "Documented test credentials, not secrets"
+# The admin token every fresh emulator seeds (config.py, README, docs). It is
+# a published default for a test fixture, so the docs show it in examples.
+regexes = ['''ghp_admin_default_token''']

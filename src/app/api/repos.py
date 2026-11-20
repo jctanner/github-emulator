@@ -1,22 +1,29 @@
 """Repository endpoints -- CRUD, listing, and org repos."""
 
 import os
-from typing import Optional
 
 from fastapi import APIRouter, HTTPException, Query, Request, Response
-from sqlalchemy import select, func as sa_func
+from sqlalchemy import func as sa_func
+from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 
-from app.services import repository_access
-from app.api.deps import AuthUser, CurrentUser, DbSession, require_installation_grant
+from app.api.deps import (
+    AuthUser,
+    CurrentUser,
+    DbSession,
+    get_repo_or_404,
+    require_installation_grant,
+)
 from app.api.pagination import pagination_links
 from app.config import settings
 from app.db_loaders import repository_identity_options
+from app.models.organization import Organization, OrgMembership
 from app.models.repository import Repository
 from app.models.user import User
-from app.models.organization import Organization, OrgMembership
-from app.schemas.user import SimpleUser, _fmt_dt, _make_node_id
 from app.schemas.repository import RepoResponse
-from app.services import repo_service
+from app.schemas.user import SimpleUser, _fmt_dt, _make_node_id
+from app.services import repo_service, repository_access
+from app.services.job_token_scope import visible_repositories
 from app.services.repo_service import delete_repo as delete_repository
 
 router = APIRouter(tags=["repos"])
@@ -160,6 +167,7 @@ async def list_public_repositories(
     )
     if current_user is None or not current_user.site_admin:
         query = query.where(Repository.private == False)
+    query = visible_repositories(query)
     repositories = (await db.execute(query)).scalars().all()
     return [_repo_json(repository, BASE) for repository in repositories]
 
@@ -201,7 +209,12 @@ async def create_repo_for_user(body: dict, user: AuthUser, db: DbSession):
     )
 
     db.add(repo)
-    await db.commit()
+    try:
+        await db.commit()
+    except IntegrityError as exc:
+        # A concurrent create of the same name won the unique index.
+        await db.rollback()
+        raise HTTPException(status_code=422, detail="Repository already exists") from exc
     await db.refresh(repo)
 
     await repo_service.initialize_repository(db, repo, user, body.get("auto_init", False))
@@ -230,6 +243,13 @@ async def get_repo(owner: str, repo: str, db: DbSession, current_user: CurrentUs
         raise HTTPException(status_code=404, detail="Not Found")
 
     return _repo_json(repository, BASE)
+
+
+@router.get("/repos/{owner}/{repo}/hash-algorithm")
+async def get_repo_hash_algorithm(owner: str, repo: str, db: DbSession, current_user: CurrentUser):
+    """The repository's object hash algorithm; every repository here is SHA-1."""
+    await get_repo_or_404(owner, repo, db)
+    return {"hash_algorithm": "sha1"}
 
 
 @router.patch("/repos/{owner}/{repo}", response_model=RepoResponse)
@@ -261,6 +281,12 @@ async def update_repo(
     for key in updatable:
         if key in body:
             setattr(repository, key, body[key])
+    # GitHub keeps the two in step: visibility "private" or "internal" is a
+    # private repository, and private false is a public one.
+    if "visibility" in body:
+        repository.private = body["visibility"] != "public"
+    elif "private" in body:
+        repository.visibility = "private" if body["private"] else "public"
 
     # Handle name change
     if "name" in body and body["name"] != repository.name:
@@ -335,6 +361,7 @@ async def list_user_repos(
     ):
         query = query.where(Repository.private == False)
 
+    query = visible_repositories(query)
     if type == "forks":
         query = query.where(Repository.fork == True)
     elif type == "sources":
@@ -354,7 +381,6 @@ async def list_user_repos(
     query = query.offset((page - 1) * per_page).limit(per_page)
     repos = (await db.execute(query)).scalars().all()
 
-    response = Response()
     link = pagination_links(request, page, per_page, total)
     headers = {}
     if link:
@@ -469,6 +495,7 @@ async def list_org_repos(
         "full_name": Repository.full_name,
     }
     sort_column = sort_columns.get(sort, Repository.created_at)
+    query = visible_repositories(query)
     query = query.order_by(
         sort_column.asc() if direction == "asc" else sort_column.desc()
     )

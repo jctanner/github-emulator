@@ -53,6 +53,8 @@ _SCOPE_BY_SEGMENT = {
     "releases": "contents",
     "tags": "contents",
     "merges": "contents",
+    # A comparison returns commits and file patches: repository contents.
+    "compare": "contents",
     "actions": "actions",
     "check-runs": "checks",
     "check-suites": "checks",
@@ -160,6 +162,16 @@ def default_permissions_for(repo_default: str | None) -> dict[str, str] | None:
     if str(repo_default or "write").strip().lower() == "read":
         return dict(_RESTRICTED_DEFAULT)
     return None
+
+
+def read_only(declared: dict | str | None, repo_default: str | None = None) -> dict[str, str]:
+    """``declared`` with every write lowered to read: the most a fork's
+    pull_request run gets. No permissions block starts from the repository's
+    default, or from read-all on a permissive one."""
+    permissions = normalise_permissions(declared)
+    if permissions is None:
+        permissions = default_permissions_for(repo_default) or normalise_permissions("read-all")
+    return {scope: (READ if level == WRITE else level) for scope, level in permissions.items()}
 
 
 def check(

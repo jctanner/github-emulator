@@ -80,31 +80,36 @@ class Repository(Base):
     pushed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
 
     # Relationships
+    # Collections that grow with use (every issue, every repository of a
+    # user or organization) load only when a query asks for them. Eager
+    # loading them made each Repository or User load pull the lot, chained
+    # (a run's actor -> their repositories -> each one's issues), and a
+    # workflow run created or finished inside SQLite's write lock paid it.
     owner = relationship("User", back_populates="repositories", lazy="selectin")
     organization = relationship("Organization", back_populates="repositories", lazy="selectin")
     parent = relationship("Repository", remote_side="Repository.id", lazy="selectin")
     collaborators = relationship(
-        "Collaborator", back_populates="repository", lazy="selectin",
+        "Collaborator", back_populates="repository", lazy="select",
         cascade="all, delete-orphan",
     )
     stars = relationship(
-        "StarredRepo", back_populates="repository", lazy="selectin",
+        "StarredRepo", back_populates="repository", lazy="select",
         cascade="all, delete-orphan",
     )
     branches = relationship(
-        "Branch", back_populates="repository", lazy="selectin",
+        "Branch", back_populates="repository", lazy="select",
         cascade="all, delete-orphan",
     )
     labels = relationship(
-        "Label", back_populates="repository", lazy="selectin",
+        "Label", back_populates="repository", lazy="select",
         cascade="all, delete-orphan",
     )
     milestones = relationship(
-        "Milestone", back_populates="repository", lazy="selectin",
+        "Milestone", back_populates="repository", lazy="select",
         cascade="all, delete-orphan",
     )
     issues = relationship(
-        "Issue", back_populates="repository", lazy="selectin",
+        "Issue", back_populates="repository", lazy="select",
         cascade="all, delete-orphan",
     )
 

@@ -1,32 +1,30 @@
 """Actions endpoints -- workflows, runs, jobs, secrets, variables."""
 
-import io
 import os
-import shutil
 import zipfile
 
 from fastapi import APIRouter, HTTPException, Query, Request
 from fastapi.responses import FileResponse, JSONResponse, PlainTextResponse, Response, StreamingResponse
-from sqlalchemy import select, func, or_
+from sqlalchemy import func, or_, select
 
 from app.api.deps import AuthUser, CurrentUser, DbSession, get_repo_or_404
 from app.api.pagination import pagination_links
-from app.services import repository_access
 from app.config import settings
-from app.models.actions import Workflow, WorkflowRun, WorkflowJob, Secret, Variable
+from app.models.actions import Secret, Variable, Workflow, WorkflowJob, WorkflowRun
 from app.models.artifact import WorkflowArtifact
-from app.services.secret_crypto import (
-    SecretDecryptError,
-    open_sealed_secret,
-    repo_public_key,
-)
-from app.schemas.user import SimpleUser, _fmt_dt, _make_node_id
 from app.schemas.actions import (
     WorkflowJobListResponse,
     WorkflowJobResponse,
     WorkflowListResponse,
     WorkflowRunListResponse,
     WorkflowRunResponse,
+)
+from app.schemas.user import SimpleUser, _fmt_dt, _make_node_id
+from app.services import artifact_storage, repository_access
+from app.services.secret_crypto import (
+    SecretDecryptError,
+    open_sealed_secret,
+    repo_public_key,
 )
 
 router = APIRouter(tags=["actions"])
@@ -48,6 +46,21 @@ def _workflow_json(w: Workflow, owner: str, repo: str) -> dict:
         "html_url": f"{BASE}/{owner}/{repo}/actions/workflows/{w.path}",
         "badge_url": f"{BASE}/{owner}/{repo}/workflows/{w.name}/badge.svg",
     }
+
+
+def _display_title(r: WorkflowRun) -> str:
+    """GitHub's event-specific run title: the head commit's first line for a
+    push, the pull request's or issue's title for those events, and the
+    workflow's name otherwise (a dispatch, for one)."""
+    payload = r.trigger_payload or {}
+    for key in ("pull_request", "issue"):
+        title = (payload.get(key) or {}).get("title")
+        if title:
+            return str(title)
+    message = (payload.get("head_commit") or {}).get("message")
+    if message:
+        return str(message).splitlines()[0]
+    return r.workflow.name if r.workflow else ""
 
 
 def _run_json(
@@ -75,6 +88,9 @@ def _run_json(
         "html_url": f"{BASE}/{owner}/{repo}/actions/runs/{r.id}",
         "created_at": _fmt_dt(r.created_at),
         "updated_at": _fmt_dt(r.updated_at),
+        # This emulator starts an attempt when it creates it.
+        "run_started_at": _fmt_dt(r.created_at),
+        "display_title": _display_title(r),
         "actor": actor,
     }
 
@@ -86,8 +102,11 @@ def _job_json(j: WorkflowJob, owner: str, repo: str) -> dict:
         "run_id": j.run_id,
         "name": j.name,
         "workflow_name": j.workflow_name,
+        "head_sha": j.run.head_sha if j.run else None,
+        "head_branch": j.run.head_branch if j.run else None,
         "status": j.status,
         "conclusion": j.conclusion,
+        "created_at": _fmt_dt(j.created_at),
         "started_at": _fmt_dt(j.started_at),
         "completed_at": _fmt_dt(j.completed_at),
         "steps": j.steps or [],
@@ -107,29 +126,11 @@ def _job_log_path(job_id: int) -> str:
     return os.path.join(settings.DATA_DIR, "logs", "jobs", f"{job_id}.log")
 
 
-def _artifact_dir(artifact_id: int) -> str:
-    """Where an artifact's bytes live.
-
-    Alongside logs/jobs, which is the same pattern: the database row indexes
-    the upload and the filesystem holds it. DATA_DIR is a mounted volume, so
-    this survives a restart.
-    """
-    return os.path.join(settings.DATA_DIR, "artifacts", str(artifact_id))
-
-
 def _artifact_member_path(artifact_id: int, relative: str) -> str:
-    """Resolve a path inside an artifact, refusing anything that escapes it.
-
-    An artifact's member paths come from whoever uploaded it, so "../" and
-    absolute paths have to be rejected rather than normalised away: a stored
-    path that resolves outside the artifact directory would let an upload
-    write over, or read back, unrelated emulator data.
-    """
-    base = os.path.realpath(_artifact_dir(artifact_id))
-    target = os.path.realpath(os.path.join(base, relative))
-    if target != base and not target.startswith(base + os.sep):
-        raise HTTPException(status_code=400, detail=f"Invalid artifact path: {relative}")
-    return target
+    try:
+        return artifact_storage.member_path(artifact_id, relative)
+    except artifact_storage.ArtifactPathError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 def _artifact_json(artifact: WorkflowArtifact, owner: str, repo: str) -> dict:
@@ -215,6 +216,7 @@ async def upload_artifact(
     Either way the bytes land on disk and the row keeps only the index.
     """
     repository = await get_repo_or_404(owner, repo, db)
+    await _require_repository_role(request, db, repository, user, "push")
     run = (await db.execute(select(WorkflowRun).where(WorkflowRun.id == run_id, WorkflowRun.repo_id == repository.id))).scalar_one_or_none()
     if run is None:
         raise HTTPException(status_code=404, detail="Workflow run not found")
@@ -228,11 +230,7 @@ async def upload_artifact(
             raise HTTPException(status_code=422, detail="name query parameter is required for a zip upload")
         raw = await request.body()
         try:
-            with zipfile.ZipFile(io.BytesIO(raw)) as archive:
-                for member in archive.infolist():
-                    if member.is_dir():
-                        continue
-                    payload[member.filename] = archive.read(member)
+            payload = artifact_storage.zip_members(raw)
         except zipfile.BadZipFile as exc:
             raise HTTPException(status_code=422, detail=f"Invalid zip archive: {exc}") from exc
     else:
@@ -246,32 +244,12 @@ async def upload_artifact(
         for path, content in files.items():
             payload[str(path)] = content.encode() if isinstance(content, str) else bytes(content)
 
-    artifact = WorkflowArtifact(run_id=run_id, repo_id=repository.id, name=artifact_name, files={}, size_in_bytes=0)
-    db.add(artifact)
-    await db.commit()
-    await db.refresh(artifact)
-
-    index: dict[str, int] = {}
-    total = 0
     try:
-        for relative, content in payload.items():
-            target = _artifact_member_path(artifact.id, relative)
-            os.makedirs(os.path.dirname(target), exist_ok=True)
-            with open(target, "wb") as handle:
-                handle.write(content)
-            index[relative] = len(content)
-            total += len(content)
-    except Exception:
-        # Do not leave a row pointing at a half-written directory.
-        shutil.rmtree(_artifact_dir(artifact.id), ignore_errors=True)
-        await db.delete(artifact)
-        await db.commit()
-        raise
-
-    artifact.files = index
-    artifact.size_in_bytes = total
-    await db.commit()
-    await db.refresh(artifact)
+        artifact = await artifact_storage.store_artifact(
+            db, run_id=run_id, repo_id=repository.id, name=artifact_name, payload=payload,
+        )
+    except artifact_storage.ArtifactPathError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
     return _artifact_json(artifact, owner, repo)
 
 
@@ -317,26 +295,19 @@ async def download_artifact(owner: str, repo: str, artifact_id: int, archive_for
     if artifact.expired:
         raise HTTPException(status_code=410, detail="Artifact expired")
 
-    buffer = io.BytesIO()
-    with zipfile.ZipFile(buffer, "w", zipfile.ZIP_DEFLATED) as archive:
-        for relative in sorted((artifact.files or {}).keys()):
-            source = _artifact_member_path(artifact_id, relative)
-            if os.path.isfile(source):
-                archive.write(source, arcname=relative)
-    buffer.seek(0)
     return StreamingResponse(
-        buffer,
+        artifact_storage.zip_artifact(artifact),
         media_type="application/zip",
         headers={"Content-Disposition": f'attachment; filename="{artifact.name}.zip"'},
     )
 
 
 @router.delete("/repos/{owner}/{repo}/actions/artifacts/{artifact_id}", status_code=204)
-async def delete_artifact(owner: str, repo: str, artifact_id: int, user: AuthUser, db: DbSession):
+async def delete_artifact(owner: str, repo: str, artifact_id: int, user: AuthUser, request: Request, db: DbSession):
+    repository = await get_repo_or_404(owner, repo, db)
+    await _require_repository_role(request, db, repository, user, "push")
     artifact = await _get_artifact_or_404(owner, repo, artifact_id, db)
-    shutil.rmtree(_artifact_dir(artifact_id), ignore_errors=True)
-    await db.delete(artifact)
-    await db.commit()
+    await artifact_storage.delete_artifact(db, artifact)
 
 
 async def _check_read_access(db, repository, current_user) -> None:
@@ -352,6 +323,43 @@ async def _check_read_access(db, repository, current_user) -> None:
         raise HTTPException(status_code=404, detail="Not Found")
 
 
+# A person's own permission on the repository that each role accepts.
+_ROLE_PERMISSIONS = {"push": {"push", "maintain", "admin"}, "admin": {"admin"}}
+
+
+async def _require_repository_role(
+    request: Request, db, repository, user, role: str, *, job_token: bool = True,
+) -> None:
+    """403 unless the caller holds ``role`` ("push" or "admin") on the repository.
+
+    GitHub requires write access to dispatch, cancel or re-run a workflow, to
+    manage artifacts and to manage Actions variables, and admin access (the
+    owner, for a personal repository) for Actions secrets and permissions.
+    A job's GITHUB_TOKEN and an App installation token were already held to
+    their own permissions and repositories when they authenticated, so this
+    is a person's credential: a site admin, or the person's permission on the
+    repository.
+
+    ``job_token=False`` marks a route a GITHUB_TOKEN cannot use at all: it has
+    no permission for secrets, variables or repository administration, so
+    GitHub answers "Resource not accessible by integration".
+    """
+    if getattr(request.state, "workflow_job", None) is not None:
+        if not job_token:
+            raise HTTPException(status_code=403, detail="Resource not accessible by integration")
+        return
+    if getattr(request.state, "is_installation_token", False):
+        return
+    if user.site_admin:
+        return
+    permission = await repository_access.repository_permission(db, repository, user)
+    if permission in _ROLE_PERMISSIONS[role]:
+        return
+    if role == "admin":
+        raise HTTPException(status_code=403, detail="Must have admin rights to Repository.")
+    raise HTTPException(status_code=403, detail="Must have write access to this repository.")
+
+
 def _paged_json(request: Request, page: int, per_page: int, total: int, body: dict) -> JSONResponse:
     """A list body with GitHub's ``Link`` pagination header."""
     link = pagination_links(request, page, per_page, total)
@@ -364,12 +372,12 @@ async def _resolve_workflow(db, repository, workflow_id: str) -> Workflow | None
     GitHub's ``workflow_id`` parameter is "the ID of the workflow" or "the
     workflow file name", for example ``main.yaml``. The file name resolves
     beneath ``.github/workflows``. The workflow table is synchronized from
-    the default branch first, so a workflow file added since is found.
+    the default branch first if it changed, so a workflow file added since
+    is found.
     """
-    from app.services.workflow_service import sync_workflows_to_db
+    from app.services.workflow_service import ensure_workflows_synced
 
-    await sync_workflows_to_db(db, repository, "HEAD")
-    await db.commit()
+    await ensure_workflows_synced(db, repository)
     query = select(Workflow).where(Workflow.repo_id == repository.id)
     if workflow_id.isdigit():
         query = query.where(Workflow.id == int(workflow_id))
@@ -430,10 +438,9 @@ async def list_workflows(
     """List workflows."""
     repository = await get_repo_or_404(owner, repo, db)
     await _check_read_access(db, repository, current_user)
-    from app.services.workflow_service import materialize_reusable_workflows, sync_workflows_to_db
+    from app.services.workflow_service import ensure_workflows_synced
 
-    await sync_workflows_to_db(db, repository, "HEAD")
-    await db.commit()
+    await ensure_workflows_synced(db, repository)
     query = (
         select(Workflow)
         .where(Workflow.repo_id == repository.id)
@@ -486,10 +493,11 @@ async def list_runs_for_workflow(
 
 @router.post("/repos/{owner}/{repo}/actions/workflows/{workflow_id}/dispatches", status_code=204)
 async def dispatch_workflow(
-    owner: str, repo: str, workflow_id: str, body: dict, user: AuthUser, db: DbSession,
+    owner: str, repo: str, workflow_id: str, body: dict, user: AuthUser, request: Request, db: DbSession,
 ):
     """Dispatch a workflow configured with ``workflow_dispatch``."""
     repository = await get_repo_or_404(owner, repo, db)
+    await _require_repository_role(request, db, repository, user, "push")
     if repository.actions_enabled is False:
         raise HTTPException(status_code=403, detail="Actions is disabled on this repository")
     # ``gh workflow run`` passes either the id, the stored path, or the
@@ -605,10 +613,17 @@ async def _referenced_workflows(db, run: WorkflowRun) -> list[dict]:
 
 @router.post("/repos/{owner}/{repo}/actions/runs/{run_id}/cancel", status_code=202)
 async def cancel_workflow_run(
-    owner: str, repo: str, run_id: int, db: DbSession, user: AuthUser,
+    owner: str, repo: str, run_id: int, db: DbSession, user: AuthUser, request: Request,
 ):
     """Cancel a workflow run."""
     repository = await get_repo_or_404(owner, repo, db)
+    await _require_repository_role(request, db, repository, user, "push")
+    # Only a run of this repository, as on GitHub.
+    owned = (await db.execute(select(WorkflowRun.id).where(
+        WorkflowRun.id == run_id, WorkflowRun.repo_id == repository.id,
+    ))).scalar_one_or_none()
+    if owned is None:
+        raise HTTPException(status_code=404, detail="Not Found")
     from app.services.workflow_service import cancel_workflow_run as do_cancel
     run = await do_cancel(db, run_id)
     if run is None:
@@ -619,7 +634,7 @@ async def cancel_workflow_run(
 
 @router.post("/repos/{owner}/{repo}/actions/runs/{run_id}/rerun", status_code=201)
 async def rerun_workflow(
-    owner: str, repo: str, run_id: int, db: DbSession, user: AuthUser,
+    owner: str, repo: str, run_id: int, db: DbSession, user: AuthUser, request: Request,
 ):
     """Re-run a workflow.
 
@@ -631,9 +646,12 @@ async def rerun_workflow(
     rerun sat with every dependent waiting forever (2026-09-27, run 1589).
     """
     from app.services.workflow_service import (
-        create_workflow_run, detect_workflows, materialize_reusable_workflows,
+        create_workflow_run,
+        detect_workflows,
+        materialize_reusable_workflows,
     )
     repository = await get_repo_or_404(owner, repo, db)
+    await _require_repository_role(request, db, repository, user, "push")
     result = await db.execute(
         select(WorkflowRun).where(WorkflowRun.id == run_id, WorkflowRun.repo_id == repository.id)
     )
@@ -663,9 +681,8 @@ async def rerun_workflow(
     )
     new_run = await create_workflow_run(
         db, workflow, workflow_yaml, run.event, payload, user,
-        run.head_sha, run.head_branch,
+        run.head_sha, run.head_branch, run_attempt=run.run_attempt + 1,
     )
-    new_run.run_attempt = run.run_attempt + 1
     await db.commit()
     await db.refresh(new_run)
     from app.services.workflow_service import dispatch_ready_jobs
@@ -692,7 +709,12 @@ async def list_jobs(
     if run_result.scalar_one_or_none() is None:
         raise HTTPException(status_code=404, detail="Not Found")
 
-    query = select(WorkflowJob).where(WorkflowJob.run_id == run_id)
+    # A job still waiting on its `needs` is not listed: GitHub lists a job
+    # once it is queued (or decided, e.g. skipped). Its "waiting" status is
+    # for a job held for an environment approval, which this emulator does
+    # not have; listing blocked jobs as waiting made a not-yet-started stage
+    # look like one that ran.
+    query = select(WorkflowJob).where(WorkflowJob.run_id == run_id, WorkflowJob.status != "waiting")
     jobs = (await db.execute(query)).scalars().all()
     items = [_job_json(j, owner, repo) for j in jobs]
     return {"total_count": len(items), "jobs": items}
@@ -800,10 +822,11 @@ async def get_secret(
 
 @router.put("/repos/{owner}/{repo}/actions/secrets/{secret_name}", status_code=201)
 async def create_or_update_secret(
-    owner: str, repo: str, secret_name: str, body: dict, user: AuthUser, db: DbSession,
+    owner: str, repo: str, secret_name: str, body: dict, user: AuthUser, request: Request, db: DbSession,
 ):
     """Create or update a repository secret."""
     repository = await get_repo_or_404(owner, repo, db)
+    await _require_repository_role(request, db, repository, user, "admin", job_token=False)
     result = await db.execute(
         select(Secret).where(Secret.repo_id == repository.id, Secret.name == secret_name)
     )
@@ -828,10 +851,11 @@ async def create_or_update_secret(
 
 @router.delete("/repos/{owner}/{repo}/actions/secrets/{secret_name}", status_code=204)
 async def delete_secret(
-    owner: str, repo: str, secret_name: str, user: AuthUser, db: DbSession,
+    owner: str, repo: str, secret_name: str, user: AuthUser, request: Request, db: DbSession,
 ):
     """Delete a repository secret."""
     repository = await get_repo_or_404(owner, repo, db)
+    await _require_repository_role(request, db, repository, user, "admin", job_token=False)
     result = await db.execute(
         select(Secret).where(Secret.repo_id == repository.id, Secret.name == secret_name)
     )
@@ -856,7 +880,7 @@ async def get_actions_permissions(
 
 @router.put("/repos/{owner}/{repo}/actions/permissions", status_code=204)
 async def set_actions_permissions(
-    owner: str, repo: str, body: dict, user: AuthUser, db: DbSession,
+    owner: str, repo: str, body: dict, user: AuthUser, request: Request, db: DbSession,
 ):
     """Enable or disable Actions on the repository.
 
@@ -865,6 +889,7 @@ async def set_actions_permissions(
     CI on every push.
     """
     repository = await get_repo_or_404(owner, repo, db)
+    await _require_repository_role(request, db, repository, user, "admin", job_token=False)
     if "enabled" not in body or not isinstance(body["enabled"], bool):
         raise HTTPException(status_code=422, detail="enabled must be true or false")
     repository.actions_enabled = body["enabled"]
@@ -892,10 +917,11 @@ async def get_workflow_permissions(
 
 @router.put("/repos/{owner}/{repo}/actions/permissions/workflow", status_code=204)
 async def set_workflow_permissions(
-    owner: str, repo: str, body: dict, user: AuthUser, db: DbSession,
+    owner: str, repo: str, body: dict, user: AuthUser, request: Request, db: DbSession,
 ):
     """Set the repository's default workflow permissions."""
     repository = await get_repo_or_404(owner, repo, db)
+    await _require_repository_role(request, db, repository, user, "admin", job_token=False)
     if "default_workflow_permissions" in body:
         value = str(body["default_workflow_permissions"]).strip().lower()
         if value not in ("read", "write"):
@@ -932,10 +958,11 @@ async def list_variables(
 
 @router.post("/repos/{owner}/{repo}/actions/variables", status_code=201)
 async def create_variable(
-    owner: str, repo: str, body: dict, user: AuthUser, db: DbSession,
+    owner: str, repo: str, body: dict, user: AuthUser, request: Request, db: DbSession,
 ):
     """Create a repository variable."""
     repository = await get_repo_or_404(owner, repo, db)
+    await _require_repository_role(request, db, repository, user, "push", job_token=False)
     name = body.get("name", "")
     value = body.get("value", "")
     if not name:
@@ -987,10 +1014,11 @@ async def get_variable(
 
 @router.patch("/repos/{owner}/{repo}/actions/variables/{variable_name}")
 async def update_variable(
-    owner: str, repo: str, variable_name: str, body: dict, user: AuthUser, db: DbSession,
+    owner: str, repo: str, variable_name: str, body: dict, user: AuthUser, request: Request, db: DbSession,
 ):
     """Update a repository variable."""
     repository = await get_repo_or_404(owner, repo, db)
+    await _require_repository_role(request, db, repository, user, "push", job_token=False)
     result = await db.execute(
         select(Variable).where(Variable.repo_id == repository.id, Variable.name == variable_name)
     )
@@ -1009,10 +1037,11 @@ async def update_variable(
 
 @router.delete("/repos/{owner}/{repo}/actions/variables/{variable_name}", status_code=204)
 async def delete_variable(
-    owner: str, repo: str, variable_name: str, user: AuthUser, db: DbSession,
+    owner: str, repo: str, variable_name: str, user: AuthUser, request: Request, db: DbSession,
 ):
     """Delete a repository variable."""
     repository = await get_repo_or_404(owner, repo, db)
+    await _require_repository_role(request, db, repository, user, "push", job_token=False)
     result = await db.execute(
         select(Variable).where(Variable.repo_id == repository.id, Variable.name == variable_name)
     )

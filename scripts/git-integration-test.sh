@@ -88,7 +88,7 @@ section "2. Initial commit + push"
 
 WORK=$(mktmp)
 git clone "$REPO_URL" "$WORK/repo" 2>/dev/null || true
-cd "$WORK/repo"
+cd "$WORK/repo" || exit 1
 
 # Handle both empty and non-empty repos
 git checkout -b main 2>/dev/null || true
@@ -131,7 +131,7 @@ section "4. Multiple commits"
 
 MULTI=$(mktmp)
 git clone "$REPO_URL" "$MULTI/repo" 2>/dev/null
-cd "$MULTI/repo"
+cd "$MULTI/repo" || exit 1
 
 echo "file one" > file1.txt
 git add file1.txt
@@ -168,7 +168,7 @@ section "5. Branching"
 
 BRANCH=$(mktmp)
 git clone "$REPO_URL" "$BRANCH/repo" 2>/dev/null
-cd "$BRANCH/repo"
+cd "$BRANCH/repo" || exit 1
 
 git checkout -b feature 2>/dev/null
 echo "feature work" > feature.txt
@@ -198,7 +198,7 @@ section "6. Fetch + merge"
 
 FETCH=$(mktmp)
 git clone "$REPO_URL" "$FETCH/repo" 2>/dev/null
-cd "$FETCH/repo"
+cd "$FETCH/repo" || exit 1
 
 git fetch origin feature 2>/dev/null
 output=$(git merge origin/feature --no-edit 2>&1)
@@ -228,7 +228,7 @@ section "7. Lightweight tags"
 
 TAG=$(mktmp)
 git clone "$REPO_URL" "$TAG/repo" 2>/dev/null
-cd "$TAG/repo"
+cd "$TAG/repo" || exit 1
 
 git tag v1.0
 output=$(git push origin v1.0 2>&1)
@@ -253,7 +253,7 @@ section "8. Annotated tags"
 
 ATAG=$(mktmp)
 git clone "$REPO_URL" "$ATAG/repo" 2>/dev/null
-cd "$ATAG/repo"
+cd "$ATAG/repo" || exit 1
 
 git tag -a v2.0 -m "Release v2.0"
 output=$(git push origin v2.0 2>&1)
@@ -339,7 +339,7 @@ section "12. Force push"
 
 FORCE=$(mktmp)
 git clone "$REPO_URL" "$FORCE/repo" 2>/dev/null
-cd "$FORCE/repo"
+cd "$FORCE/repo" || exit 1
 
 # Record the current HEAD
 old_head=$(git rev-parse HEAD)
@@ -370,7 +370,7 @@ section "13. Delete remote branch"
 
 DEL=$(mktmp)
 git clone "$REPO_URL" "$DEL/repo" 2>/dev/null
-cd "$DEL/repo"
+cd "$DEL/repo" || exit 1
 
 output=$(git push origin --delete feature 2>&1)
 rc=$?
@@ -460,7 +460,7 @@ section "15. SSH initial commit + push"
 
 SWORK=$(mktmp)
 git clone "$SSH_REPO_URL" "$SWORK/repo" 2>/dev/null || true
-cd "$SWORK/repo"
+cd "$SWORK/repo" || exit 1
 
 git checkout -b main 2>/dev/null || true
 
@@ -500,7 +500,7 @@ section "17. SSH branching"
 
 SBRANCH=$(mktmp)
 git clone "$SSH_REPO_URL" "$SBRANCH/repo" 2>/dev/null
-cd "$SBRANCH/repo"
+cd "$SBRANCH/repo" || exit 1
 
 git checkout -b ssh-feature 2>/dev/null
 echo "ssh feature work" > ssh-feature.txt
@@ -529,7 +529,7 @@ section "18. SSH fetch + merge"
 
 SFETCH=$(mktmp)
 git clone "$SSH_REPO_URL" "$SFETCH/repo" 2>/dev/null
-cd "$SFETCH/repo"
+cd "$SFETCH/repo" || exit 1
 
 git fetch origin ssh-feature 2>/dev/null
 output=$(git merge origin/ssh-feature --no-edit 2>&1)
@@ -553,7 +553,7 @@ section "19. SSH tags"
 
 STAG=$(mktmp)
 git clone "$SSH_REPO_URL" "$STAG/repo" 2>/dev/null
-cd "$STAG/repo"
+cd "$STAG/repo" || exit 1
 
 git tag ssh-v1.0
 output=$(git push origin ssh-v1.0 2>&1)
@@ -578,7 +578,7 @@ section "20. SSH force push"
 
 SFORCE=$(mktmp)
 git clone "$SSH_REPO_URL" "$SFORCE/repo" 2>/dev/null
-cd "$SFORCE/repo"
+cd "$SFORCE/repo" || exit 1
 
 old_head=$(git rev-parse HEAD)
 git commit --amend -m "Amended via SSH" --allow-empty > /dev/null 2>&1
@@ -605,7 +605,7 @@ section "21. SSH delete remote branch"
 
 SDEL=$(mktmp)
 git clone "$SSH_REPO_URL" "$SDEL/repo" 2>/dev/null
-cd "$SDEL/repo"
+cd "$SDEL/repo" || exit 1
 
 output=$(git push origin --delete ssh-feature 2>&1)
 rc=$?

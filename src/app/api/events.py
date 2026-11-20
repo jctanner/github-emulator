@@ -8,6 +8,7 @@ from app.config import settings
 from app.models.event import Event
 from app.models.user import User
 from app.schemas.user import SimpleUser, _fmt_dt
+from app.services.job_token_scope import visible_repository_ids
 
 router = APIRouter(tags=["events"])
 
@@ -88,6 +89,7 @@ async def list_user_events(
         .offset((page - 1) * per_page)
         .limit(per_page)
     )
+    query = visible_repository_ids(query, Event.repo_id)
     events = (await db.execute(query)).scalars().all()
     return [_event_json(e, BASE) for e in events]
 

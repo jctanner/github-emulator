@@ -5,8 +5,8 @@ from datetime import datetime
 from typing import Annotated, Optional
 
 import strawberry
-from strawberry.types import Info
 from sqlalchemy import select
+from strawberry.types import Info
 
 from app.graphql.connections import Connection, build_connection
 from app.graphql.types.enums import (
@@ -16,6 +16,7 @@ from app.graphql.types.enums import (
     RepositoryOrderField,
     RepositoryPrivacy,
 )
+from app.graphql.types.node import Node
 
 
 def _node_id(type_name: str, db_id: int) -> strawberry.ID:
@@ -23,18 +24,35 @@ def _node_id(type_name: str, db_id: int) -> strawberry.ID:
     return strawberry.ID(base64.b64encode(f"{type_name}:{db_id}".encode()).decode())
 
 
-@strawberry.type(name="User")
-class GitHubUser:
-    """A GitHub user account."""
+@strawberry.interface(name="Actor")
+class Actor:
+    """Who did something: a User, or an App's Bot (GitHub's Actor interface)."""
     login: str
+    avatar_url: Optional[str] = None
+    url: str = ""
+
+
+@strawberry.type(name="Bot")
+class Bot(Actor, Node):
+    """A GitHub App acting on its own. Its login is the App slug, without the
+    "[bot]" suffix REST shows; gh tells a bot by the missing User fields and
+    prints it as "app/<login>"."""
+    database_id: int
+
+    @strawberry.field
+    def id(self) -> strawberry.ID:
+        return _node_id("Bot", self.database_id)
+
+
+@strawberry.type(name="User")
+class GitHubUser(Actor, Node):
+    """A GitHub user account."""
     database_id: int
     name: Optional[str] = None
     email: Optional[str] = None
     bio: Optional[str] = None
     company: Optional[str] = None
     location: Optional[str] = None
-    avatar_url: Optional[str] = None
-    url: str = ""
     created_at: datetime = strawberry.UNSET
     is_site_admin: bool = False
 
@@ -67,8 +85,8 @@ class GitHubUser:
         owner_affiliations: Optional[list[RepositoryAffiliation]] = None,
         order_by: Optional[RepositoryOrder] = None,
     ) -> Connection[Annotated["Repository", strawberry.lazy("app.graphql.types.repository")]]:
-        from app.models.repository import Repository as RepoModel
         from app.graphql.types.repository import repository_from_model
+        from app.models.repository import Repository as RepoModel
 
         db = info.context["db"]
         query = select(RepoModel).where(RepoModel.owner_id == self.database_id)
@@ -138,6 +156,20 @@ def user_from_model(user) -> GitHubUser:
         url=f"{base_url}/users/{user.login}",
         created_at=user.created_at,
         is_site_admin=user.site_admin,
+    )
+
+
+def actor_from_model(user) -> Actor:
+    """The Actor for an account: a Bot for an App's bot account, else a User."""
+    if getattr(user, "type", "User") != "Bot":
+        return user_from_model(user)
+    from app.config import settings
+    slug = user.login.removesuffix("[bot]")
+    return Bot(
+        login=slug,
+        database_id=user.id,
+        avatar_url=user.avatar_url or f"{settings.BASE_URL}/avatars/{user.login}",
+        url=f"{settings.BASE_URL}/apps/{slug}",
     )
 
 

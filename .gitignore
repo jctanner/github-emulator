@@ -29,5 +29,5 @@ data/
 # OS
 .DS_Store
 
-# Lock file (optional — remove this line if you want to pin deps)
-uv.lock
+# Browser-automation session logs
+.playwright-mcp/

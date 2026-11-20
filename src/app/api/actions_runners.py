@@ -4,13 +4,13 @@ import secrets
 from datetime import datetime, timedelta, timezone
 
 from fastapi import APIRouter, HTTPException
-from sqlalchemy import select
+from sqlalchemy import delete, select
 
 from app.api.deps import AuthUser, DbSession, get_repo_or_404
 from app.config import settings
-from app.models.actions import EnterpriseRunnerRegistrationToken, Runner, RegistrationToken, RunnerSession, WorkflowJob
-from app.schemas.user import _fmt_dt
+from app.models.actions import EnterpriseRunnerRegistrationToken, RegistrationToken, Runner, RunnerSession, WorkflowJob
 from app.schemas.actions import RunnerListResponse, RunnerResponse
+from app.schemas.user import _fmt_dt
 
 router = APIRouter(tags=["actions-runners"])
 
@@ -95,12 +95,24 @@ def _runner_payload(runner: Runner) -> dict:
     }
 
 
+async def _prune_expired_registration_tokens(db) -> None:
+    """Drop registration and remove tokens past their expiry.
+
+    A token is kept until it expires rather than deleted on first use, so
+    issuing a new one is where the expired ones go.
+    """
+    now = datetime.now(timezone.utc).replace(tzinfo=None)
+    for model in (RegistrationToken, EnterpriseRunnerRegistrationToken):
+        await db.execute(delete(model).where(model.expires_at < now))
+
+
 @router.post("/enterprises/{enterprise}/actions/runners/registration-token")
 async def create_enterprise_registration_token(
     enterprise: str, db: DbSession, user: AuthUser,
 ):
     """Create a registration token for an enterprise-scoped runner."""
     _require_enterprise(enterprise, user)
+    await _prune_expired_registration_tokens(db)
     token = f"AAAAAA{secrets.token_urlsafe(27)}"
     expires = datetime.now(timezone.utc) + timedelta(hours=1)
     db.add(EnterpriseRunnerRegistrationToken(
@@ -118,12 +130,14 @@ async def create_enterprise_remove_token(
 ):
     """Create the short-lived token consumed by config.sh remove."""
     _require_enterprise(enterprise, user)
+    await _prune_expired_registration_tokens(db)
     token = f"AAAAAA{secrets.token_urlsafe(27)}"
     expires = datetime.now(timezone.utc) + timedelta(hours=1)
     db.add(EnterpriseRunnerRegistrationToken(
         token=token,
         enterprise_slug=enterprise,
         expires_at=expires,
+        for_remove=True,
     ))
     await db.commit()
     return {"token": token, "expires_at": _fmt_dt(expires)}
@@ -135,7 +149,7 @@ async def list_enterprise_runners(
 ):
     _require_enterprise(enterprise, user)
     result = await db.execute(
-        select(Runner).where(Runner.enterprise_slug == enterprise)
+        select(Runner).where(Runner.enterprise_slug == enterprise, Runner.remove_only.is_not(True))
     )
     runners = result.scalars().all()
     return {
@@ -159,7 +173,7 @@ async def get_enterprise_runner(
     return _runner_payload(runner)
 
 
-async def _delete_runner_and_detach_history(db, runner: Runner) -> None:
+async def _delete_runner_and_detach_history(db, runner: Runner, *, fail_live_jobs: bool = False) -> None:
     """Delete a runner, detaching the jobs that record having used it.
 
     `workflow_jobs.runner_id` is a foreign key to `runners.id`, and SQLite does
@@ -176,13 +190,27 @@ async def _delete_runner_and_detach_history(db, runner: Runner) -> None:
     `runner_id` on an in-progress job would strand it: `_requeue_stale_jobs`
     finds work to requeue by joining jobs to their runner, so a detached live
     job would never be recovered by anything.
+
+    A runner removing itself (``fail_live_jobs``) is not refused: it will not
+    run its job any further, so that job fails, as a job whose runner is
+    lost does on GitHub, and then detaches like the rest.
     """
-    live = (await db.execute(
+    live_jobs = (await db.execute(
         select(WorkflowJob).where(
             WorkflowJob.runner_id == runner.id,
             WorkflowJob.status == "in_progress",
         )
-    )).scalars().first()
+    )).scalars().all()
+    failed_runs = set()
+    if live_jobs and fail_live_jobs:
+        now = datetime.now(timezone.utc)
+        for job in live_jobs:
+            job.status = "completed"
+            job.conclusion = "failure"
+            job.completed_at = now
+            failed_runs.add(job.run_id)
+        live_jobs = []
+    live = live_jobs[0] if live_jobs else None
     if live is not None:
         raise HTTPException(
             status_code=422,
@@ -214,6 +242,14 @@ async def _delete_runner_and_detach_history(db, runner: Runner) -> None:
     await db.delete(runner)
     await db.commit()
 
+    if failed_runs:
+        from app.services.workflow_service import check_run_completion, dispatch_ready_jobs
+
+        for run_id in failed_runs:
+            await dispatch_ready_jobs(db, run_id)
+            await check_run_completion(db, run_id)
+        await db.commit()
+
 
 @router.delete("/enterprises/{enterprise}/actions/runners/{runner_id}", status_code=204)
 async def delete_enterprise_runner(
@@ -236,6 +272,7 @@ async def create_registration_token(
 ):
     """Create a registration token for a self-hosted runner."""
     repository = await get_repo_or_404(owner, repo, db)
+    await _prune_expired_registration_tokens(db)
 
     token = f"AAAAAA{secrets.token_urlsafe(27)}"
     expires = datetime.now(timezone.utc) + timedelta(hours=1)
@@ -270,10 +307,9 @@ async def list_runners(
     """List self-hosted runners for a repository."""
     repository = await get_repo_or_404(owner, repo, db)
     result = await db.execute(
-        select(Runner).where(Runner.repo_id == repository.id)
+        select(Runner).where(Runner.repo_id == repository.id, Runner.remove_only.is_not(True))
     )
     runners = result.scalars().all()
-    api = f"{BASE}/api/v3"
     items = [_runner_payload(r) for r in runners]
     return {"total_count": len(items), "runners": items}
 

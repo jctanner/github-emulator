@@ -11,7 +11,10 @@ in: any user can `updateIssue`, `closeIssue`, `reopenIssue`,
 
 REST does the same: `PATCH /repos/{owner}/{repo}/issues/{n}`, the pull
 request routes, and the label routes check authentication and integration
-scope but not the user's repository role. Only contents, git-data, and ref
+scope but not the user's repository role. The same holds for the `labels`
+field of issue create and update, which creates a missing label as
+`POST /issues/{n}/labels` does: GitHub silently drops labels, assignees and
+milestone set by a user without triage access. Only contents, git-data, and ref
 writes require write access (`deps.require_contents_write`).
 
 ## Fixed so far

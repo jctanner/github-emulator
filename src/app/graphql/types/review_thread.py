@@ -27,7 +27,7 @@ from strawberry.types import Info
 
 from app.graphql.connections import Connection, build_connection
 from app.graphql.types.minimizable import Minimizable
-from app.graphql.types.user import GitHubUser, _node_id, user_from_model
+from app.graphql.types.user import Actor, GitHubUser, _node_id, actor_from_model, user_from_model
 
 # ``minimizeComment`` takes ``ReportedContentClassifiers``; the comment then
 # reports ``minimizedReason`` in a different case and spelling, as on GitHub.
@@ -161,6 +161,15 @@ async def _user(info: Info, user_id: Optional[int]) -> Optional[GitHubUser]:
     return user_from_model(user) if user else None
 
 
+async def _actor(info: Info, user_id: Optional[int]) -> Optional[Actor]:
+    if user_id is None:
+        return None
+    from app.models.user import User
+
+    user = (await info.context["db"].execute(select(User).where(User.id == user_id))).scalar_one_or_none()
+    return actor_from_model(user) if user else None
+
+
 @strawberry.type
 class PullRequestReviewComment(Minimizable):
     """A review comment on a line or file of a pull request."""
@@ -194,8 +203,8 @@ class PullRequestReviewComment(Minimizable):
         return (await self._ctx.location(self._row))[1]
 
     @strawberry.field
-    async def author(self, info: Info) -> Optional[GitHubUser]:
-        return await _user(info, self._user_id)
+    async def author(self, info: Info) -> Optional[Actor]:
+        return await _actor(info, self._user_id)
 
     @strawberry.field
     def url(self) -> str:

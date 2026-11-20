@@ -1,0 +1,160 @@
+name: GitHub emulator
+description: >
+  Start the GitHub emulator and its runner(s) as plain processes inside the
+  current job (SQLite, no container), and wait until the API answers. Jobs the
+  emulator schedules run on this VM, as this job's user. For workflows that
+  use current marketplace actions (artifacts v4+, node24), use the real
+  runner over https on a *.localhost name: runner-kind upstream, tls true,
+  host ghemu.localhost, port 443.
+inputs:
+  port:
+    description: >
+      API port. actions/runner dials the scheme's default port for some
+      URLs, so the upstream runner needs 80, or 443 with tls.
+    default: "8000"
+  host:
+    description: >
+      Host name the emulator puts in its URLs. upload/download-artifact v4+
+      refuse any host but github.com, *.ghe.com and *.localhost.
+    default: 127.0.0.1
+  bind:
+    description: Address the API listens on. Empty lets the stack choose.
+    default: ""
+  tls:
+    description: Serve https with a CA made for this run (see the ca-file output).
+    default: "false"
+  system-trust:
+    description: Add that CA to the system store (sudo). actions/runner reads only that.
+    default: "false"
+  localhost-dns:
+    description: >
+      Resolve a *.localhost host to this VM's address instead of loopback, for
+      clients that refuse loopback (an OpenShell sandbox supervisor). Linux only.
+    default: "false"
+  raw-host:
+    description: >
+      Also answer raw.githubusercontent.com on this VM, for a client that
+      hard-codes github.com's raw host. Needs localhost-dns, tls and port 443.
+    default: "false"
+  raw-addr:
+    description: >
+      With raw-host, the IPv4 address raw.githubusercontent.com resolves to,
+      instead of this VM's private one. For a client that refuses private
+      addresses: a public address the job never needs to reach, e.g.
+      185.199.108.200. It is added to lo; the emulator listens on it.
+    default: ""
+  upstream-token:
+    description: >
+      Token the emulator uses to resolve and download public actions from
+      github.com, e.g. the job's read-only github.token. Without one it
+      shares the anonymous API limit (60 an hour per IP) and a job that uses
+      actions can fail with 502 when that runs out.
+    default: ""
+  runners:
+    description: Runner processes, i.e. emulator jobs that run at once.
+    default: "1"
+  runner-kind:
+    description: python (src/runners/emulator/runner.py) or upstream (actions/runner).
+    default: python
+  runner-version:
+    description: actions/runner release for runner-kind upstream.
+    default: 2.338.2
+  runner-sha256:
+    description: >
+      SHA-256 of that release's linux-x64 tarball, as GitHub publishes it.
+      Required with a runner-version other than the default.
+    default: ""
+  runner-env:
+    description: >
+      Extra environment for every runner and the jobs it runs: NAME=VALUE
+      lines, one per line. Use it for a service shared by the runners on
+      this VM, so parallel jobs do not each set it up.
+    default: ""
+  state-dir:
+    description: SQLite file, git repositories, logs and pid files.
+    default: ${{ runner.temp }}/github-emulator
+outputs:
+  url:
+    description: Emulator root URL, for GITHUB_SERVER_URL.
+    value: ${{ steps.start.outputs.url }}
+  api-url:
+    description: REST root, for GITHUB_API_URL.
+    value: ${{ steps.start.outputs.api-url }}
+  token:
+    description: The site admin's token, made for this stack (masked in the log).
+    value: ${{ steps.start.outputs.token }}
+  ca-file:
+    description: With tls, the run's CA (CURL_CA_BUNDLE, NODE_EXTRA_CA_CERTS).
+    value: ${{ steps.start.outputs.ca-file }}
+  ca-bundle:
+    description: With tls, public roots plus that CA (SSL_CERT_FILE, GIT_SSL_CAINFO).
+    value: ${{ steps.start.outputs.ca-bundle }}
+  state-dir:
+    description: Where the logs are, for an upload on failure.
+    value: ${{ inputs.state-dir }}
+runs:
+  using: composite
+  steps:
+    # No uv cache: its key is a glob over the consumer's workspace, which does
+    # not hold this action's uv.lock, and a cold install is ~seconds.
+    - uses: astral-sh/setup-uv@e92bafb6253dcd438e0484186d7669ea7a8ca1cc # v6.4.3
+      with:
+        enable-cache: false
+
+    - name: Install the emulator
+      shell: bash
+      env:
+        ROOT: ${{ github.action_path }}/../../..
+        VENV: ${{ inputs.state-dir }}/venv
+      run: |
+        # The versions in uv.lock, each checked against its hash: not the
+        # newest release of every package on the day of the run.
+        uv venv -q --python 3.12 "$VENV"
+        uv export -q --project "$ROOT" --frozen --no-dev --no-emit-project --format requirements-txt -o "$VENV.requirements.txt"
+        VIRTUAL_ENV="$VENV" uv pip install -q --require-hashes -r "$VENV.requirements.txt"
+
+    - name: Allow ports below 1024
+      if: fromJSON(inputs.port) < 1024
+      shell: bash
+      run: sudo sysctl -w net.ipv4.ip_unprivileged_port_start=80
+
+    - name: Start
+      id: start
+      shell: bash
+      env:
+        ROOT: ${{ github.action_path }}/../../..
+        CI_STACK_DIR: ${{ inputs.state-dir }}
+        CI_STACK_PYTHON: ${{ inputs.state-dir }}/venv/bin/python
+        CI_STACK_PORT: ${{ inputs.port }}
+        CI_STACK_HOST: ${{ inputs.host }}
+        CI_STACK_BIND: ${{ inputs.bind }}
+        CI_STACK_TLS: ${{ inputs.tls == 'true' && '1' || '0' }}
+        CI_STACK_SYSTEM_TRUST: ${{ inputs.system-trust == 'true' && '1' || '0' }}
+        CI_STACK_LOCALHOST_DNS: ${{ inputs.localhost-dns == 'true' && '1' || '0' }}
+        CI_STACK_RAW_HOST: ${{ inputs.raw-host == 'true' && '1' || '0' }}
+        CI_STACK_RAW_ADDR: ${{ inputs.raw-addr }}
+        GITHUB_EMULATOR_ACTIONS_UPSTREAM_TOKEN: ${{ inputs.upstream-token }}
+        CI_STACK_RUNNERS: ${{ inputs.runners }}
+        CI_STACK_RUNNER_KIND: ${{ inputs.runner-kind }}
+        CI_STACK_UPSTREAM_RUNNER_VERSION: ${{ inputs.runner-version }}
+        CI_STACK_UPSTREAM_RUNNER_SHA256: ${{ inputs.runner-sha256 }}
+        CI_STACK_RUNNER_ENV: ${{ inputs.runner-env }}
+      run: |
+        "$ROOT/scripts/ci-stack.sh" start
+        echo "::add-mask::$(cat "$CI_STACK_DIR/admin-token")"
+        scheme=http
+        [ "$CI_STACK_TLS" = 1 ] && scheme=https
+        url="$scheme://$CI_STACK_HOST:$CI_STACK_PORT"
+        # As ci-stack.sh writes it: no default port.
+        case "$scheme:$CI_STACK_PORT" in
+          http:80 | https:443) url="$scheme://$CI_STACK_HOST" ;;
+        esac
+        {
+          echo "url=$url"
+          echo "api-url=$url/api/v3"
+          echo "token=$(cat "$CI_STACK_DIR/admin-token")"
+          if [ "$CI_STACK_TLS" = 1 ]; then
+            echo "ca-file=$CI_STACK_DIR/tls/ca.pem"
+            echo "ca-bundle=$CI_STACK_DIR/tls/bundle.pem"
+          fi
+        } >> "$GITHUB_OUTPUT"

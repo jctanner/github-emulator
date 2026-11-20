@@ -279,4 +279,26 @@ async def test_rate_limit(client, test_user, test_token):
     assert "search" in data["resources"]
     core = data["resources"]["core"]
     assert core["limit"] == 5000
-    assert core["remaining"] == 5000
+    assert core["remaining"] == 5000 - core["used"]
+    assert resp.headers["X-RateLimit-Remaining"] == str(core["remaining"])
+
+
+@pytest.mark.asyncio
+async def test_rate_limit_is_configurable(client, test_user, test_token, monkeypatch):
+    """RATE_LIMIT sets the headers and GET /rate_limit alike.
+
+    A client that paces itself on X-RateLimit-Remaining (Fullsend's pool
+    gate) stopped for the rest of the hour once a busy suite used 5000.
+    """
+    monkeypatch.setattr("app.middleware.rate_limit.settings.RATE_LIMIT", 1_000_000)
+    headers = auth_headers(test_token)
+    first = await client.get(f"{API}/user", headers=headers)
+    assert first.headers["X-RateLimit-Limit"] == "1000000"
+    used = int(first.headers["X-RateLimit-Used"])
+    assert first.headers["X-RateLimit-Remaining"] == str(1_000_000 - used)
+
+    status = (await client.get(f"{API}/rate_limit", headers=headers)).json()
+    for resource in (status["rate"], status["resources"]["core"]):
+        assert resource["limit"] == 1_000_000
+        assert resource["used"] == used  # /rate_limit itself is not counted
+        assert resource["remaining"] == 1_000_000 - used

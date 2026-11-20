@@ -1,6 +1,6 @@
 from datetime import datetime
 
-from sqlalchemy import DateTime, ForeignKey, Integer, String, Text, UniqueConstraint, func, Boolean, false
+from sqlalchemy import Boolean, DateTime, ForeignKey, Integer, String, Text, UniqueConstraint, false, func
 from sqlalchemy.dialects.sqlite import JSON
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -29,6 +29,9 @@ class Runner(Base):
     repo_id: Mapped[int | None] = mapped_column(Integer, ForeignKey("repositories.id"), nullable=True)
     org_id: Mapped[int | None] = mapped_column(Integer, ForeignKey("organizations.id"), nullable=True)
     enterprise_slug: Mapped[str | None] = mapped_column(String, nullable=True)
+    # The credential config.sh remove gets from runner-registration: it may
+    # only delete an agent, and is not a runner. NULL is an ordinary runner.
+    remove_only: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
 
     created_at: Mapped[datetime] = mapped_column(
         DateTime, server_default=func.now()
@@ -70,6 +73,9 @@ class EnterpriseRunnerRegistrationToken(Base):
     token: Mapped[str] = mapped_column(String, nullable=False, unique=True)
     enterprise_slug: Mapped[str] = mapped_column(String, nullable=False)
     expires_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)
+    # Made by the remove-token route: it serves config.sh remove and never
+    # registers a runner. NULL is a registration token.
+    for_remove: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime, server_default=func.now()
     )

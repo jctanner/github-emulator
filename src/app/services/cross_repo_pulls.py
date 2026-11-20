@@ -16,7 +16,10 @@ pull request opens and on every push to that branch.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import os
+import shutil
+import tempfile
 
 from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -82,6 +85,65 @@ async def resolve_fork_for_owner(
     return None
 
 
+async def is_branch_name(branch: str) -> bool:
+    """Whether ``branch`` is a valid branch name (``git check-ref-format``).
+
+    The fetches below put the name in a refspec and a revision, so it is
+    checked first; a valid name has no ``:``, ``^``, ``~`` or leading ``-``.
+    """
+    if not branch or branch.startswith("-"):
+        return False
+    process = await asyncio.create_subprocess_exec(
+        "git", "check-ref-format", f"refs/heads/{branch}",
+        stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.DEVNULL,
+    )
+    return await process.wait() == 0
+
+
+async def branch_commit(head: Repository, branch: str) -> str | None:
+    """The commit ``head``'s ``branch`` points at, or None."""
+    if not (head.disk_path and os.path.isdir(head.disk_path)):
+        return None
+    if not await is_branch_name(branch):
+        return None
+    process = await asyncio.create_subprocess_exec(
+        "git", "--git-dir", head.disk_path, "rev-parse", "--verify", "--quiet",
+        f"refs/heads/{branch}^{{commit}}",
+        stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
+    )
+    out, _ = await process.communicate()
+    sha = out.decode().strip()
+    return sha if process.returncode == 0 and sha else None
+
+
+@contextlib.asynccontextmanager
+async def object_view(*repositories: Repository):
+    """A temporary bare repository that reads the objects of ``repositories``.
+
+    GitHub keeps a fork network's objects together; the emulator keeps one
+    bare repository per fork. A comparison across forks runs in this view,
+    which borrows both object databases through git's alternates and holds
+    nothing of its own, so no fork object is copied into another
+    repository. The view is deleted on exit.
+    """
+    path = tempfile.mkdtemp(prefix="compare-view-")
+    try:
+        process = await asyncio.create_subprocess_exec(
+            "git", "init", "--bare", "--quiet", path,
+            stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.DEVNULL,
+        )
+        await process.wait()
+        alternates = [os.path.join(os.path.abspath(repo.disk_path), "objects") for repo in repositories]
+        # One path per line: a path holding a line break or other control
+        # character would add a line of its own, so it is left out.
+        alternates = [path for path in alternates if path.isprintable()]
+        with open(os.path.join(path, "objects", "info", "alternates"), "w") as handle:
+            handle.write("\n".join(alternates) + "\n")
+        yield path
+    finally:
+        shutil.rmtree(path, ignore_errors=True)
+
+
 async def sync_head_ref(
     base: Repository, head: Repository, branch: str, number: int
 ) -> str | None:
@@ -91,6 +153,8 @@ async def sync_head_ref(
     repository has no storage.
     """
     if not (base.disk_path and head.disk_path and os.path.isdir(base.disk_path) and os.path.isdir(head.disk_path)):
+        return None
+    if not await is_branch_name(branch):
         return None
     process = await asyncio.create_subprocess_exec(
         "git", "--git-dir", base.disk_path, "fetch", "--no-tags", "--quiet",

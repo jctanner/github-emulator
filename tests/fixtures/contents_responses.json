@@ -1,0 +1,142 @@
+{
+ "/api/v3/repos/testuser/pinned/contents/": {
+  "body": "[{\"type\":\"file\",\"size\":0,\"name\":\"README.md\",\"path\":\"README.md\",\"sha\":\"ce013625030ba8dba906f756967f9e9ca394464a\",\"url\":\"http://localhost:8000/api/v3/repos/testuser/pinned/contents/README.md?ref=main\",\"git_url\":\"http://localhost:8000/api/v3/repos/testuser/pinned/git/blobs/ce013625030ba8dba906f756967f9e9ca394464a\",\"html_url\":\"http://localhost:8000/testuser/pinned/blob/main/README.md\",\"download_url\":\"http://localhost:8000/testuser/pinned/raw/main/README.md\",\"encoding\":null,\"content\":null,\"_links\":{\"self\":\"http://localhost:8000/api/v3/repos/testuser/pinned/contents/README.md?ref=main\",\"git\":\"http://localhost:8000/api/v3/repos/testuser/pinned/git/blobs/ce013625030ba8dba906f756967f9e9ca394464a\",\"html\":\"http://localhost:8000/testuser/pinned/blob/main/README.md\"}},{\"type\":\"file\",\"size\":0,\"name\":\"bin.dat\",\"path\":\"bin.dat\",\"sha\":\"554684801264c5443586ada473ec820308c2b0a4\",\"url\":\"http://localhost:8000/api/v3/repos/testuser/pinned/contents/bin.dat?ref=main\",\"git_url\":\"http://localhost:8000/api/v3/repos/testuser/pinned/git/blobs/554684801264c5443586ada473ec820308c2b0a4\",\"html_url\":\"http://localhost:8000/testuser/pinned/blob/main/bin.dat\",\"download_url\":\"http://localhost:8000/testuser/pinned/raw/main/bin.dat\",\"encoding\":null,\"content\":null,\"_links\":{\"self\":\"http://localhost:8000/api/v3/repos/testuser/pinned/contents/bin.dat?ref=main\",\"git\":\"http://localhost:8000/api/v3/repos/testuser/pinned/git/blobs/554684801264c5443586ada473ec820308c2b0a4\",\"html\":\"http://localhost:8000/testuser/pinned/blob/main/bin.dat\"}},{\"type\":\"dir\",\"size\":0,\"name\":\"docs\",\"path\":\"docs\",\"sha\":\"597f2ea7a8c5c631267730f933f84d62141c7f70\",\"url\":\"http://localhost:8000/api/v3/repos/testuser/pinned/contents/docs?ref=main\",\"git_url\":\"http://localhost:8000/api/v3/repos/testuser/pinned/git/trees/597f2ea7a8c5c631267730f933f84d62141c7f70\",\"html_url\":\"http://localhost:8000/testuser/pinned/tree/main/docs\",\"download_url\":null,\"encoding\":null,\"content\":null,\"_links\":{\"self\":\"http://localhost:8000/api/v3/repos/testuser/pinned/contents/docs?ref=main\",\"git\":\"http://localhost:8000/api/v3/repos/testuser/pinned/git/trees/597f2ea7a8c5c631267730f933f84d62141c7f70\",\"html\":\"http://localhost:8000/testuser/pinned/tree/main/docs\"}},{\"type\":\"file\",\"size\":0,\"name\":\"exec.sh\",\"path\":\"exec.sh\",\"sha\":\"4163036efa65bd4a469e752267498f01ea36a55c\",\"url\":\"http://localhost:8000/api/v3/repos/testuser/pinned/contents/exec.sh?ref=main\",\"git_url\":\"http://localhost:8000/api/v3/repos/testuser/pinned/git/blobs/4163036efa65bd4a469e752267498f01ea36a55c\",\"html_url\":\"http://localhost:8000/testuser/pinned/blob/main/exec.sh\",\"download_url\":\"http://localhost:8000/testuser/pinned/raw/main/exec.sh\",\"encoding\":null,\"content\":null,\"_links\":{\"self\":\"http://localhost:8000/api/v3/repos/testuser/pinned/contents/exec.sh?ref=main\",\"git\":\"http://localhost:8000/api/v3/repos/testuser/pinned/git/blobs/4163036efa65bd4a469e752267498f01ea36a55c\",\"html\":\"http://localhost:8000/testuser/pinned/blob/main/exec.sh\"}},{\"type\":\"file\",\"size\":0,\"name\":\"link\",\"path\":\"link\",\"sha\":\"42061c01a1c70097d1e4579f29a5adf40abdec95\",\"url\":\"http://localhost:8000/api/v3/repos/testuser/pinned/contents/link?ref=main\",\"git_url\":\"http://localhost:8000/api/v3/repos/testuser/pinned/git/blobs/42061c01a1c70097d1e4579f29a5adf40abdec95\",\"html_url\":\"http://localhost:8000/testuser/pinned/blob/main/link\",\"download_url\":\"http://localhost:8000/testuser/pinned/raw/main/link\",\"encoding\":null,\"content\":null,\"_links\":{\"self\":\"http://localhost:8000/api/v3/repos/testuser/pinned/contents/link?ref=main\",\"git\":\"http://localhost:8000/api/v3/repos/testuser/pinned/git/blobs/42061c01a1c70097d1e4579f29a5adf40abdec95\",\"html\":\"http://localhost:8000/testuser/pinned/blob/main/link\"}},{\"type\":\"dir\",\"size\":0,\"name\":\"sub\",\"path\":\"sub\",\"sha\":\"1234567890abcdef1234567890abcdef12345678\",\"url\":\"http://localhost:8000/api/v3/repos/testuser/pinned/contents/sub?ref=main\",\"git_url\":\"http://localhost:8000/api/v3/repos/testuser/pinned/git/trees/1234567890abcdef1234567890abcdef12345678\",\"html_url\":\"http://localhost:8000/testuser/pinned/tree/main/sub\",\"download_url\":null,\"encoding\":null,\"content\":null,\"_links\":{\"self\":\"http://localhost:8000/api/v3/repos/testuser/pinned/contents/sub?ref=main\",\"git\":\"http://localhost:8000/api/v3/repos/testuser/pinned/git/trees/1234567890abcdef1234567890abcdef12345678\",\"html\":\"http://localhost:8000/testuser/pinned/tree/main/sub\"}}]",
+  "content_type": "application/json",
+  "status": 200
+ },
+ "/api/v3/repos/testuser/pinned/contents/README.md": {
+  "body": "{\"type\":\"file\",\"size\":6,\"name\":\"README.md\",\"path\":\"README.md\",\"sha\":\"ce013625030ba8dba906f756967f9e9ca394464a\",\"url\":\"http://localhost:8000/api/v3/repos/testuser/pinned/contents/README.md?ref=main\",\"git_url\":\"http://localhost:8000/api/v3/repos/testuser/pinned/git/blobs/ce013625030ba8dba906f756967f9e9ca394464a\",\"html_url\":\"http://localhost:8000/testuser/pinned/blob/main/README.md\",\"download_url\":\"http://localhost:8000/testuser/pinned/raw/main/README.md\",\"encoding\":\"base64\",\"content\":\"aGVsbG8K\",\"_links\":{\"self\":\"http://localhost:8000/api/v3/repos/testuser/pinned/contents/README.md?ref=main\",\"git\":\"http://localhost:8000/api/v3/repos/testuser/pinned/git/blobs/ce013625030ba8dba906f756967f9e9ca394464a\",\"html\":\"http://localhost:8000/testuser/pinned/blob/main/README.md\"}}",
+  "content_type": "application/json",
+  "status": 200
+ },
+ "/api/v3/repos/testuser/pinned/contents/README.md/inner": {
+  "body": "{\"message\":\"Not Found\",\"documentation_url\":\"https://docs.github.com/rest\"}",
+  "content_type": "application/json",
+  "status": 404
+ },
+ "/api/v3/repos/testuser/pinned/contents/README.md?ref=<commit>": {
+  "body": "{\"type\":\"file\",\"size\":6,\"name\":\"README.md\",\"path\":\"README.md\",\"sha\":\"ce013625030ba8dba906f756967f9e9ca394464a\",\"url\":\"http://localhost:8000/api/v3/repos/testuser/pinned/contents/README.md?ref=7b36232b4c889dc5de616a7be4f30f6b6903d4d6\",\"git_url\":\"http://localhost:8000/api/v3/repos/testuser/pinned/git/blobs/ce013625030ba8dba906f756967f9e9ca394464a\",\"html_url\":\"http://localhost:8000/testuser/pinned/blob/7b36232b4c889dc5de616a7be4f30f6b6903d4d6/README.md\",\"download_url\":\"http://localhost:8000/testuser/pinned/raw/7b36232b4c889dc5de616a7be4f30f6b6903d4d6/README.md\",\"encoding\":\"base64\",\"content\":\"aGVsbG8K\",\"_links\":{\"self\":\"http://localhost:8000/api/v3/repos/testuser/pinned/contents/README.md?ref=7b36232b4c889dc5de616a7be4f30f6b6903d4d6\",\"git\":\"http://localhost:8000/api/v3/repos/testuser/pinned/git/blobs/ce013625030ba8dba906f756967f9e9ca394464a\",\"html\":\"http://localhost:8000/testuser/pinned/blob/7b36232b4c889dc5de616a7be4f30f6b6903d4d6/README.md\"}}",
+  "content_type": "application/json",
+  "status": 200
+ },
+ "/api/v3/repos/testuser/pinned/contents/README.md?ref=main": {
+  "body": "{\"type\":\"file\",\"size\":6,\"name\":\"README.md\",\"path\":\"README.md\",\"sha\":\"ce013625030ba8dba906f756967f9e9ca394464a\",\"url\":\"http://localhost:8000/api/v3/repos/testuser/pinned/contents/README.md?ref=main\",\"git_url\":\"http://localhost:8000/api/v3/repos/testuser/pinned/git/blobs/ce013625030ba8dba906f756967f9e9ca394464a\",\"html_url\":\"http://localhost:8000/testuser/pinned/blob/main/README.md\",\"download_url\":\"http://localhost:8000/testuser/pinned/raw/main/README.md\",\"encoding\":\"base64\",\"content\":\"aGVsbG8K\",\"_links\":{\"self\":\"http://localhost:8000/api/v3/repos/testuser/pinned/contents/README.md?ref=main\",\"git\":\"http://localhost:8000/api/v3/repos/testuser/pinned/git/blobs/ce013625030ba8dba906f756967f9e9ca394464a\",\"html\":\"http://localhost:8000/testuser/pinned/blob/main/README.md\"}}",
+  "content_type": "application/json",
+  "status": 200
+ },
+ "/api/v3/repos/testuser/pinned/contents/README.md?ref=no-such-ref": {
+  "body": "{\"message\":\"Not Found\",\"documentation_url\":\"https://docs.github.com/rest\"}",
+  "content_type": "application/json",
+  "status": 404
+ },
+ "/api/v3/repos/testuser/pinned/contents/README.md?ref=v1": {
+  "body": "{\"type\":\"file\",\"size\":6,\"name\":\"README.md\",\"path\":\"README.md\",\"sha\":\"ce013625030ba8dba906f756967f9e9ca394464a\",\"url\":\"http://localhost:8000/api/v3/repos/testuser/pinned/contents/README.md?ref=v1\",\"git_url\":\"http://localhost:8000/api/v3/repos/testuser/pinned/git/blobs/ce013625030ba8dba906f756967f9e9ca394464a\",\"html_url\":\"http://localhost:8000/testuser/pinned/blob/v1/README.md\",\"download_url\":\"http://localhost:8000/testuser/pinned/raw/v1/README.md\",\"encoding\":\"base64\",\"content\":\"aGVsbG8K\",\"_links\":{\"self\":\"http://localhost:8000/api/v3/repos/testuser/pinned/contents/README.md?ref=v1\",\"git\":\"http://localhost:8000/api/v3/repos/testuser/pinned/git/blobs/ce013625030ba8dba906f756967f9e9ca394464a\",\"html\":\"http://localhost:8000/testuser/pinned/blob/v1/README.md\"}}",
+  "content_type": "application/json",
+  "status": 200
+ },
+ "/api/v3/repos/testuser/pinned/contents/README.md?ref=v1-annotated": {
+  "body": "{\"type\":\"file\",\"size\":6,\"name\":\"README.md\",\"path\":\"README.md\",\"sha\":\"ce013625030ba8dba906f756967f9e9ca394464a\",\"url\":\"http://localhost:8000/api/v3/repos/testuser/pinned/contents/README.md?ref=v1-annotated\",\"git_url\":\"http://localhost:8000/api/v3/repos/testuser/pinned/git/blobs/ce013625030ba8dba906f756967f9e9ca394464a\",\"html_url\":\"http://localhost:8000/testuser/pinned/blob/v1-annotated/README.md\",\"download_url\":\"http://localhost:8000/testuser/pinned/raw/v1-annotated/README.md\",\"encoding\":\"base64\",\"content\":\"aGVsbG8K\",\"_links\":{\"self\":\"http://localhost:8000/api/v3/repos/testuser/pinned/contents/README.md?ref=v1-annotated\",\"git\":\"http://localhost:8000/api/v3/repos/testuser/pinned/git/blobs/ce013625030ba8dba906f756967f9e9ca394464a\",\"html\":\"http://localhost:8000/testuser/pinned/blob/v1-annotated/README.md\"}}",
+  "content_type": "application/json",
+  "status": 200
+ },
+ "/api/v3/repos/testuser/pinned/contents/bin.dat": {
+  "body": "{\"type\":\"file\",\"size\":10,\"name\":\"bin.dat\",\"path\":\"bin.dat\",\"sha\":\"554684801264c5443586ada473ec820308c2b0a4\",\"url\":\"http://localhost:8000/api/v3/repos/testuser/pinned/contents/bin.dat?ref=main\",\"git_url\":\"http://localhost:8000/api/v3/repos/testuser/pinned/git/blobs/554684801264c5443586ada473ec820308c2b0a4\",\"html_url\":\"http://localhost:8000/testuser/pinned/blob/main/bin.dat\",\"download_url\":\"http://localhost:8000/testuser/pinned/raw/main/bin.dat\",\"encoding\":\"base64\",\"content\":\"AAFiaW5hcnn/Cg==\",\"_links\":{\"self\":\"http://localhost:8000/api/v3/repos/testuser/pinned/contents/bin.dat?ref=main\",\"git\":\"http://localhost:8000/api/v3/repos/testuser/pinned/git/blobs/554684801264c5443586ada473ec820308c2b0a4\",\"html\":\"http://localhost:8000/testuser/pinned/blob/main/bin.dat\"}}",
+  "content_type": "application/json",
+  "status": 200
+ },
+ "/api/v3/repos/testuser/pinned/contents/docs": {
+  "body": "[{\"type\":\"file\",\"size\":0,\"name\":\"guide.md\",\"path\":\"docs/guide.md\",\"sha\":\"8c0d02fadc02df29eefff5ad660a022b4a8e5efd\",\"url\":\"http://localhost:8000/api/v3/repos/testuser/pinned/contents/docs/guide.md?ref=main\",\"git_url\":\"http://localhost:8000/api/v3/repos/testuser/pinned/git/blobs/8c0d02fadc02df29eefff5ad660a022b4a8e5efd\",\"html_url\":\"http://localhost:8000/testuser/pinned/blob/main/docs/guide.md\",\"download_url\":\"http://localhost:8000/testuser/pinned/raw/main/docs/guide.md\",\"encoding\":null,\"content\":null,\"_links\":{\"self\":\"http://localhost:8000/api/v3/repos/testuser/pinned/contents/docs/guide.md?ref=main\",\"git\":\"http://localhost:8000/api/v3/repos/testuser/pinned/git/blobs/8c0d02fadc02df29eefff5ad660a022b4a8e5efd\",\"html\":\"http://localhost:8000/testuser/pinned/blob/main/docs/guide.md\"}},{\"type\":\"file\",\"size\":0,\"name\":\"z-last.txt\",\"path\":\"docs/z-last.txt\",\"sha\":\"79c53955ef856f16f2107446bc721c8879a1bd2e\",\"url\":\"http://localhost:8000/api/v3/repos/testuser/pinned/contents/docs/z-last.txt?ref=main\",\"git_url\":\"http://localhost:8000/api/v3/repos/testuser/pinned/git/blobs/79c53955ef856f16f2107446bc721c8879a1bd2e\",\"html_url\":\"http://localhost:8000/testuser/pinned/blob/main/docs/z-last.txt\",\"download_url\":\"http://localhost:8000/testuser/pinned/raw/main/docs/z-last.txt\",\"encoding\":null,\"content\":null,\"_links\":{\"self\":\"http://localhost:8000/api/v3/repos/testuser/pinned/contents/docs/z-last.txt?ref=main\",\"git\":\"http://localhost:8000/api/v3/repos/testuser/pinned/git/blobs/79c53955ef856f16f2107446bc721c8879a1bd2e\",\"html\":\"http://localhost:8000/testuser/pinned/blob/main/docs/z-last.txt\"}}]",
+  "content_type": "application/json",
+  "status": 200
+ },
+ "/api/v3/repos/testuser/pinned/contents/docs/": {
+  "body": "[{\"type\":\"file\",\"size\":0,\"name\":\"guide.md\",\"path\":\"docs//guide.md\",\"sha\":\"8c0d02fadc02df29eefff5ad660a022b4a8e5efd\",\"url\":\"http://localhost:8000/api/v3/repos/testuser/pinned/contents/docs//guide.md?ref=main\",\"git_url\":\"http://localhost:8000/api/v3/repos/testuser/pinned/git/blobs/8c0d02fadc02df29eefff5ad660a022b4a8e5efd\",\"html_url\":\"http://localhost:8000/testuser/pinned/blob/main/docs//guide.md\",\"download_url\":\"http://localhost:8000/testuser/pinned/raw/main/docs//guide.md\",\"encoding\":null,\"content\":null,\"_links\":{\"self\":\"http://localhost:8000/api/v3/repos/testuser/pinned/contents/docs//guide.md?ref=main\",\"git\":\"http://localhost:8000/api/v3/repos/testuser/pinned/git/blobs/8c0d02fadc02df29eefff5ad660a022b4a8e5efd\",\"html\":\"http://localhost:8000/testuser/pinned/blob/main/docs//guide.md\"}},{\"type\":\"file\",\"size\":0,\"name\":\"z-last.txt\",\"path\":\"docs//z-last.txt\",\"sha\":\"79c53955ef856f16f2107446bc721c8879a1bd2e\",\"url\":\"http://localhost:8000/api/v3/repos/testuser/pinned/contents/docs//z-last.txt?ref=main\",\"git_url\":\"http://localhost:8000/api/v3/repos/testuser/pinned/git/blobs/79c53955ef856f16f2107446bc721c8879a1bd2e\",\"html_url\":\"http://localhost:8000/testuser/pinned/blob/main/docs//z-last.txt\",\"download_url\":\"http://localhost:8000/testuser/pinned/raw/main/docs//z-last.txt\",\"encoding\":null,\"content\":null,\"_links\":{\"self\":\"http://localhost:8000/api/v3/repos/testuser/pinned/contents/docs//z-last.txt?ref=main\",\"git\":\"http://localhost:8000/api/v3/repos/testuser/pinned/git/blobs/79c53955ef856f16f2107446bc721c8879a1bd2e\",\"html\":\"http://localhost:8000/testuser/pinned/blob/main/docs//z-last.txt\"}}]",
+  "content_type": "application/json",
+  "status": 200
+ },
+ "/api/v3/repos/testuser/pinned/contents/docs/guide.md?ref=<commit>": {
+  "body": "{\"type\":\"file\",\"size\":8,\"name\":\"guide.md\",\"path\":\"docs/guide.md\",\"sha\":\"8c0d02fadc02df29eefff5ad660a022b4a8e5efd\",\"url\":\"http://localhost:8000/api/v3/repos/testuser/pinned/contents/docs/guide.md?ref=7b36232b4c889dc5de616a7be4f30f6b6903d4d6\",\"git_url\":\"http://localhost:8000/api/v3/repos/testuser/pinned/git/blobs/8c0d02fadc02df29eefff5ad660a022b4a8e5efd\",\"html_url\":\"http://localhost:8000/testuser/pinned/blob/7b36232b4c889dc5de616a7be4f30f6b6903d4d6/docs/guide.md\",\"download_url\":\"http://localhost:8000/testuser/pinned/raw/7b36232b4c889dc5de616a7be4f30f6b6903d4d6/docs/guide.md\",\"encoding\":\"base64\",\"content\":\"IyBHdWlkZQo=\",\"_links\":{\"self\":\"http://localhost:8000/api/v3/repos/testuser/pinned/contents/docs/guide.md?ref=7b36232b4c889dc5de616a7be4f30f6b6903d4d6\",\"git\":\"http://localhost:8000/api/v3/repos/testuser/pinned/git/blobs/8c0d02fadc02df29eefff5ad660a022b4a8e5efd\",\"html\":\"http://localhost:8000/testuser/pinned/blob/7b36232b4c889dc5de616a7be4f30f6b6903d4d6/docs/guide.md\"}}",
+  "content_type": "application/json",
+  "status": 200
+ },
+ "/api/v3/repos/testuser/pinned/contents/docs/missing.txt": {
+  "body": "{\"message\":\"Not Found\",\"documentation_url\":\"https://docs.github.com/rest\"}",
+  "content_type": "application/json",
+  "status": 404
+ },
+ "/api/v3/repos/testuser/pinned/contents/docs?ref=v1": {
+  "body": "[{\"type\":\"file\",\"size\":0,\"name\":\"guide.md\",\"path\":\"docs/guide.md\",\"sha\":\"8c0d02fadc02df29eefff5ad660a022b4a8e5efd\",\"url\":\"http://localhost:8000/api/v3/repos/testuser/pinned/contents/docs/guide.md?ref=v1\",\"git_url\":\"http://localhost:8000/api/v3/repos/testuser/pinned/git/blobs/8c0d02fadc02df29eefff5ad660a022b4a8e5efd\",\"html_url\":\"http://localhost:8000/testuser/pinned/blob/v1/docs/guide.md\",\"download_url\":\"http://localhost:8000/testuser/pinned/raw/v1/docs/guide.md\",\"encoding\":null,\"content\":null,\"_links\":{\"self\":\"http://localhost:8000/api/v3/repos/testuser/pinned/contents/docs/guide.md?ref=v1\",\"git\":\"http://localhost:8000/api/v3/repos/testuser/pinned/git/blobs/8c0d02fadc02df29eefff5ad660a022b4a8e5efd\",\"html\":\"http://localhost:8000/testuser/pinned/blob/v1/docs/guide.md\"}},{\"type\":\"file\",\"size\":0,\"name\":\"z-last.txt\",\"path\":\"docs/z-last.txt\",\"sha\":\"79c53955ef856f16f2107446bc721c8879a1bd2e\",\"url\":\"http://localhost:8000/api/v3/repos/testuser/pinned/contents/docs/z-last.txt?ref=v1\",\"git_url\":\"http://localhost:8000/api/v3/repos/testuser/pinned/git/blobs/79c53955ef856f16f2107446bc721c8879a1bd2e\",\"html_url\":\"http://localhost:8000/testuser/pinned/blob/v1/docs/z-last.txt\",\"download_url\":\"http://localhost:8000/testuser/pinned/raw/v1/docs/z-last.txt\",\"encoding\":null,\"content\":null,\"_links\":{\"self\":\"http://localhost:8000/api/v3/repos/testuser/pinned/contents/docs/z-last.txt?ref=v1\",\"git\":\"http://localhost:8000/api/v3/repos/testuser/pinned/git/blobs/79c53955ef856f16f2107446bc721c8879a1bd2e\",\"html\":\"http://localhost:8000/testuser/pinned/blob/v1/docs/z-last.txt\"}}]",
+  "content_type": "application/json",
+  "status": 200
+ },
+ "/api/v3/repos/testuser/pinned/contents/exec.sh": {
+  "body": "{\"type\":\"file\",\"size\":18,\"name\":\"exec.sh\",\"path\":\"exec.sh\",\"sha\":\"4163036efa65bd4a469e752267498f01ea36a55c\",\"url\":\"http://localhost:8000/api/v3/repos/testuser/pinned/contents/exec.sh?ref=main\",\"git_url\":\"http://localhost:8000/api/v3/repos/testuser/pinned/git/blobs/4163036efa65bd4a469e752267498f01ea36a55c\",\"html_url\":\"http://localhost:8000/testuser/pinned/blob/main/exec.sh\",\"download_url\":\"http://localhost:8000/testuser/pinned/raw/main/exec.sh\",\"encoding\":\"base64\",\"content\":\"IyEvYmluL3NoCmVjaG8gaGkK\",\"_links\":{\"self\":\"http://localhost:8000/api/v3/repos/testuser/pinned/contents/exec.sh?ref=main\",\"git\":\"http://localhost:8000/api/v3/repos/testuser/pinned/git/blobs/4163036efa65bd4a469e752267498f01ea36a55c\",\"html\":\"http://localhost:8000/testuser/pinned/blob/main/exec.sh\"}}",
+  "content_type": "application/json",
+  "status": 200
+ },
+ "/api/v3/repos/testuser/pinned/contents/link": {
+  "body": "{\"type\":\"file\",\"size\":9,\"name\":\"link\",\"path\":\"link\",\"sha\":\"42061c01a1c70097d1e4579f29a5adf40abdec95\",\"url\":\"http://localhost:8000/api/v3/repos/testuser/pinned/contents/link?ref=main\",\"git_url\":\"http://localhost:8000/api/v3/repos/testuser/pinned/git/blobs/42061c01a1c70097d1e4579f29a5adf40abdec95\",\"html_url\":\"http://localhost:8000/testuser/pinned/blob/main/link\",\"download_url\":\"http://localhost:8000/testuser/pinned/raw/main/link\",\"encoding\":\"base64\",\"content\":\"UkVBRE1FLm1k\",\"_links\":{\"self\":\"http://localhost:8000/api/v3/repos/testuser/pinned/contents/link?ref=main\",\"git\":\"http://localhost:8000/api/v3/repos/testuser/pinned/git/blobs/42061c01a1c70097d1e4579f29a5adf40abdec95\",\"html\":\"http://localhost:8000/testuser/pinned/blob/main/link\"}}",
+  "content_type": "application/json",
+  "status": 200
+ },
+ "/api/v3/repos/testuser/pinned/contents/missing.txt": {
+  "body": "{\"message\":\"Not Found\",\"documentation_url\":\"https://docs.github.com/rest\"}",
+  "content_type": "application/json",
+  "status": 404
+ },
+ "/api/v3/repos/testuser/pinned/contents/sub": {
+  "body": "{\"message\":\"Not Found\",\"documentation_url\":\"https://docs.github.com/rest\"}",
+  "content_type": "application/json",
+  "status": 404
+ },
+ "/api/v3/repos/testuser/pinned/readme": {
+  "body": "{\"type\":\"file\",\"size\":6,\"name\":\"README.md\",\"path\":\"README.md\",\"sha\":\"ce013625030ba8dba906f756967f9e9ca394464a\",\"url\":\"http://localhost:8000/api/v3/repos/testuser/pinned/contents/README.md?ref=main\",\"git_url\":\"http://localhost:8000/api/v3/repos/testuser/pinned/git/blobs/ce013625030ba8dba906f756967f9e9ca394464a\",\"html_url\":\"http://localhost:8000/testuser/pinned/blob/main/README.md\",\"download_url\":\"http://localhost:8000/testuser/pinned/raw/main/README.md\",\"encoding\":\"base64\",\"content\":\"aGVsbG8K\",\"_links\":{\"self\":\"http://localhost:8000/api/v3/repos/testuser/pinned/contents/README.md?ref=main\",\"git\":\"http://localhost:8000/api/v3/repos/testuser/pinned/git/blobs/ce013625030ba8dba906f756967f9e9ca394464a\",\"html\":\"http://localhost:8000/testuser/pinned/blob/main/README.md\"}}",
+  "content_type": "application/json",
+  "status": 200
+ },
+ "/api/v3/repos/testuser/pinned/readme/docs": {
+  "body": "{\"message\":\"Not Found\",\"documentation_url\":\"https://docs.github.com/rest\"}",
+  "content_type": "application/json",
+  "status": 404
+ },
+ "/api/v3/repos/testuser/pinned/readme?ref=v1": {
+  "body": "{\"type\":\"file\",\"size\":6,\"name\":\"README.md\",\"path\":\"README.md\",\"sha\":\"ce013625030ba8dba906f756967f9e9ca394464a\",\"url\":\"http://localhost:8000/api/v3/repos/testuser/pinned/contents/README.md?ref=v1\",\"git_url\":\"http://localhost:8000/api/v3/repos/testuser/pinned/git/blobs/ce013625030ba8dba906f756967f9e9ca394464a\",\"html_url\":\"http://localhost:8000/testuser/pinned/blob/v1/README.md\",\"download_url\":\"http://localhost:8000/testuser/pinned/raw/v1/README.md\",\"encoding\":\"base64\",\"content\":\"aGVsbG8K\",\"_links\":{\"self\":\"http://localhost:8000/api/v3/repos/testuser/pinned/contents/README.md?ref=v1\",\"git\":\"http://localhost:8000/api/v3/repos/testuser/pinned/git/blobs/ce013625030ba8dba906f756967f9e9ca394464a\",\"html\":\"http://localhost:8000/testuser/pinned/blob/v1/README.md\"}}",
+  "content_type": "application/json",
+  "status": 200
+ },
+ "/testuser/pinned/raw/<commit>/bin.dat": {
+  "body": "\u0000\u0001binary\u00ff\n",
+  "content_type": "text/plain; charset=utf-8",
+  "status": 200
+ },
+ "/testuser/pinned/raw/main/README.md": {
+  "body": "hello\n",
+  "content_type": "text/plain; charset=utf-8",
+  "status": 200
+ },
+ "/testuser/pinned/raw/main/link": {
+  "body": "README.md",
+  "content_type": "text/plain; charset=utf-8",
+  "status": 200
+ },
+ "/testuser/pinned/raw/main/missing.txt": {
+  "body": "{\"message\":\"Not Found\",\"documentation_url\":\"https://docs.github.com/rest\"}",
+  "content_type": "application/json",
+  "status": 404
+ },
+ "/testuser/pinned/raw/no-such-ref/README.md": {
+  "body": "{\"message\":\"Not Found\",\"documentation_url\":\"https://docs.github.com/rest\"}",
+  "content_type": "application/json",
+  "status": 404
+ },
+ "/testuser/pinned/raw/v1-annotated/exec.sh": {
+  "body": "#!/bin/sh\necho hi\n",
+  "content_type": "text/plain; charset=utf-8",
+  "status": 200
+ },
+ "/testuser/pinned/raw/v1/docs/guide.md": {
+  "body": "# Guide\n",
+  "content_type": "text/plain; charset=utf-8",
+  "status": 200
+ }
+}

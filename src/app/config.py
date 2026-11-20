@@ -1,4 +1,5 @@
 import os
+
 from pydantic_settings import BaseSettings
 
 
@@ -11,21 +12,55 @@ class Settings(BaseSettings):
 
     # SQLite database URL
     DATABASE_URL: str = ""
-    SQLITE_BUSY_TIMEOUT_MS: int = 5000
-    SQLITE_WRITE_RETRY_ATTEMPTS: int = 2
+    # How long a writer waits for SQLite's single writer lock before the
+    # request fails with 503 "database is locked". Under a dozen runners and
+    # parallel clients on a loaded machine, lock waits ran past 5 s (up to
+    # 8.5 s observed); waiting is better than failing a write.
+    SQLITE_BUSY_TIMEOUT_MS: int = 30000
+    # Log a write transaction that holds SQLite's writer lock this long
+    # (app/database_diag.py).
+    SQLITE_SLOW_WRITE_LOG_MS: int = 1000
+    # Log the event loop running a timer this late (app/database_diag.py).
+    EVENT_LOOP_LAG_LOG_MS: int = 500
+    # Pooled connections to a file database. A request holds one from its
+    # first query (authentication) until it ends, and WAL lets readers run
+    # side by side, so the pool, not SQLite, capped concurrency: at
+    # SQLAlchemy's default 5 + 10, a dozen runners polling and posting logs
+    # used all 15 and every other request queued for one.
+    SQLITE_POOL_SIZE: int = 20
+    SQLITE_MAX_OVERFLOW: int = 40
+    SQLITE_WRITE_RETRY_ATTEMPTS: int = 5
+    # Requests per token (or client address) per hour that the rate-limit
+    # headers and GET /rate_limit report, as github.com does. Nothing is
+    # refused at zero, but a client that paces itself on the headers waits
+    # for the reset; a large value keeps a busy test suite from doing that.
+    RATE_LIMIT: int = 5000
     SQLITE_WRITE_RETRY_DELAY_MS: int = 100
 
     # Secret key for JWT/session signing
-    SECRET_KEY: str = "change-me-in-production"
+    SECRET_KEY: str = "change-me-in-production"  # noqa: S105 - documented development default; deployments set it
 
     # Admin credentials (created on first startup)
     SEED_DATA: bool = True
     ADMIN_USERNAME: str = "admin"
-    ADMIN_PASSWORD: str = "admin"
-    DEFAULT_ADMIN_TOKEN: str = "ghp_admin_default_token"
+    ADMIN_PASSWORD: str = "admin"  # noqa: S105 - documented development default; deployments set it
+    DEFAULT_ADMIN_TOKEN: str = "ghp_admin_default_token"  # noqa: S105 - documented development default; deployments set it
 
     # Hostname for Caddy TLS / gh CLI integration
     HOSTNAME: str = "ghemu.local"
+    # Host names whose requests use github.com's raw path shape
+    # (/<owner>/<repo>/<ref>/<path>); see app/middleware/raw_host.py.
+    # Only matters on a machine that resolves the name to this emulator and
+    # trusts the emulator's certificate for it.
+    RAW_CONTENT_HOSTS: str = "raw.githubusercontent.com"
+    # The real raw.githubusercontent.com's IP address, looked up before this
+    # machine started resolving the name to the emulator. When set, a raw
+    # request for a repository the emulator does not have is fetched from
+    # there, so a job that downloads a public file keeps working.
+    RAW_CONTENT_UPSTREAM_ADDR: str = ""
+    # The largest body taken from that upstream fetch; a larger one is
+    # answered with 502 instead of being held in memory.
+    RAW_CONTENT_UPSTREAM_MAX_BYTES: int = 100 * 1024 * 1024
 
     # Where the upstream runner's `uses:` actions are resolved and fetched
     # from. The emulator does both on the runner's behalf: it resolves the
@@ -39,6 +74,12 @@ class Settings(BaseSettings):
     # A claimed job whose runner has not started any step within this many
     # seconds goes back to the queue: the claim response was lost.
     RUNNER_CLAIM_ACK_SECONDS: int = 120
+
+    # Limits on an artifact uploaded through the Actions results service
+    # (upload-artifact@v4+): the bytes of one uploaded blob, and of the files
+    # a zip expands to, and the entries in one block list (Azure's own limit).
+    ARTIFACT_MAX_BYTES: int = 10 * 1024 ** 3
+    ARTIFACT_MAX_BLOCKS: int = 50_000
 
     # The memory watchdog (app/services/memory_watch.py). The process has
     # been OOM-killed at 1.5 GiB three times with nothing naming a cause; it
@@ -59,7 +100,7 @@ class Settings(BaseSettings):
     # Resettable Actions OIDC issuer.  The key is generated in-process by the
     # emulator; this is intentionally not a production identity provider.
     OIDC_ISSUER: str = ""
-    ACTIONS_OIDC_REQUEST_TOKEN: str = "fullsend-action-request"
+    ACTIONS_OIDC_REQUEST_TOKEN: str = "fullsend-action-request"  # noqa: S105 - documented development default; deployments set it
 
     # Jobs assigned to a runner that stops heartbeating are returned to the
     # queue after this interval so a replacement runner can claim them.

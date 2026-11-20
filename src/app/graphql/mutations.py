@@ -8,17 +8,19 @@ from enum import Enum
 from typing import Annotated, Optional, Union
 
 import strawberry
-from strawberry.types import Info
-from sqlalchemy import select
-
-from app.services.cross_repo_pulls import same_repository_head
-from app.graphql.types.user import GitHubUser, user_from_model
-from app.graphql.types.repository import Repository, repository_from_model
-from app.graphql.types.issue import Issue, issue_from_model, IssueComment, comment_from_model
-from app.graphql.types.pull_request import Commit, PullRequest, pull_request_from_model
-from app.graphql.types.minimizable import Minimizable
-from app.graphql.types.review_thread import MINIMIZED_REASONS, PullRequestReviewThread
 from graphql import GraphQLError
+from sqlalchemy import select
+from strawberry.types import Info
+
+from app.graphql.types.enums import IssueClosedStateReason
+from app.graphql.types.issue import Issue, IssueComment, comment_from_model, issue_from_model
+from app.graphql.types.minimizable import Minimizable
+from app.graphql.types.node import Node
+from app.graphql.types.pull_request import Commit, PullRequest, pull_request_from_model
+from app.graphql.types.repository import Repository, repository_from_model
+from app.graphql.types.review_thread import MINIMIZED_REASONS, PullRequestReviewThread
+from app.graphql.types.user import GitHubUser, user_from_model
+from app.services.cross_repo_pulls import same_repository_head
 
 logger = logging.getLogger("github_emulator.graphql.mutations")
 
@@ -36,7 +38,7 @@ def _decode_node_id(node_id: str) -> int:
         _, _, id_str = decoded.partition(":")
         return int(id_str)
     except Exception:
-        raise ValueError(f"Invalid node ID: {node_id}")
+        raise ValueError(f"Invalid node ID: {node_id}") from None
 
 
 # ---------------------------------------------------------------------------
@@ -52,6 +54,14 @@ class CreateIssueInput:
     label_ids: Optional[list[strawberry.ID]] = None
     milestone_id: Optional[strawberry.ID] = None
     client_mutation_id: Optional[str] = None
+    # GitHub's input also has these, and `gh issue create` sends projectIds
+    # even when empty. Accepted so such requests validate; projects, issue
+    # templates, issue types and sub-issues are not modelled, so ignored.
+    project_ids: Optional[list[strawberry.ID]] = None
+    project_v2_ids: Optional[list[strawberry.ID]] = None
+    issue_template: Optional[str] = None
+    issue_type_id: Optional[strawberry.ID] = None
+    parent_issue_id: Optional[strawberry.ID] = None
 
 
 @strawberry.input
@@ -69,7 +79,8 @@ class UpdateIssueInput:
 @strawberry.input
 class CloseIssueInput:
     issue_id: strawberry.ID
-    state_reason: Optional[str] = None
+    state_reason: Optional[IssueClosedStateReason] = None
+    duplicate_issue_id: Optional[strawberry.ID] = None
     client_mutation_id: Optional[str] = None
 
 
@@ -267,7 +278,8 @@ class AddCommentEdge:
 @strawberry.type
 class AddCommentPayload:
     comment_edge: Optional[AddCommentEdge] = None
-    subject: Optional[Issue] = None
+    # GitHub's subject is a Node: the Issue or PullRequest the comment is on.
+    subject: Optional[Node] = None
     client_mutation_id: Optional[str] = None
 
 
@@ -426,6 +438,35 @@ def _decode_typed_node_id(node_id: str) -> tuple[str, int] | None:
         return kind, int(raw)
     except Exception:
         return None
+
+
+async def _subject_issue(db, node_id: str):
+    """The issue row behind a comment or reaction subject, and the pull
+    request when the subject is one; ``(None, None)`` when there is none.
+
+    GitHub accepts an Issue or a PullRequest node id as the subject of
+    ``addComment`` and ``addReaction``. A pull request's conversation lives
+    on its backing issue here, so a PullRequest id resolves to that issue.
+    The caller reports a missing subject with the id it was given, so a
+    missing and a hidden subject fail the same way.
+    """
+    from app.models.issue import Issue as IssueModel
+    from app.models.pull_request import PullRequest as PRModel
+
+    decoded = _decode_typed_node_id(node_id)
+    pr = None
+    if decoded and decoded[0] == "PullRequest":
+        pr = (await db.execute(select(PRModel).where(PRModel.id == decoded[1]))).scalar_one_or_none()
+        if pr is None:
+            return None, None
+        issue_id = pr.issue_id
+    else:
+        try:
+            issue_id = _decode_node_id(node_id)
+        except Exception:
+            return None, None
+    issue = (await db.execute(select(IssueModel).where(IssueModel.id == issue_id))).scalar_one_or_none()
+    return issue, pr
 
 
 async def _review_thread_root(info: Info, thread_id: str, mutation: str):
@@ -628,7 +669,7 @@ class Mutation:
         self, info: Info, input: AddLabelsToLabelableInput
     ) -> AddLabelsToLabelablePayload:
         """Add labels using GitHub's labelable mutation used by ``gh pr edit``."""
-        from app.models.issue import Issue as IssueModel, IssueLabel
+        from app.models.issue import Issue as IssueModel
         from app.models.label import Label as LabelModel
         from app.models.pull_request import PullRequest as PRModel
 
@@ -692,7 +733,8 @@ class Mutation:
     @strawberry.mutation
     async def create_issue(self, info: Info, input: CreateIssueInput) -> CreateIssuePayload:
         """Create a new issue on a repository."""
-        from app.models.issue import Issue as IssueModel, IssueLabel, IssueAssignee
+        from app.models.issue import Issue as IssueModel
+        from app.models.issue import IssueAssignee, IssueLabel
         from app.models.label import Label as LabelModel
         from app.models.milestone import Milestone as MilestoneModel
         from app.models.repository import Repository as RepoModel
@@ -710,8 +752,10 @@ class Mutation:
             raise ValueError(f"Repository with id {repo_id} not found")
 
         # Assign next issue number
-        issue_number = repo.next_issue_number
-        repo.next_issue_number += 1
+        from app.services.issue_number import allocate_issue_number
+
+        # Atomic, and counted as open as REST does.
+        issue_number = await allocate_issue_number(db, repo)
 
         new_issue = IssueModel(
             repo_id=repo.id,
@@ -738,9 +782,6 @@ class Mutation:
             for assignee_id in input.assignee_ids:
                 db.add(IssueAssignee(issue_id=new_issue.id, user_id=_decode_node_id(assignee_id)))
 
-        # Increment open issues count
-        repo.open_issues_count += 1
-
         await db.commit()
         await db.refresh(new_issue)
 
@@ -752,7 +793,8 @@ class Mutation:
     @strawberry.mutation
     async def update_issue(self, info: Info, input: UpdateIssueInput) -> UpdateIssuePayload:
         """Update an existing issue."""
-        from app.models.issue import Issue as IssueModel, IssueLabel, IssueAssignee
+        from app.models.issue import Issue as IssueModel
+        from app.models.issue import IssueAssignee, IssueLabel
 
         _require_auth(info)
         db = info.context["db"]
@@ -835,12 +877,31 @@ class Mutation:
         if not issue:
             raise ValueError(f"Issue with id {issue_id} not found")
 
+        # GitHub closes as COMPLETED unless told otherwise; naming the
+        # original issue closes as DUPLICATE. REST reports it in lowercase.
+        state_reason = input.state_reason
+        if input.duplicate_issue_id is not None:
+            # Only an Issue node id names an issue, and one the caller cannot
+            # see answers as missing, so the field cannot probe hidden issues.
+            decoded = _decode_typed_node_id(input.duplicate_issue_id)
+            duplicate_of = None
+            if decoded and decoded[0] == "Issue":
+                duplicate_of = (
+                    await db.execute(select(IssueModel).where(IssueModel.id == decoded[1]))
+                ).scalar_one_or_none()
+                duplicate_of = await _visible_or_none(
+                    info, duplicate_of, duplicate_of.repo_id if duplicate_of else None
+                )
+            if duplicate_of is None or duplicate_of.id == issue.id:
+                raise ValueError(f"Issue with id {input.duplicate_issue_id} not found")
+            state_reason = state_reason or IssueClosedStateReason.DUPLICATE
+        state_reason = state_reason or IssueClosedStateReason.COMPLETED
+
         if issue.state == "open":
             issue.state = "closed"
             issue.closed_at = datetime.now(timezone.utc)
             issue.closed_by_id = current_user.id
-            if input.state_reason:
-                issue.state_reason = input.state_reason
+            issue.state_reason = state_reason.value.lower()
 
             # Decrement open issues count
             repo_result = await db.execute(
@@ -902,21 +963,14 @@ class Mutation:
     async def add_comment(self, info: Info, input: AddCommentInput) -> AddCommentPayload:
         """Add a comment to an issue or pull request."""
         from app.models.comment import IssueComment as IssueCommentModel
-        from app.models.issue import Issue as IssueModel
 
         current_user = _require_auth(info)
         db = info.context["db"]
 
-        subject_id = _decode_node_id(input.subject_id)
-
-        # Verify the issue exists
-        result = await db.execute(
-            select(IssueModel).where(IssueModel.id == subject_id)
-        )
-        issue = result.scalar_one_or_none()
+        issue, pull = await _subject_issue(db, input.subject_id)
         issue = await _writable_or_none(info, issue, issue.repo_id if issue else None, _issue_scopes(issue))
         if not issue:
-            raise ValueError(f"Subject with id {subject_id} not found")
+            raise ValueError(f"Subject with id {input.subject_id} not found")
 
         new_comment = IssueCommentModel(
             issue_id=issue.id,
@@ -929,7 +983,8 @@ class Mutation:
 
         return AddCommentPayload(
             comment_edge=AddCommentEdge(node=comment_from_model(new_comment)),
-            subject=issue_from_model(issue),
+            # The subject the caller named: the pull request for a PullRequest id.
+            subject=pull_request_from_model(pull) if pull is not None else issue_from_model(issue),
             client_mutation_id=input.client_mutation_id,
         )
 
@@ -938,10 +993,10 @@ class Mutation:
         self, info: Info, input: CreatePullRequestInput
     ) -> CreatePullRequestPayload:
         """Create a new pull request."""
+        from app.models.branch import Branch
         from app.models.issue import Issue as IssueModel
         from app.models.pull_request import PullRequest as PRModel
         from app.models.repository import Repository as RepoModel
-        from app.models.branch import Branch
 
         current_user = _require_auth(info)
         db = info.context["db"]
@@ -1006,8 +1061,10 @@ class Mutation:
         base_sha = base_branch.sha if base_branch else "0" * 40
 
         # Allocate issue number
-        issue_number = repo.next_issue_number
-        repo.next_issue_number += 1
+        from app.services.issue_number import allocate_issue_number
+
+        # Atomic, and counted as open as REST does.
+        issue_number = await allocate_issue_number(db, repo)
 
         # Create the backing issue
         new_issue = IssueModel(
@@ -1035,8 +1092,6 @@ class Mutation:
             last_push_by_id=current_user.id,
         )
         db.add(new_pr)
-
-        repo.open_issues_count += 1
 
         if head_repo.id != repo.id:
             # The base repository carries the fork's head as
@@ -1083,8 +1138,8 @@ class Mutation:
         self, info: Info, input: MergePullRequestInput
     ) -> MergePullRequestPayload:
         """Merge a pull request."""
-        from app.models.pull_request import PullRequest as PRModel
         from app.models.issue import Issue as IssueModel
+        from app.models.pull_request import PullRequest as PRModel
         from app.models.repository import Repository as RepoModel
 
         current_user = _require_auth(info)
@@ -1269,14 +1324,13 @@ class Mutation:
         current_user = _require_auth(info)
         db = info.context["db"]
 
-        subject_id = _decode_node_id(input.subject_id)
-        from app.models.issue import Issue as IssueModel
-
         # Reactions here are on issues. A missing subject and one in a hidden
-        # repository fail alike, so neither reveals which hidden issues exist.
-        subject = (await db.execute(select(IssueModel).where(IssueModel.id == subject_id))).scalar_one_or_none()
+        # repository fail alike, with the id the caller gave, so neither
+        # reveals which hidden issues exist.
+        subject, _pull = await _subject_issue(db, input.subject_id)
         if await _writable_or_none(info, subject, subject.repo_id if subject else None, _issue_scopes(subject)) is None:
-            raise ValueError(f"Subject with id {subject_id} not found")
+            raise ValueError(f"Subject with id {input.subject_id} not found")
+        subject_id = subject.id
 
         # Determine reactable type by trying to look up the subject
         # Default to "issue" as the most common case
@@ -1367,6 +1421,7 @@ class Mutation:
         is_private = input.visibility.lower() == "private"
 
         import os
+
         from app.config import settings
 
         owner_login = current_user.login
@@ -1411,8 +1466,8 @@ class Mutation:
         self, info: Info, input: ClosePullRequestInput
     ) -> ClosePullRequestPayload:
         """Close a pull request."""
-        from app.models.pull_request import PullRequest as PRModel
         from app.models.issue import Issue as IssueModel
+        from app.models.pull_request import PullRequest as PRModel
         from app.models.repository import Repository as RepoModel
 
         current_user = _require_auth(info)
@@ -1464,8 +1519,8 @@ class Mutation:
         self, info: Info, input: ReopenPullRequestInput
     ) -> ReopenPullRequestPayload:
         """Reopen a closed pull request."""
-        from app.models.pull_request import PullRequest as PRModel
         from app.models.issue import Issue as IssueModel
+        from app.models.pull_request import PullRequest as PRModel
         from app.models.repository import Repository as RepoModel
 
         _require_auth(info)
@@ -1521,8 +1576,8 @@ class Mutation:
         self, info: Info, input: UpdatePullRequestInput
     ) -> UpdatePullRequestPayload:
         """Update a pull request's title, body, or base branch."""
-        from app.models.pull_request import PullRequest as PRModel
         from app.models.issue import Issue as IssueModel
+        from app.models.pull_request import PullRequest as PRModel
 
         _require_auth(info)
         db = info.context["db"]
@@ -1609,7 +1664,7 @@ class Mutation:
         """
         from app.git.bare_repo import MissingPathError, StaleBranchError, commit_files
         from app.models.repository import Repository as RepoModel
-        from app.services.branch_service import record_branch
+        from app.services.branch_service import record_moved_branch
 
         current_user = _require_auth(info)
         db = info.context["db"]
@@ -1635,6 +1690,10 @@ class Mutation:
                 f"{current_user.login} does not have the correct permissions to execute `CreateCommitOnBranch`",
             )
 
+        from app.services.repository_lock import hold_repository_lock
+
+        # One ref write to this repository at a time, until the response is sent.
+        await hold_repository_lock(repo.id)
         changes = input.file_changes or FileChanges()
         additions: list[tuple[str, bytes]] = []
         for addition in changes.additions or []:
@@ -1672,9 +1731,7 @@ class Mutation:
         except MissingPathError as exc:
             raise _typed_error("UNPROCESSABLE", f"A path was requested for deletion which does not exist as of commit oid `{input.expected_head_oid}`: {exc}") from None
 
-        await record_branch(db, repo, branch, oid)
-        repo.pushed_at = datetime.now(timezone.utc)
-        await db.commit()
+        await record_moved_branch(db, repo, branch, input.expected_head_oid, oid)
 
         return CreateCommitOnBranchPayload(
             commit=Commit(oid=oid, message=message),

@@ -8,15 +8,20 @@ import tempfile
 from datetime import datetime, timezone
 from typing import Annotated, Optional
 
-logger = logging.getLogger(__name__)
-
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import JSONResponse, Response
-from sqlalchemy import select, func as sa_func
-from sqlalchemy.orm import joinedload, raiseload, selectinload
+from sqlalchemy import func as sa_func
+from sqlalchemy import inspect as sa_inspect
+from sqlalchemy import select
+from sqlalchemy.orm import joinedload, raiseload
 
 from app.api.deps import (
-    AuthUser, CurrentUser, DbSession, get_current_user, get_repo_or_404, installation_token_covers,
+    AuthUser,
+    CurrentUser,
+    DbSession,
+    get_current_user,
+    get_repo_or_404,
+    installation_token_covers,
 )
 from app.api.pagination import pagination_links
 from app.config import settings
@@ -34,13 +39,16 @@ from app.models.issue import Issue
 from app.models.pull_request import PullRequest
 from app.models.repository import Repository
 from app.models.user import User
-from app.schemas.user import SimpleUser, _fmt_dt, _make_node_id
+from app.schemas.label import LabelResponse
 from app.schemas.pull_request import (
     PRMergeResponse,
     PRResponse,
     PullCommitResponse,
     PullFileResponse,
 )
+from app.schemas.user import SimpleUser, _fmt_dt, _make_node_id
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(tags=["pulls"])
 diff_router = APIRouter(tags=["pulls"])
@@ -125,7 +133,7 @@ def _repo_owner_json(repository: Repository, base_url: str):
     return SimpleUser.from_db(owner, base_url).model_dump()
 
 
-def _pr_query(*, include_issue_labels: bool = False):
+def _pr_query(*, include_issue_labels: bool = True):
     """Return a base select for PullRequest with eager-loaded relationships."""
     options = [
         raiseload("*"),
@@ -178,6 +186,17 @@ def _pr_json(pr: PullRequest, base_url: str, *, include_stats: bool = True) -> d
         SimpleUser.from_db(u, base_url).model_dump()
         for u in (getattr(issue, "assignees", None) or [])
     ]
+    # The labels live on the pull request's issue. They were hardcoded empty,
+    # so a client reading a pull request's labels (fullsend's ok-to-test gate)
+    # never saw a label added through issues/{n}/labels.
+    _pr_labels = (
+        [
+            LabelResponse.from_db(label, base_url, owner_login, repo_name).model_dump()
+            for label in issue.labels
+        ]
+        if "labels" not in sa_inspect(issue).unloaded
+        else []
+    )
 
     head_repo = pr.head_repository or repo
     head_ref = getattr(pr, "resolved_head_ref", pr.head_ref)
@@ -217,7 +236,7 @@ def _pr_json(pr: PullRequest, base_url: str, *, include_stats: bool = True) -> d
         "assignees": _pr_assignees,
         "requested_reviewers": [],
         "requested_teams": [],
-        "labels": [],
+        "labels": _pr_labels,
         "milestone": None,
         "draft": pr.draft,
         "commits_url": f"{pr_url}/commits",
@@ -747,9 +766,9 @@ async def create_pull(
         )
 
     # Create the associated issue
-    number = repository.next_issue_number
-    repository.next_issue_number = number + 1
-    repository.open_issues_count += 1
+    from app.services.issue_number import allocate_issue_number
+
+    number = await allocate_issue_number(db, repository)
 
     issue = Issue(
         repo_id=repository.id,

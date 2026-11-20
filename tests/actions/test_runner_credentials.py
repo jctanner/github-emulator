@@ -411,7 +411,11 @@ async def test_a_runner_cannot_replace_the_key_of_a_runner_in_another_repository
             },
             headers=attacker_headers,
         )
-        assert refused.status_code == 403
+        # The attacker is an ordinary runner in another repository: #31's
+        # scope filtering answers 404 (it cannot see the agent at all). A
+        # registration broker from another repository gets 403 below, and an
+        # ordinary runner in the same repository gets 403.
+        assert refused.status_code == 404
 
     # The victim keeps its key, and the attacker's runner was left alone.
     _assert_invalid_client(await _exchange(

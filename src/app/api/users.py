@@ -12,11 +12,12 @@ from app.api.deps import AuthUser, CurrentUser, DbSession
 from app.config import settings
 from app.middleware.error_handler import NotFoundError, ValidationError
 from app.models.import_job import ImportJob
-from app.models.user import User
 from app.models.token import PersonalAccessToken
+from app.models.user import User
 from app.schemas.user import UserCreate, UserResponse, UserUpdate
 from app.services.auth_service import hash_password
 from app.services.import_service import start_single_import
+from app.services.user_service import public_repo_counts
 
 router = APIRouter(tags=["users"])
 
@@ -34,7 +35,8 @@ class AdminRepoImportRequest(BaseModel):
 @router.get("/user", response_model=UserResponse)
 async def get_authenticated_user(user: AuthUser, db: DbSession):
     """Return the authenticated user's full profile."""
-    return UserResponse.from_db(user, BASE)
+    counts = await public_repo_counts(db, [user.id])
+    return UserResponse.from_db(user, BASE, counts.get(user.id, 0))
 
 
 @router.patch("/user")
@@ -45,7 +47,8 @@ async def update_authenticated_user(body: UserUpdate, user: AuthUser, db: DbSess
         setattr(user, key, value)
     await db.commit()
     await db.refresh(user)
-    return UserResponse.from_db(user, BASE)
+    counts = await public_repo_counts(db, [user.id])
+    return UserResponse.from_db(user, BASE, counts.get(user.id, 0))
 
 
 # ---- public user profile --------------------------------------------------
@@ -57,7 +60,8 @@ async def get_user(username: str, db: DbSession):
     user = result.scalar_one_or_none()
     if user is None:
         raise HTTPException(status_code=404, detail="Not Found")
-    return UserResponse.from_db(user, BASE)
+    counts = await public_repo_counts(db, [user.id])
+    return UserResponse.from_db(user, BASE, counts.get(user.id, 0))
 
 
 @router.get("/users", response_model=list[UserResponse])
@@ -75,7 +79,8 @@ async def list_users(
         .limit(per_page)
     )
     users = result.scalars().all()
-    return [UserResponse.from_db(u, BASE) for u in users]
+    counts = await public_repo_counts(db, [u.id for u in users])
+    return [UserResponse.from_db(u, BASE, counts.get(u.id, 0)) for u in users]
 
 
 # ---- admin helpers (not part of real GitHub API) ---------------------------
@@ -102,7 +107,8 @@ async def admin_create_user(body: UserCreate, db: DbSession):
     db.add(user)
     await db.commit()
     await db.refresh(user)
-    return UserResponse.from_db(user, BASE)
+    counts = await public_repo_counts(db, [user.id])
+    return UserResponse.from_db(user, BASE, counts.get(user.id, 0))
 
 
 @router.post("/admin/tokens", status_code=201)

@@ -141,7 +141,9 @@ async def test_creating_a_repository_gives_the_bot_no_repository_role(client, or
     assert created.status_code == 201
     permission = await client.get(f"{API}/repos/{org}/made-by-bot/collaborators/creator-app[bot]/permission",
                                   headers=auth_headers(admin_token))
-    assert permission.status_code == 404, permission.text
+    assert permission.status_code == 200, permission.text
+    assert permission.json()["permission"] == "none"
+    assert permission.json()["role_name"] == ""
     # It still administers and deletes the repository through the installation.
     assert (await client.patch(f"{API}/repos/{org}/made-by-bot", json={"description": "x"}, headers=bot)).status_code == 200
     assert (await client.delete(f"{API}/repos/{org}/made-by-bot", headers=bot)).status_code == 204

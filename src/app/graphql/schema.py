@@ -22,30 +22,31 @@ from typing import NewType
 import strawberry
 from strawberry.schema.config import StrawberryConfig
 
-from app.graphql.queries import Query
 from app.graphql.mutations import Mutation
-from app.graphql.types.stubs import ProjectV2ItemFieldSingleSelectValue
+from app.graphql.queries import Query
 from app.graphql.types.enums import (
-    RepositoryPrivacy,
-    RepositoryVisibility,
-    PullRequestMergeMethod,
+    CommentAuthorAssociation,
+    IssueClosedStateReason,
+    IssueFilters,
+    IssueOrder,
+    IssueOrderField,
     IssueState,
     IssueStateReason,
-    RepositoryOrderField,
-    OrderDirection,
-    RepositoryAffiliation,
-    SubscriptionState,
-    MergeStateStatus,
-    PullRequestReviewDecision,
-    CommentAuthorAssociation,
-    RepositoryOrder,
-    IssueOrderField,
-    IssueOrder,
-    IssueFilters,
-    LabelOrderField,
     LabelOrder,
+    LabelOrderField,
+    MergeStateStatus,
+    OrderDirection,
+    PullRequestMergeMethod,
+    PullRequestReviewDecision,
+    RepositoryAffiliation,
+    RepositoryOrder,
+    RepositoryOrderField,
+    RepositoryPrivacy,
+    RepositoryVisibility,
+    SubscriptionState,
 )
-
+from app.graphql.types.stubs import ProjectV2ItemFieldSingleSelectValue
+from app.graphql.types.user import Bot
 
 # Custom datetime scalar that always includes "Z" suffix (RFC 3339)
 GitHubDateTime = strawberry.scalar(
@@ -59,10 +60,13 @@ schema = strawberry.Schema(
     query=Query,
     mutation=Mutation,
     types=[
+        # Reachable only through the Actor interface, so listed here.
+        Bot,
         RepositoryPrivacy,
         RepositoryVisibility,
         PullRequestMergeMethod,
         IssueStateReason,
+        IssueClosedStateReason,
         RepositoryOrderField,
         OrderDirection,
         RepositoryAffiliation,

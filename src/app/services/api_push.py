@@ -16,11 +16,14 @@ import logging
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.middleware.error_handler import RetryableDatabaseError
 from app.models.issue import Issue
 from app.models.pull_request import PullRequest
 from app.models.repository import Repository
 from app.models.user import User
+from app.services.branch_service import commit_if_ref_unmoved
 from app.services.cross_repo_pulls import same_repository_head
+from app.services.git_service import full_ref, ref_sha
 
 logger = logging.getLogger("github_emulator.api_push")
 
@@ -37,35 +40,59 @@ async def after_api_commit(
     from app.services.merge_readiness_service import reevaluate_auto_merges
     from app.services.workflow_service import process_push_event
 
-    repository_id = repository.id
+    repository_id, user_id = repository.id, user.id
     # The route resolved the repository without its relationships (raiseload);
     # push processing reads its owner and organization, so load it afresh.
     repository = (await db.execute(
         select(Repository).where(Repository.id == repository_id).execution_options(populate_existing=True)
     )).scalar_one()
+    # Read now: a rollback below expires the loaded objects.
+    disk_path, full_name = repository.disk_path, repository.full_name
+
+    # This commit is a push whatever happened since, so its push activity is
+    # raised for its own before..after range. Once another writer has moved
+    # the branch past ``after``, that writer's push moves the pull request
+    # heads, and this older commit must not move them back.
+    current = await ref_sha(disk_path, full_ref(branch)) == after
+    if not current:
+        logger.info("%s:%s moved past %s before its push was processed", full_name, branch, after)
     try:
         await process_push_event(
             db, repository, user,
             before_sha=before, ref_name=branch, after_sha=after,
-            created=before is None, deleted=False,
+            created=before is None, deleted=False, update_heads=current,
         )
     except Exception:
         # The commit is made; a dispatch failure must not leave the pull
         # request heads below unrecorded (as after a git push).
-        logger.exception("push activity for %s:%s failed", repository.full_name, branch)
+        logger.exception("push activity for %s:%s failed", full_name, branch)
         await db.rollback()
-    heads = (await db.execute(
-        select(PullRequest).join(Issue, PullRequest.issue_id == Issue.id).where(
-            PullRequest.repo_id == repository_id,
-            PullRequest.head_ref == branch,
-            same_repository_head(repository_id),
-            Issue.state == "open",
+    if not current:
+        return
+
+    async def stage_heads() -> None:
+        heads = (await db.execute(
+            select(PullRequest).join(Issue, PullRequest.issue_id == Issue.id).where(
+                PullRequest.repo_id == repository_id,
+                PullRequest.head_ref == branch,
+                same_repository_head(repository_id),
+                Issue.state == "open",
+            )
+        )).scalars().all()
+        for pull_request in heads:
+            pull_request.head_sha = after
+            pull_request.last_push_by_id = user_id
+
+    # The contents write is already committed, so a lock that persists here
+    # must not turn it into a 503. The heads stay where they were and the
+    # next push to the branch moves them; that is logged.
+    try:
+        await commit_if_ref_unmoved(
+            db, repository_id=repository_id, disk_path=disk_path, ref=branch, after=after,
+            stage=stage_heads, label=f"pull request heads for {branch}",
         )
-    )).scalars().all()
-    for pull_request in heads:
-        pull_request.head_sha = after
-        pull_request.last_push_by_id = user.id
-    await db.commit()
+    except RetryableDatabaseError:
+        logger.warning("pull request heads for %s:%s left at their previous commit: database busy", full_name, branch)
     try:
         await reevaluate_auto_merges(db, repository_id)
     except Exception:

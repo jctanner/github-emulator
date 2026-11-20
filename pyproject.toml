@@ -44,3 +44,34 @@ include = ["app*"]
 asyncio_mode = "auto"
 testpaths = ["tests"]
 pythonpath = ["src"]
+
+[tool.ruff]
+target-version = "py311"
+line-length = 120
+src = ["src", "tests"]
+extend-exclude = ["src/frontend"]
+
+[tool.ruff.lint]
+# Enforced on the files a change touches (pre-commit and CI run on the diff
+# against main), so the set is one a contributor can meet in a file they
+# edit: pyflakes, syntax-level pycodestyle, import order, bugbear and bandit.
+select = ["E4", "E7", "E9", "F", "I", "B", "S"]
+ignore = [
+    "E501",  # long lines: no formatter yet
+    "B008",  # FastAPI's Depends()/Query() defaults are the framework's idiom
+    "S104",  # binding 0.0.0.0 is how the emulator is reached in a container
+    "S603",  # running git is this emulator's job; arguments are lists, no shell
+    "S607",  # likewise: git and caddy are found on PATH by design
+    "E712",  # SQLAlchemy filters need `column == True`, not `is True`
+]
+
+[tool.ruff.lint.per-file-ignores]
+# Tests assert, and use fixed fake credentials and temp paths on purpose.
+"tests/**" = ["S101", "S105", "S106", "S108", "S311"]
+# Strawberry resolves these string annotations itself (lazy forward types).
+"src/app/graphql/types/**" = ["F821"]
+# The expression lexer compares a variable named `token` with literals.
+"src/runners/emulator/runner.py" = ["S105"]
+
+[tool.ruff.lint.isort]
+known-first-party = ["app"]

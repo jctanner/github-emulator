@@ -118,6 +118,11 @@ Vagrant.configure("2") do |config|
       "RUNNER_REPO" => ENV.fetch("RUNNER_REPO", "admin/test-repo"),
       "RUNNER_NAME" => ENV.fetch("RUNNER_NAME", "vagrant-runner-1"),
       "RUNNER_LABELS" => ENV.fetch("RUNNER_LABELS", "self-hosted,linux,x64"),
+      # The default URL is an IP address, and the server's certificate names
+      # ghemu.local, so the Python runner cannot verify it. To verify, set
+      # GITHUB_EMULATOR_URL=https://ghemu.local and RUNNER_TLS_VERIFY=true,
+      # and add Caddy's root CA to the OS bundle (the unit's SSL_CERT_FILE).
+      "RUNNER_TLS_VERIFY" => ENV.fetch("RUNNER_TLS_VERIFY", "false"),
     }, inline: <<-SHELL
       set -eux
       export DEBIAN_FRONTEND=noninteractive
@@ -175,6 +180,8 @@ Environment=GITHUB_EMULATOR_TOKEN=${GITHUB_EMULATOR_TOKEN}
 Environment=RUNNER_REPO=${RUNNER_REPO}
 Environment=RUNNER_NAME=${RUNNER_NAME}
 Environment=RUNNER_LABELS=${RUNNER_LABELS}
+Environment=RUNNER_TLS_VERIFY=${RUNNER_TLS_VERIFY}
+Environment=SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt
 ExecStart=/usr/bin/python3 /opt/runner.py
 Restart=always
 RestartSec=5

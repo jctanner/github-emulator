@@ -11,21 +11,24 @@ Environment variables:
   RUNNER_NAME           - Runner name (default: hostname)
   RUNNER_LABELS         - Comma-separated labels (default: self-hosted,linux)
   RUNNER_WORKDIR        - Working directory for job execution (default: /tmp/runner-work)
+  RUNNER_TLS_VERIFY     - false to skip verifying the emulator's certificate
+                          (default true: httpx's certifi bundle, or the CA
+                          bundle SSL_CERT_FILE or SSL_CERT_DIR names instead;
+                          not the OS trust store)
 """
 
 import glob
-import io
-import logging
-import json
-import os
 import hashlib
+import io
+import json
+import logging
+import os
 import platform
 import re
+import selectors
 import shutil
 import signal
-import selectors
 import subprocess
-import sys
 import threading
 import time
 import zipfile
@@ -61,7 +64,7 @@ class JobCancelled(Exception):
         self.job_id = job_id
 RUNNER_NAME = os.environ.get("RUNNER_NAME", platform.node())
 LABELS = os.environ.get("RUNNER_LABELS", "self-hosted,linux").split(",")
-WORKDIR = os.environ.get("RUNNER_WORKDIR", "/tmp/runner-work")
+WORKDIR = os.environ.get("RUNNER_WORKDIR", "/tmp/runner-work")  # noqa: S108 - the runner image owns /tmp
 API = f"{EMULATOR_URL}/api/v3"
 
 # GitHub keeps the per-job temp directory beside the workspace, not inside it.
@@ -335,7 +338,7 @@ _EXPRESSION_RE = _ExpressionScanner()
 # did not run. The parser raises on one rather than quietly yielding empty,
 # which leaves the expression visible as literal text instead of turning a
 # missing renderer into a silently wrong value.
-_RUNNER_CONTEXT_ROOTS = ("steps", "inputs", "github", "runner")
+_RUNNER_CONTEXT_ROOTS = ("steps", "inputs", "github", "runner", "job")
 
 
 def _lookup_context_path(context: dict, path: str):
@@ -357,7 +360,20 @@ def _lookup_context_path(context: dict, path: str):
     return value
 
 
-def _github_context(job: dict | None, github_token: str = "") -> dict:
+def _step_files(number) -> dict:
+    """Where _run_step puts a step's command files and the event payload."""
+    state = Path(WORKDIR) / ".runner-state"
+    files = {"event_path": str(state / "event.json")}
+    if number is not None:
+        files.update({
+            "env": str(state / f"env-{number}"),
+            "output": str(state / f"output-{number}"),
+            "path": str(state / f"path-{number}"),
+        })
+    return files
+
+
+def _github_context(job: dict | None, github_token: str = "", step_number=None) -> dict:
     """Build the ``github`` context for expressions the runner resolves.
 
     The runner already computes every one of these for the step environment.
@@ -387,6 +403,7 @@ def _github_context(job: dict | None, github_token: str = "") -> dict:
         "api_url": API,
         "workflow": str(job.get("workflow_name") or job.get("name") or ""),
         "job": str(job.get("name", "")),
+        **_step_files(step_number),
     }
 
 
@@ -487,6 +504,8 @@ def _runner_context(
     step_outputs: dict[str, dict[str, str]] | None,
     github_token: str = "",
     job: dict | None = None,
+    job_status: str = "success",
+    step_number=None,
 ) -> dict:
     """Build the context the runner can resolve expressions against.
 
@@ -503,7 +522,9 @@ def _runner_context(
             for key, value in (step_outputs or {}).items()
         },
         "inputs": {str(k): v for k, v in (inputs or {}).items()},
-        "github": _github_context(job, github_token),
+        "github": _github_context(job, github_token, step_number),
+        # job.status is the runner's to know: the server leaves it for us.
+        "job": {"status": job_status},
         # The runner context describes this machine, so only the runner can
         # resolve it. The server leaves it alone for that reason, which is why
         # a composite action's ``${{ runner.temp }}`` arrives here unrendered.
@@ -520,8 +541,8 @@ class _StepIfParser:
     """Evaluate the small Actions expression subset needed by the runner."""
 
     _TOKEN_RE = re.compile(
-        r"(?P<space>\s+)|(?P<op>\|\||&&|==|!=|[!(),])|"
-        r"(?P<string>'(?:\\.|[^'])*'|\"(?:\\.|[^\"])*\")|"
+        r"(?P<space>\s+)|(?P<op>\|\||&&|==|!=|<=|>=|[!(),<>\[\].])|"
+        r"(?P<string>'(?:''|[^'])*'|\"(?:\\.|[^\"])*\")|"
         r"(?P<number>\d+(?:\.\d+)?)|(?P<name>[A-Za-z_][A-Za-z0-9_.-]*)"
     )
 
@@ -603,8 +624,12 @@ class _StepIfParser:
         if self._peek("==") or self._peek("!="):
             operator = self._take()[1]
             right = self._parse_primary()
-            equal = left == right
+            equal = _loose_equal(left, right)
             return equal if operator == "==" else not equal
+        for operator in ("<=", ">=", "<", ">"):
+            if self._peek(operator):
+                self._take(operator)
+                return _relational(operator, left, self._parse_primary())
         return left
 
     def _parse_primary(self):
@@ -612,11 +637,17 @@ class _StepIfParser:
             self._take("(")
             value = self._parse_or()
             self._take(")")
-            return value
+            return self._parse_accessors(value)
 
         kind, token = self._take()
         if kind == "string":
-            return token[1:-1].replace("\\'", "'").replace('\\"', '"')
+            # Actions doubles a quote inside a '...' string and has no
+            # backslash escapes, so bound JSON keeps its own. Double-quoted
+            # strings, from older step records, keep the backslash form.
+            body = token[1:-1]
+            if token[0] == "'":
+                return body.replace("''", "'")
+            return body.replace('\\"', '"').replace("\\'", "'")
         if kind == "number":
             return float(token) if "." in token else int(token)
         if kind != "name":
@@ -630,14 +661,39 @@ class _StepIfParser:
                     self._take(",")
                     arguments.append(self._parse_or())
             self._take(")")
-            return self._call(token, arguments)
+            return self._parse_accessors(self._call(token, arguments))
         if token == "true":
             return True
         if token == "false":
             return False
         if token == "null":
             return None
-        return _lookup_context_path(self.context, token)
+        return self._parse_accessors(_lookup_context_path(self.context, token))
+
+    def _parse_accessors(self, value):
+        """``.name`` and ``[index]`` after a value, e.g. ``fromJSON(x).ok``.
+        A missing property is null, as in Actions."""
+        while True:
+            if self._peek("."):
+                self._take(".")
+                kind, name = self._take()
+                if kind != "name":
+                    raise ValueError("expected a property name")
+                for part in name.split("."):
+                    value = value.get(part) if isinstance(value, dict) else None
+            elif self._peek("["):
+                self._take("[")
+                key = self._parse_or()
+                self._take("]")
+                if isinstance(value, list) and isinstance(key, (int, float)) and not isinstance(key, bool):
+                    index = int(key)
+                    value = value[index] if 0 <= index < len(value) else None
+                elif isinstance(value, dict):
+                    value = value.get(str(key))
+                else:
+                    value = None
+            else:
+                return value
 
     def _call(self, name, arguments):
         # Status functions. Without these a workflow cannot express "run this
@@ -659,10 +715,83 @@ class _StepIfParser:
             return str(arguments[0] or "").startswith(str(arguments[1] or ""))
         if name == "endsWith" and len(arguments) == 2:
             return str(arguments[0] or "").endswith(str(arguments[1] or ""))
+        if name == "join" and len(arguments) in (1, 2):
+            items = arguments[0]
+            separator = "," if len(arguments) == 1 else _expression_string(arguments[1])
+            if isinstance(items, list):
+                return separator.join(_expression_string(item) for item in items)
+            return _expression_string(items)
+        if name == "fromJSON" and len(arguments) == 1:
+            try:
+                return json.loads(str(arguments[0]))
+            except json.JSONDecodeError as exc:
+                raise ValueError(f"fromJSON: {exc}") from exc
+        if name == "toJSON" and len(arguments) == 1:
+            return json.dumps(arguments[0], indent=2)
         if name == "contains" and len(arguments) == 2:
             haystack, needle = arguments
             return needle in haystack if isinstance(haystack, (list, dict, str)) else False
         raise ValueError(f"unsupported function {name}")
+
+
+def _expression_string(value) -> str:
+    """A value as Actions writes it into a string."""
+    if value is None:
+        return ""
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    if isinstance(value, float) and value.is_integer():
+        return str(int(value))
+    if isinstance(value, (dict, list)):
+        return json.dumps(value, separators=(",", ":"))
+    return str(value)
+
+
+def _expression_number(value) -> float:
+    """Actions' coercion of a value to a number."""
+    if value is None:
+        return 0.0
+    if isinstance(value, bool):
+        return 1.0 if value else 0.0
+    if isinstance(value, (int, float)):
+        return float(value)
+    if isinstance(value, str):
+        text = value.strip()
+        if not text:
+            return 0.0
+        try:
+            return float(int(text, 16)) if text.lower().startswith("0x") else float(text)
+        except ValueError:
+            return float("nan")
+    return float("nan")
+
+
+def _loose_equal(left, right) -> bool:
+    """Actions' ==: strings case-insensitively; values of different types as
+    numbers (so null == '' and 1 == '1'); arrays and objects only to
+    themselves."""
+    if isinstance(left, (list, dict)) or isinstance(right, (list, dict)):
+        return left is right
+    if isinstance(left, str) and isinstance(right, str):
+        return left.lower() == right.lower()
+    if type(left) is type(right) and left is not None and not isinstance(left, (int, float)):
+        return left == right
+    a, b = _expression_number(left), _expression_number(right)
+    return a == b
+
+
+def _relational(operator: str, left, right) -> bool:
+    """Actions' <, >, <= and >=: strings case-insensitively, anything else as
+    numbers (NaN compares false); arrays and objects never order."""
+    if isinstance(left, (list, dict)) or isinstance(right, (list, dict)):
+        return False
+    if isinstance(left, str) and isinstance(right, str):
+        a, b = left.lower(), right.lower()
+    else:
+        a, b = _expression_number(left), _expression_number(right)
+        if a != a or b != b:
+            return False
+    return {"<": a < b, ">": a > b, "<=": a <= b, ">=": a >= b}[operator]
 
 
 class StepConditionError(ValueError):
@@ -777,7 +906,9 @@ def _evaluate_step_if(
         return False
     try:
         return _StepIfParser(
-            expression, _runner_context(inputs, step_outputs, job=job), failed
+            expression,
+            _runner_context(inputs, step_outputs, job=job, job_status="failure" if failed else "success"),
+            failed,
         ).parse()
     except ValueError as exc:
         # Treating an unevaluable condition as false silently drops the step,
@@ -790,10 +921,12 @@ def _evaluate_step_if(
 
 # An expression needs the real parser once it contains an operator, a string
 # literal, or a call. A plain dotted path keeps the cheaper lookup below.
-_NEEDS_PARSER_RE = re.compile(r"\|\||&&|==|!=|\(|'|\"")
+_NEEDS_PARSER_RE = re.compile(r"\|\||&&|[=!<>]|\(|'|\"")
 
 
-def _render_local_action(value, inputs, step_outputs, github_token="", job=None):
+def _render_local_action(
+    value, inputs, step_outputs, github_token="", job=None, job_status="success", step_number=None,
+):
     """Render the expressions the runner resolves at execution time.
 
     ``github.token`` is resolved here rather than on the server so the
@@ -814,24 +947,25 @@ def _render_local_action(value, inputs, step_outputs, github_token="", job=None)
             if expression == "github.token":
                 return github_token
             if _NEEDS_PARSER_RE.search(expression):
-                context = _runner_context(inputs, step_outputs, github_token, job)
+                context = _runner_context(inputs, step_outputs, github_token, job, job_status, step_number)
                 try:
-                    resolved = _StepIfParser(expression, context).evaluate()
+                    resolved = _StepIfParser(expression, context, failed=job_status == "failure").evaluate()
                 except ValueError as exc:
                     log.warning(
                         "Could not render expression %r: %s", expression, exc
                     )
                     return match.group(0)
-                if resolved is None or resolved is False:
+                # Actions writes a false result as "false" and a null one as "".
+                if resolved is None:
                     return ""
-                if resolved is True:
-                    return "true"
+                if isinstance(resolved, bool):
+                    return "true" if resolved else "false"
                 if isinstance(resolved, (dict, list)):
                     return json.dumps(resolved, separators=(",", ":"))
                 return str(resolved)
             try:
                 resolved = _lookup_context_path(
-                    _runner_context(inputs, step_outputs, github_token, job),
+                    _runner_context(inputs, step_outputs, github_token, job, job_status, step_number),
                     expression,
                 )
             except ValueError:
@@ -843,12 +977,12 @@ def _render_local_action(value, inputs, step_outputs, github_token="", job=None)
         return _EXPRESSION_RE.sub(replace, value)
     if isinstance(value, dict):
         return {
-            key: _render_local_action(item, inputs, step_outputs, github_token, job)
+            key: _render_local_action(item, inputs, step_outputs, github_token, job, job_status, step_number)
             for key, item in value.items()
         }
     if isinstance(value, list):
         return [
-            _render_local_action(item, inputs, step_outputs, github_token, job)
+            _render_local_action(item, inputs, step_outputs, github_token, job, job_status, step_number)
             for item in value
         ]
     return value
@@ -916,7 +1050,13 @@ class RunnerClient:
     def __init__(self):
         self.runner_id = None
         self.runner_token = None
-        self.client = httpx.Client(verify=False, timeout=60.0)
+        # Verify the emulator's certificate. httpx checks it against certifi's
+        # bundle, or against SSL_CERT_FILE (or SSL_CERT_DIR) instead when set;
+        # it does not read the OS trust store, so a private CA is passed with
+        # SSL_CERT_FILE. RUNNER_TLS_VERIFY=false turns it off for a
+        # deployment whose certificate nothing here can check.
+        verify = os.environ.get("RUNNER_TLS_VERIFY", "true").strip().lower() not in ("0", "false", "no")
+        self.client = httpx.Client(verify=verify, timeout=60.0)
         self._heartbeat_stop = threading.Event()
         self._heartbeat_thread = None
         # Set by SIGTERM. The pod's grace period is what a rolling update
@@ -1067,7 +1207,10 @@ class RunnerClient:
             step["status"] = "in_progress"
             self._report_progress(job_repository, job_id, steps)
 
-            rendered_step = _render_local_action(step, {}, step_outputs, job_token, job)
+            rendered_step = _render_local_action(
+                step, {}, step_outputs, job_token, job, "success" if all_passed else "failure",
+                step.get("number", 0),
+            )
             result, _step_log, step_updates = self._run_step(
                 rendered_step, job, runtime_env, log_callback=append_log,
             )
@@ -1109,7 +1252,7 @@ class RunnerClient:
         try:
             shutil.rmtree(WORKDIR, ignore_errors=True)
             shutil.rmtree(RUNNER_TEMP, ignore_errors=True)
-        except Exception:
+        except Exception:  # noqa: S110 - best-effort cleanup between jobs
             pass
 
     def _execute_job_guarded(self, job: dict) -> None:
@@ -1248,6 +1391,10 @@ class RunnerClient:
         may_mint = not isinstance(permissions, dict) or (
             permissions.get("id-token") == "write"
         )
+        if "id_token" in job:
+            # The emulator says outright whether the job may mint (it may not
+            # for a fork's pull_request run, whatever it declared).
+            may_mint = may_mint and bool(job["id_token"])
         job_oidc_token = str(job.get("token") or "")
         if may_mint and job_oidc_token:
             env["ACTIONS_ID_TOKEN_REQUEST_URL"] = OIDC_TOKEN_URL
@@ -1334,8 +1481,9 @@ class RunnerClient:
         timed_out = False
         try:
             shell_name = str(step.get("shell") or "bash")
-            executable = "/bin/bash" if shell_name.split()[0] == "bash" else None
-            proc = subprocess.Popen(
+            # Like actions/runner: bash from PATH, so a newer bash wins over /bin/bash.
+            executable = (shutil.which("bash", path=env.get("PATH")) or "/bin/bash") if shell_name.split()[0] == "bash" else None
+            proc = subprocess.Popen(  # noqa: S602 - a run: step is a shell script by definition
                 command,
                 shell=True,
                 executable=executable,
@@ -1348,7 +1496,8 @@ class RunnerClient:
                 start_new_session=True,
             )
             self._current_proc = proc
-            assert proc.stdout is not None
+            if proc.stdout is None:  # Popen was given stdout=PIPE; never None
+                raise RuntimeError("step process has no stdout pipe")
             selector.register(proc.stdout, selectors.EVENT_READ)
             deadline = time.monotonic() + int(job.get("timeout_seconds") or 3600)
             pending = b""
@@ -1385,7 +1534,7 @@ class RunnerClient:
                 if proc.poll() is None:
                     proc.kill()
                     proc.wait(timeout=5)
-            except Exception:  # noqa: BLE001 - best effort; the job is over either way
+            except Exception:  # noqa: BLE001, S110 - best effort; the job is over either way
                 pass
             raise
         except subprocess.TimeoutExpired as exc:
@@ -2190,8 +2339,8 @@ class RunnerClient:
             self._note_cancellation(resp, job_id)
         except JobCancelled:
             raise
-        except Exception:
-            pass
+        except Exception as e:
+            log.warning("Failed to upload logs for job %d: %s", job_id, e)
 
     def _terminate(self, proc) -> None:
         """SIGTERM the step's process group, then SIGKILL what is left.

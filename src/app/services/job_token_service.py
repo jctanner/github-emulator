@@ -18,7 +18,24 @@ def _base64url_json(value: dict) -> str:
 
 def _decode_json(value: str) -> dict:
     padded = value + "=" * (-len(value) % 4)
-    return json.loads(base64.urlsafe_b64decode(padded.encode("ascii")))
+    decoded = json.loads(base64.urlsafe_b64decode(padded.encode("ascii")))
+    if not isinstance(decoded, dict):
+        raise TypeError("JWT header and payload must be JSON objects")
+    return decoded
+
+
+# GitHub's job token is valid until the job ends, and a job runs for at most
+# its timeout-minutes (default 360). The token lives that long plus a margin
+# for the completion report, and never more than 24 hours.
+_DEFAULT_JOB_TIMEOUT_MINUTES = 360
+_COMPLETION_MARGIN_SECONDS = 5 * 60
+_MAX_TOKEN_SECONDS = 24 * 3600
+
+
+def job_token_lifetime(job) -> int:
+    """Seconds a job's token is valid: its timeout plus 5 minutes, capped at 24 h."""
+    minutes = getattr(job, "timeout_minutes", None) or _DEFAULT_JOB_TIMEOUT_MINUTES
+    return min(int(minutes) * 60 + _COMPLETION_MARGIN_SECONDS, _MAX_TOKEN_SECONDS)
 
 
 def issue_job_token(job: WorkflowJob) -> str:
@@ -31,8 +48,12 @@ def issue_job_token(job: WorkflowJob) -> str:
         "sub": f"job:{job.id}",
         "nbf": now - 60,
         "iat": now,
-        "exp": now + 3600,
+        "exp": now + job_token_lifetime(job),
         "orch_id": str(job.run_id),
+        # The runner exports this token as ACTIONS_RUNTIME_TOKEN, and
+        # @actions/artifact reads the run and job it uploads for from the
+        # Actions.Results scope: "Actions.Results:<run>:<job>".
+        "scp": f"Actions.Results:{job.run_id}:{job.id}",
     })
     signing_input = f"{header}.{payload}"
     digest = hmac.digest(

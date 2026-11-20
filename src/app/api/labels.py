@@ -4,13 +4,15 @@ import json
 from urllib.parse import parse_qs
 
 from fastapi import APIRouter, HTTPException, Query, Request
-from fastapi.responses import JSONResponse
-from sqlalchemy import select, delete as sa_delete
+from sqlalchemy import delete as sa_delete
+from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 
 from app.api.deps import AuthUser, CurrentUser, DbSession, get_repo_or_404
 from app.config import settings
-from app.models.label import Label
+from app.middleware.error_handler import ValidationError
 from app.models.issue import Issue, IssueLabel
+from app.models.label import Label
 from app.schemas.label import LabelCreate, LabelResponse, LabelUpdate
 from app.services.issue_event_service import record_label_event
 
@@ -55,19 +57,64 @@ async def _read_label_names(request: Request) -> list[str]:
     return fields.get("labels[]", []) + fields.get("labels", [])
 
 
+async def _find_label(db, repository_id: int, name: str, exclude_id: int | None = None) -> Label | None:
+    """The repository's label named ``name``, matched the way GitHub does:
+    case-insensitively, for any letters.
+
+    The comparison is Python's ``casefold``, as SQLite's ``lower()`` folds
+    ASCII letters only. A database written before names were compared
+    case-insensitively can hold both ``bug`` and ``BUG``; the exact spelling
+    wins, then the oldest. ``exclude_id`` leaves one label out (a rename).
+    """
+    labels = (await db.execute(select(Label).where(Label.repo_id == repository_id))).scalars().all()
+    folded = name.casefold()
+    matches = [
+        label for label in labels
+        if label.name.casefold() == folded and label.id != exclude_id
+    ]
+    matches.sort(key=lambda label: (label.name != name, label.id))
+    return matches[0] if matches else None
+
+
+def _label_already_exists() -> ValidationError:
+    """GitHub's 422 for a label name that is taken; clients key on the code."""
+    return ValidationError(
+        errors=[{"resource": "Label", "code": "already_exists", "field": "name"}]
+    )
+
+
+async def _commit_label(db) -> None:
+    """Commit a label create or rename. The name check reads before it writes,
+    so a concurrent request can take the name in between; the unique index
+    then refuses the second, which answers GitHub's already_exists."""
+    try:
+        await db.commit()
+    except IntegrityError as exc:
+        await db.rollback()
+        raise _label_already_exists() from exc
+
+
 async def _get_or_create_label(db, repository_id: int, name: str) -> Label:
     """Resolve a repository label, creating it like GitHub's issue API does."""
-    result = await db.execute(
-        select(Label).where(Label.repo_id == repository_id, Label.name == name)
-    )
-    label = result.scalar_one_or_none()
+    label = await _find_label(db, repository_id, name)
     if label is not None:
         return label
 
-    label = Label(repo_id=repository_id, name=name, color="ededed")
-    db.add(label)
-    await db.flush()
-    return label
+    # Insert-or-ignore, then read back: two requests adding the same new
+    # label at once both missed the lookup above, and the second INSERT failed
+    # the (repo_id, name) unique constraint with 500.
+    if db.get_bind().dialect.name == "postgresql":
+        from sqlalchemy.dialects.postgresql import insert as dialect_insert
+    else:
+        from sqlalchemy.dialects.sqlite import insert as dialect_insert
+    await db.execute(
+        dialect_insert(Label)
+        .values(repo_id=repository_id, name=name, color="ededed")
+        .on_conflict_do_nothing(index_elements=["repo_id", "name"])
+    )
+    return (await db.execute(
+        select(Label).where(Label.repo_id == repository_id, Label.name == name).order_by(Label.id)
+    )).scalars().first()
 
 
 async def _dispatch_label_event(db, repository, user, issue, action, label):
@@ -114,7 +161,7 @@ async def list_labels(
         .limit(per_page)
     )
     labels = (await db.execute(query)).scalars().all()
-    return [LabelResponse.from_db(l, BASE, owner, repo) for l in labels]
+    return [LabelResponse.from_db(label, BASE, owner, repo) for label in labels]
 
 
 @router.post(
@@ -126,13 +173,8 @@ async def create_label(
     """Create a label."""
     repository = await get_repo_or_404(owner, repo, db)
 
-    existing = await db.execute(
-        select(Label).where(
-            Label.repo_id == repository.id, Label.name == body.name
-        )
-    )
-    if existing.scalar_one_or_none() is not None:
-        raise HTTPException(status_code=422, detail="Label already exists")
+    if await _find_label(db, repository.id, body.name) is not None:
+        raise _label_already_exists()
 
     label = Label(
         repo_id=repository.id,
@@ -141,13 +183,13 @@ async def create_label(
         description=body.description,
     )
     db.add(label)
-    await db.commit()
+    await _commit_label(db)
     await db.refresh(label)
     return LabelResponse.from_db(label, BASE, owner, repo)
 
 
 @router.get(
-    "/repos/{owner}/{repo}/labels/{name}",
+    "/repos/{owner}/{repo}/labels/{name:path}",
     response_model=LabelResponse,
 )
 async def get_label(
@@ -156,19 +198,14 @@ async def get_label(
     """Get a single label."""
     repository = await get_repo_or_404(owner, repo, db)
 
-    result = await db.execute(
-        select(Label).where(
-            Label.repo_id == repository.id, Label.name == name
-        )
-    )
-    label = result.scalar_one_or_none()
+    label = await _find_label(db, repository.id, name)
     if label is None:
         raise HTTPException(status_code=404, detail="Not Found")
     return LabelResponse.from_db(label, BASE, owner, repo)
 
 
 @router.patch(
-    "/repos/{owner}/{repo}/labels/{name}", response_model=LabelResponse
+    "/repos/{owner}/{repo}/labels/{name:path}", response_model=LabelResponse
 )
 async def update_label(
     owner: str, repo: str, name: str, body: LabelUpdate, user: AuthUser, db: DbSession
@@ -176,40 +213,32 @@ async def update_label(
     """Update a label."""
     repository = await get_repo_or_404(owner, repo, db)
 
-    result = await db.execute(
-        select(Label).where(
-            Label.repo_id == repository.id, Label.name == name
-        )
-    )
-    label = result.scalar_one_or_none()
+    label = await _find_label(db, repository.id, name)
     if label is None:
         raise HTTPException(status_code=404, detail="Not Found")
 
     if body.new_name is not None:
+        if await _find_label(db, repository.id, body.new_name, exclude_id=label.id) is not None:
+            raise _label_already_exists()
         label.name = body.new_name
     if body.color is not None:
         label.color = body.color.lstrip("#")
     if body.description is not None:
         label.description = body.description
 
-    await db.commit()
+    await _commit_label(db)
     await db.refresh(label)
     return LabelResponse.from_db(label, BASE, owner, repo)
 
 
-@router.delete("/repos/{owner}/{repo}/labels/{name}", status_code=204)
+@router.delete("/repos/{owner}/{repo}/labels/{name:path}", status_code=204)
 async def delete_label(
     owner: str, repo: str, name: str, user: AuthUser, db: DbSession
 ):
     """Delete a label."""
     repository = await get_repo_or_404(owner, repo, db)
 
-    result = await db.execute(
-        select(Label).where(
-            Label.repo_id == repository.id, Label.name == name
-        )
-    )
-    label = result.scalar_one_or_none()
+    label = await _find_label(db, repository.id, name)
     if label is None:
         raise HTTPException(status_code=404, detail="Not Found")
 
@@ -239,7 +268,7 @@ async def list_issue_labels(
     if issue is None:
         raise HTTPException(status_code=404, detail="Not Found")
 
-    return [LabelResponse.from_db(l, BASE, owner, repo) for l in issue.labels]
+    return [LabelResponse.from_db(label, BASE, owner, repo) for label in issue.labels]
 
 
 @router.post(
@@ -299,7 +328,7 @@ async def add_issue_labels(
         from app.services.auto_merge_service import process_auto_merge
         await process_auto_merge(db, issue.pull_request, user)
         await db.refresh(issue)
-    return [LabelResponse.from_db(l, BASE, owner, repo) for l in issue.labels]
+    return [LabelResponse.from_db(label, BASE, owner, repo) for label in issue.labels]
 
 
 @router.put(
@@ -335,10 +364,10 @@ async def set_issue_labels(
     label_names = await _read_label_names(request)
     labels_by_name: dict[str, Label] = {}
     for lname in dict.fromkeys(label_names):
-        if not isinstance(lname, str) or not lname:
+        if not isinstance(lname, str) or not lname or lname.casefold() in labels_by_name:
             continue
         label = labels_by_name.setdefault(
-            lname, await _get_or_create_label(db, repository.id, lname)
+            lname.casefold(), await _get_or_create_label(db, repository.id, lname)
         )
         db.add(IssueLabel(issue_id=issue.id, label_id=label.id))
 
@@ -365,11 +394,11 @@ async def set_issue_labels(
         from app.services.auto_merge_service import process_auto_merge
         await process_auto_merge(db, issue.pull_request, user)
         await db.refresh(issue)
-    return [LabelResponse.from_db(l, BASE, owner, repo) for l in issue.labels]
+    return [LabelResponse.from_db(label, BASE, owner, repo) for label in issue.labels]
 
 
 @router.delete(
-    "/repos/{owner}/{repo}/issues/{issue_number}/labels/{name}",
+    "/repos/{owner}/{repo}/issues/{issue_number}/labels/{name:path}",
     status_code=200,
     response_model=list[LabelResponse],
 )
@@ -392,12 +421,7 @@ async def remove_issue_label(
     if issue is None:
         raise HTTPException(status_code=404, detail="Not Found")
 
-    lbl_result = await db.execute(
-        select(Label).where(
-            Label.repo_id == repository.id, Label.name == name
-        )
-    )
-    label = lbl_result.scalar_one_or_none()
+    label = await _find_label(db, repository.id, name)
     if label is None:
         raise HTTPException(status_code=404, detail="Label not found")
 
@@ -418,4 +442,4 @@ async def remove_issue_label(
     await db.commit()
     await db.refresh(issue)
     await _dispatch_label_event(db, repository, user, issue, "unlabeled", label)
-    return [LabelResponse.from_db(l, BASE, owner, repo) for l in issue.labels]
+    return [LabelResponse.from_db(label, BASE, owner, repo) for label in issue.labels]

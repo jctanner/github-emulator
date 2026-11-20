@@ -147,19 +147,26 @@ class UserResponse(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
     @classmethod
-    def from_db(cls, user, base_url: str) -> "UserResponse":
-        """Construct a full UserResponse from a DB user object."""
+    def from_db(cls, user, base_url: str, public_repos: int | None = None) -> "UserResponse":
+        """Construct a full UserResponse from a DB user object.
+
+        ``public_repos`` comes from ``user_service.public_repo_counts``; without it the
+        count is taken from ``user.repositories`` if that is loaded, else 0.
+        """
         avatar = user.avatar_url or f"{base_url}/avatars/{user.login}"
         api_base = f"{base_url}/api/v3"
         user_url = f"{api_base}/users/{user.login}"
 
         # Count public repos if the relationship is loaded
-        public_repos = 0
         state = sqlalchemy_inspect(user)
-        if "repositories" not in state.unloaded and user.repositories is not None:
+        if public_repos is not None:
+            pass
+        elif "repositories" not in state.unloaded and user.repositories is not None:
             public_repos = sum(
                 1 for r in user.repositories if not r.private
             )
+        else:
+            public_repos = 0
 
         return cls(
             login=user.login,

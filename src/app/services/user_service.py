@@ -1,11 +1,13 @@
 """User management service."""
 
+from collections.abc import Iterable
 from typing import Optional
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models import PersonalAccessToken, User
+from app.models.repository import Repository
 from app.services.auth_service import generate_token, hash_password
 
 
@@ -139,3 +141,16 @@ async def create_token(
     await db.commit()
     await db.refresh(pat)
     return pat, raw_token
+
+
+async def public_repo_counts(db: AsyncSession, user_ids: Iterable[int]) -> dict[int, int]:
+    """Each user's public repositories, by user id, in one query."""
+    ids = list(user_ids)
+    if not ids:
+        return {}
+    rows = await db.execute(
+        select(Repository.owner_id, func.count(Repository.id))
+        .where(Repository.owner_id.in_(ids), Repository.private.is_(False))
+        .group_by(Repository.owner_id)
+    )
+    return {owner_id: count for owner_id, count in rows.all()}

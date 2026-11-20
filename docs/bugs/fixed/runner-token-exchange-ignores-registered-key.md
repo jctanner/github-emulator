@@ -17,7 +17,7 @@ its enterprise counterpart took no credential at all.
 
 ## Fix
 
-- `runners.public_key` (migration `0018_runner_public_key`) stores the key
+- `runners.public_key` (migration `0020_runner_public_key`) stores the key
   as PEM. Agent registration via `POST .../pools/{pool}/agents`, either with
   a broker token or a registration token, stores it. So do `PUT`/`PATCH`
   of the agent (`config.sh --replace` takes the new key) and the pipelines
@@ -31,7 +31,7 @@ its enterprise counterpart took no credential at all.
 - `PUT`/`PATCH` of an agent is allowed for the runner itself, or for the
   `config.sh --replace` broker identity. The broker is the identity created
   by `POST /actions/runner-registration` (`runners.registration_broker`,
-  migration `0019_runner_registration_broker`) and only counts for a target
+  migration `0021_runner_registration_broker`) and only counts for a target
   in the same repository, organization and enterprise scope. It stops being
   a broker once it registers as the agent or exchanges a token. Two ordinary
   runners that share a repository or enterprise cannot replace each other's

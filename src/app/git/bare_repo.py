@@ -334,7 +334,7 @@ async def get_repo_size_kb(disk_path: str) -> int:
     total = 0
     if not os.path.isdir(disk_path):
         return 0
-    for dirpath, dirnames, filenames in os.walk(disk_path):
+    for dirpath, _dirnames, filenames in os.walk(disk_path):
         for f in filenames:
             fp = os.path.join(dirpath, f)
             if os.path.isfile(fp):
@@ -465,7 +465,6 @@ def _parse_signature(sig: str) -> dict:
     if len(parts) >= 3:
         name_email = parts[0]
         timestamp = parts[1]
-        tz = parts[2]
         # Parse name and email
         if "<" in name_email:
             name = name_email.split("<")[0].strip()
@@ -695,7 +694,7 @@ async def resolve_refs(disk_path: str, refs: list[str]) -> dict[str, str | None]
         # Fall back to one lookup per name rather than guess at a pairing.
         return {name: await resolve_ref(disk_path, name) for name in names}
     resolved: dict[str, str | None] = {}
-    for name, line in zip(names, lines):
+    for name, line in zip(names, lines, strict=True):
         # Unresolvable names come back as "<name> missing" or "<name> ambiguous".
         sha = line.strip()
         resolved[name] = sha if sha and " " not in sha else None
@@ -761,6 +760,94 @@ async def get_compare_diff(disk_path: str, base_ref: str, head_ref: str) -> list
     return _parse_git_diff(output.decode(errors="replace"))
 
 
+_COMPARE_STATUS = {
+    "A": "added", "D": "removed", "M": "modified", "R": "renamed",
+    "C": "copied", "T": "changed",
+}
+
+
+async def get_compare_files(disk_path: str, base_ref: str, head_ref: str) -> list[dict]:
+    """The files changed from ``base_ref``'s merge base to ``head_ref``, as
+    GitHub's compare lists them: name, previous name, status, blob ``sha``,
+    line counts and patch.
+
+    Names, statuses and blob ids come from NUL-delimited ``--raw`` and
+    ``--numstat`` output, so a path in any encoding, or holding spaces or
+    " b/", is kept exactly. Each patch is matched to its record by position:
+    git lists the files in the same order in every format.
+    """
+    env = os.environ.copy()
+    env["GIT_DIR"] = disk_path
+
+    async def diff(*args: str, revision_range: str) -> bytes | None:
+        proc = await asyncio.create_subprocess_exec(
+            "git", "-c", "core.quotePath=false", "diff", "--no-ext-diff", "--no-textconv",
+            "--no-color", "--find-renames", *args, revision_range, "--",
+            stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE, env=env,
+        )
+        stdout, _ = await proc.communicate()
+        return stdout if proc.returncode == 0 else None
+
+    revision_range = f"{base_ref}...{head_ref}"
+    raw = await diff("--raw", "-z", "--no-abbrev", revision_range=revision_range)
+    if raw is None:
+        revision_range = f"{base_ref}..{head_ref}"
+        raw = await diff("--raw", "-z", "--no-abbrev", revision_range=revision_range)
+    if raw is None:
+        return []
+    numstat = await diff("--numstat", "-z", revision_range=revision_range) or b""
+    patch = await diff("--patch", revision_range=revision_range) or b""
+
+    files: list[dict] = []
+    fields = raw.split(b"\0")
+    i = 0
+    while i < len(fields) and fields[i].startswith(b":"):
+        _old_mode, _new_mode, old_oid, new_oid, status = fields[i][1:].decode().split(" ")
+        kind = status[0]
+        if kind in ("R", "C"):
+            previous, name = fields[i + 1], fields[i + 2]
+            i += 3
+        else:
+            previous, name = None, fields[i + 1]
+            i += 2
+        record = {
+            # A name that is not UTF-8 is shown with replacement characters;
+            # its bytes stay in path_bytes for URLs.
+            "filename": name.decode("utf-8", errors="replace"),
+            "path_bytes": name,
+            "status": _COMPARE_STATUS.get(kind, "modified"),
+            # A removed file's blob is the one it had; every other file's is the new one.
+            "sha": old_oid if kind == "D" else new_oid,
+            "additions": 0,
+            "deletions": 0,
+            "changes": 0,
+            "patch": "",
+        }
+        if previous is not None:
+            record["previous_filename"] = previous.decode("utf-8", errors="replace")
+        files.append(record)
+
+    # --numstat -z: "add\tdel\tpath\0", or "add\tdel\t\0old\0new\0" for a rename.
+    counts: list[tuple[int, int]] = []
+    parts = numstat.split(b"\0")
+    j = 0
+    while j < len(parts) and parts[j]:
+        added, deleted, path = parts[j].split(b"\t", 2)
+        j += 3 if path == b"" else 1
+        counts.append((int(added) if added != b"-" else 0, int(deleted) if deleted != b"-" else 0))
+    for record, (added, deleted) in zip(files, counts, strict=False):
+        record.update(additions=added, deletions=deleted, changes=added + deleted)
+
+    # One "diff --git" section per file, in the same order; GitHub's patch is
+    # the hunks, without git's header lines.
+    sections = patch.decode("utf-8", errors="replace").split("\ndiff --git ")
+    for record, section in zip(files, sections, strict=False):
+        hunk_start = section.find("\n@@")
+        if hunk_start != -1:
+            record["patch"] = section[hunk_start + 1:].rstrip("\n")
+    return files
+
+
 async def get_compare_diff_raw(
     disk_path: str, base_ref: str, head_ref: str
 ) -> bytes | None:
@@ -813,6 +900,45 @@ async def get_compare_commit_count(
         return int(stdout.decode().strip())
     except ValueError:
         return 0
+
+
+async def get_merge_base(disk_path: str, base_ref: str, head_ref: str) -> str | None:
+    """Return the best common ancestor of two commits, or None when they
+    share no history or a ref does not resolve."""
+    env = os.environ.copy()
+    env["GIT_DIR"] = disk_path
+    proc = await asyncio.create_subprocess_exec(
+        "git", "merge-base", base_ref, head_ref,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+        env=env,
+    )
+    stdout, _ = await proc.communicate()
+    if proc.returncode != 0:
+        return None
+    return stdout.decode().strip() or None
+
+
+async def get_ahead_behind(
+    disk_path: str, base_ref: str, head_ref: str
+) -> tuple[int, int]:
+    """Return (ahead, behind): commits only on head, and only on base."""
+    env = os.environ.copy()
+    env["GIT_DIR"] = disk_path
+    proc = await asyncio.create_subprocess_exec(
+        "git", "rev-list", "--left-right", "--count", f"{base_ref}...{head_ref}",
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+        env=env,
+    )
+    stdout, _ = await proc.communicate()
+    if proc.returncode != 0:
+        return 0, 0
+    try:
+        behind, ahead = (int(n) for n in stdout.decode().split())
+    except ValueError:
+        return 0, 0
+    return ahead, behind
 
 
 async def get_compare_stats(
@@ -964,3 +1090,55 @@ async def get_log(
         }
         commits.append(commit)
     return commits
+
+
+_OBJECT_TYPES = (b"blob", b"tree", b"commit", b"tag")
+
+
+async def read_object(disk_path: str, name: str) -> tuple[str, str, bytes] | None:
+    """Look up ``name`` (such as ``main:docs/a.md``) and read the object, in one process.
+
+    Returns ``(sha, type, content)``, or None when the name does not resolve
+    or the object is not in the repository. The name is resolved the way
+    ``git rev-parse`` resolves it.
+    """
+    # One name per line on stdin: a line break or NUL in it cannot be passed.
+    if not name or any(c in name for c in "\n\r\0"):
+        return None
+    env = os.environ.copy()
+    env["GIT_DIR"] = disk_path
+    proc = await asyncio.create_subprocess_exec(
+        "git", "cat-file", "--batch",
+        stdin=asyncio.subprocess.PIPE,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+        env=env,
+    )
+    stdout, _ = await proc.communicate((name + "\n").encode())
+    header, _, rest = stdout.partition(b"\n")
+    # "<sha> <type> <size>", or "<name> missing" / "<name> ambiguous".
+    parts = header.split(b" ")
+    if proc.returncode != 0 or len(parts) != 3 or parts[1] not in _OBJECT_TYPES or not parts[2].isdigit():
+        return None
+    size = int(parts[2])
+    if len(rest) < size:
+        return None
+    return parts[0].decode(), parts[1].decode(), rest[:size]
+
+
+def parse_tree(content: bytes, hash_len: int = 20) -> list[tuple[str, str, str]]:
+    """Entries of a raw tree object as ``(mode, name, sha)``, in tree order.
+
+    ``hash_len`` is the object id length in bytes: 20 for SHA-1.
+    """
+    entries = []
+    pos = 0
+    while pos < len(content):
+        space = content.index(b" ", pos)
+        nul = content.index(b"\x00", space)
+        mode = content[pos:space].decode()
+        name = content[space + 1:nul].decode("utf-8", errors="replace")
+        sha = content[nul + 1:nul + 1 + hash_len].hex()
+        entries.append((mode, name, sha))
+        pos = nul + 1 + hash_len
+    return entries

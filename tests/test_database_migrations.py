@@ -382,7 +382,7 @@ def test_org_role_assignments_table_is_added_to_an_existing_database(tmp_path, m
 
 
 def test_runner_public_key_column_is_added_to_an_existing_database(tmp_path, monkeypatch):
-    """0018 adds runners.public_key to a database at 0017 and keeps runners,
+    """0020 adds runners.public_key to a database at 0019 and keeps runners,
     which start without a key."""
     from pathlib import Path
 
@@ -419,7 +419,7 @@ def test_runner_public_key_column_is_added_to_an_existing_database(tmp_path, mon
 
 
 def test_runner_registration_broker_column_is_added_to_an_existing_database(tmp_path, monkeypatch):
-    """0019 adds runners.registration_broker to a database at 0018 and keeps
+    """0020 adds runners.registration_broker to a database at 0019 and keeps
     runners, none of which is a broker."""
     from pathlib import Path
 
@@ -432,7 +432,7 @@ def test_runner_registration_broker_column_is_added_to_an_existing_database(tmp_
     config = Config(str(root / "alembic.ini"))
     config.set_main_option("script_location", str(root / "alembic"))
     config.set_main_option("sqlalchemy.url", _url(path))
-    command.upgrade(config, "0018_runner_public_key")
+    command.upgrade(config, "0020_runner_public_key")
     engine = create_engine(f"sqlite:///{path}")
     with engine.begin() as connection:
         columns = {column["name"] for column in inspect(connection).get_columns("runners")}

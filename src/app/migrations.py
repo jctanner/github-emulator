@@ -6,7 +6,6 @@ from pathlib import Path
 from alembic import command
 from alembic.config import Config
 
-
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 
 
@@ -17,6 +16,8 @@ def upgrade_database_sync(database_url: str) -> None:
     config.set_main_option("prepend_sys_path", str(PROJECT_ROOT / "src"))
     config.set_main_option("sqlalchemy.url", database_url.replace("%", "%%"))
     config.attributes["database_url"] = database_url
+    # The app has set up its logging; alembic.ini's would replace it.
+    config.attributes["configure_logger"] = False
     # Alembic's async environment uses ``asyncio.run()``, which clears a
     # caller-managed current loop. Preserve it for synchronous test harnesses
     # and other embedders; normal application startup invokes this in a thread.

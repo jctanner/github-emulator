@@ -7,8 +7,7 @@ import pytest
 from sqlalchemy import select
 
 from app.config import settings
-from app.models.actions import Runner
-from app.models.actions import Workflow, WorkflowJob, WorkflowRun
+from app.models.actions import Runner, Workflow, WorkflowJob, WorkflowRun
 from app.models.repository import Repository
 from app.services.workflow_service import create_workflow_run
 from tests.conftest import API, auth_headers
@@ -396,7 +395,8 @@ async def test_job_if_false_is_skipped_and_not_queued(
     assert job.conclusion == "skipped"
     assert job.steps[0]["conclusion"] == "skipped"
     assert run.status == "completed"
-    assert run.conclusion == "success"
+    # GitHub concludes a run whose every job was skipped as skipped.
+    assert run.conclusion == "skipped"
 
 
 @pytest.mark.asyncio
@@ -582,10 +582,14 @@ async def test_pool_distributed_task_protocol_flow(
     message = message_resp.json()
     assert message["messageType"] == "PipelineAgentJobRequest"
     body = json.loads(message["body"])
+    # Without it the runner leaves `::notice::` raw instead of `##[notice]`.
+    assert body["variables"]["DistributedTask.EnhancedAnnotations"]["Value"] == "true"
     assert body["steps"][0]["type"] == "Action"
     assert body["steps"][0]["reference"]["type"] == "Script"
     assert body["steps"][0]["inputs"]["map"][0]["Value"] == "printf 'hello from runner\\n'"
     assert body["steps"][0]["environment"]["map"] == [
+        # gh reaches the emulator only through GH_HOST (not GITHUB_API_URL).
+        {"Key": "GH_HOST", "Value": "testserver"},
         {"Key": "STEP_FLAG", "Value": "1"},
         {
             "Key": "EXPR_FLAG",
@@ -602,11 +606,13 @@ async def test_pool_distributed_task_protocol_flow(
     job_token = body["variables"]["system.github.token"]["Value"]
     assert len(job_token.split(".")) == 3
     authenticated = await client.get(
-        f"{API}/user",
+        f"{API}/repos/testuser/actions-exec-repo",
         headers={"Authorization": f"token {job_token}"},
     )
     assert authenticated.status_code == 200
-    assert authenticated.json()["login"] == "testuser"
+    # As GitHub's GITHUB_TOKEN, the job token is not for user-scoped endpoints.
+    user = await client.get(f"{API}/user", headers={"Authorization": f"token {job_token}"})
+    assert user.status_code == 403
     assert body["variables"]["system.github.job"]["Value"] == "build"
     github_context = {
         item["k"]: item["v"] for item in body["contextData"]["github"]["d"]
@@ -680,6 +686,13 @@ async def test_pool_distributed_task_protocol_flow(
         headers=runner_headers,
     )
     assert agent_delete_resp.status_code == 200
+    # The job it ran no longer points at the deleted runner (a foreign key
+    # SQLite does not enforce; PostgreSQL refused the delete with 500).
+    db_session.expire_all()
+    dangling = (await db_session.execute(
+        select(WorkflowJob).where(WorkflowJob.runner_id == register_resp.json()["id"])
+    )).scalars().all()
+    assert dangling == []
 
 
 @pytest.mark.asyncio

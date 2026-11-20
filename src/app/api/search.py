@@ -1,18 +1,19 @@
 """Search endpoints -- repos, issues, users, code, commits."""
 
-from fastapi import APIRouter, HTTPException, Query
-from sqlalchemy import select, or_
+from fastapi import APIRouter, Query
+from sqlalchemy import or_, select
 
 from app.api.deps import CurrentUser, DbSession
-from app.config import settings
-from app.models.repository import Repository
-from app.models.issue import Issue
-from app.models.user import User
-from app.models.search_index import FileContent, CommitMetadata
-from app.api.repos import _repo_json
 from app.api.issues import _issue_json
-from app.schemas.user import UserResponse, _make_node_id
+from app.api.repos import _repo_json
+from app.config import settings
+from app.models.issue import Issue
+from app.models.repository import Repository
+from app.models.search_index import CommitMetadata, FileContent
+from app.models.user import User
 from app.schemas.browse import GenericSearchResponse, RepositorySearchResponse
+from app.schemas.user import UserResponse
+from app.services.job_token_scope import visible_repositories, visible_repository_ids
 
 router = APIRouter(tags=["search"])
 
@@ -60,6 +61,7 @@ async def search_repositories(
     if current_user is None:
         query = query.where(Repository.private == False)
 
+    query = visible_repositories(query)
     if sort == "stars":
         sort_col = Repository.stargazers_count
     elif sort == "forks":
@@ -107,6 +109,7 @@ async def search_issues(
         )
     )
 
+    query = visible_repository_ids(query, Issue.repo_id)
     if sort == "created":
         sort_col = Issue.created_at
     elif sort == "updated":
@@ -175,10 +178,13 @@ async def search_users(
     query = query.offset((page - 1) * per_page).limit(per_page)
     users = (await db.execute(query)).scalars().all()
 
+    from app.services.user_service import public_repo_counts
+
+    counts = await public_repo_counts(db, [u.id for u in users])
     return {
         "total_count": total,
         "incomplete_results": False,
-        "items": [UserResponse.from_db(u, BASE).model_dump() for u in users],
+        "items": [UserResponse.from_db(u, BASE, counts.get(u.id, 0)).model_dump() for u in users],
     }
 
 
@@ -225,6 +231,7 @@ async def search_code(
         )
 
     from sqlalchemy import func as sa_func
+    query = visible_repository_ids(query, FileContent.repo_id)
     count_q = select(sa_func.count()).select_from(query.subquery())
     total = (await db.execute(count_q)).scalar() or 0
 
@@ -240,8 +247,6 @@ async def search_code(
         )
         repo = repo_result.scalar_one_or_none()
         repo_full = repo.full_name if repo else ""
-        owner_login = repo_full.split("/")[0] if "/" in repo_full else ""
-        repo_name = repo_full.split("/")[1] if "/" in repo_full else ""
 
         # Extract text matches (first matching line)
         text_matches = []
@@ -328,6 +333,7 @@ async def search_commits(
         query = query.order_by(sort_col.desc())
 
     from sqlalchemy import func as sa_func
+    query = visible_repository_ids(query, CommitMetadata.repo_id)
     count_q = select(sa_func.count()).select_from(query.subquery())
     total = (await db.execute(count_q)).scalar() or 0
 

@@ -8,8 +8,8 @@ from typing import Annotated, Optional, Union
 
 import strawberry
 
-from app.graphql.connections import Connection, PageInfo, Edge
-from app.graphql.types.user import GitHubUser
+from app.graphql.connections import Connection, PageInfo
+from app.graphql.types.user import Bot, GitHubUser
 
 
 @strawberry.type
@@ -157,11 +157,8 @@ class MergeQueueStub:
     id: strawberry.ID
 
 
-@strawberry.type(name="Bot")
-class ReviewRequestBotStub:
-    """A minimal GitHub App/bot reviewer."""
-
-    login: str = ""
+# A GitHub App as a requested reviewer: the same Bot type that authors use.
+ReviewRequestBotStub = Bot
 
 
 @strawberry.type

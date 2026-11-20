@@ -2,6 +2,7 @@
 
 import asyncio
 import logging
+import time
 from typing import Any, Awaitable, Callable
 
 from sqlalchemy.exc import OperationalError
@@ -33,28 +34,45 @@ async def commit_with_sqlite_retry(
     *,
     label: str,
     before_retry: Callable[[], Any | Awaitable[Any]] | None = None,
+    before_commit: Callable[[], Any | Awaitable[Any]] | None = None,
 ) -> None:
     """Commit a replayable write transaction with bounded SQLite-lock retry.
 
     Callers that mutate ORM state must provide ``before_retry`` to replay that
     mutation after rollback. Non-replayable transactions intentionally surface
     a retryable error instead of treating a second empty commit as success.
+
+    Each commit can itself wait the busy timeout for the lock, so retries stop
+    once that much time has passed: a lock that stays held answers 503 after
+    about one to two busy timeouts, not one per attempt. Lock errors that come
+    back at once (a snapshot conflict) still get every attempt.
+
+    ``before_commit`` runs inside each attempt, before the commit, so a lock
+    error it meets is retried like one from the commit. A caller that stages
+    its changes there passes ``before_retry`` only to reload what the
+    rollback expired.
     """
     attempts = max(1, settings.SQLITE_WRITE_RETRY_ATTEMPTS)
     delay = max(0, settings.SQLITE_WRITE_RETRY_DELAY_MS) / 1000
+    budget = max(0, settings.SQLITE_BUSY_TIMEOUT_MS) / 1000
+    started = time.monotonic()
 
     for attempt in range(1, attempts + 1):
         try:
+            if before_commit is not None:
+                result = before_commit()
+                if asyncio.iscoroutine(result):
+                    await result
             await db.commit()
             return
         except OperationalError as exc:
             if not is_sqlite_database_locked(exc):
                 raise
             await db.rollback()
-            if attempt >= attempts:
+            if attempt >= attempts or time.monotonic() - started >= budget:
                 logger.warning(
                     "SQLite write lock persisted after %d attempts during %s",
-                    attempts,
+                    attempt,
                     label,
                 )
                 raise RetryableDatabaseError() from exc
@@ -70,7 +88,7 @@ async def commit_with_sqlite_retry(
                 result = before_retry()
                 if asyncio.iscoroutine(result):
                     await result
-            else:
+            elif before_commit is None:
                 raise RetryableDatabaseError(
                     "Database was busy and the write cannot be replayed safely"
                 ) from exc

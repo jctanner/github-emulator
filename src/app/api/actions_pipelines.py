@@ -11,13 +11,13 @@ from datetime import datetime, timezone
 from fastapi import APIRouter, HTTPException, Request
 from sqlalchemy import select
 
+from app.api.actions_distributed_task import _get_runner_from_token
+from app.api.actions_runners import _delete_runner_and_detach_history, normalise_runner_os
 from app.api.deps import DbSession, get_repo_or_404
 from app.config import settings
-from app.models.actions import EnterpriseRunnerRegistrationToken, Runner, RegistrationToken
+from app.models.actions import EnterpriseRunnerRegistrationToken, RegistrationToken, Runner
 from app.services.auth_service import hash_token
 from app.services.runner_credentials import public_key_pem_from_agent
-from app.api.actions_distributed_task import _get_runner_from_token
-from app.api.actions_runners import normalise_runner_os
 
 router = APIRouter(tags=["actions-pipelines"])
 
@@ -56,7 +56,7 @@ async def pipelines_register_enterprise_runner(
         )
     )
     registration = result.scalar_one_or_none()
-    if registration is None:
+    if registration is None or registration.for_remove:
         raise HTTPException(status_code=401, detail="Invalid registration token")
     if _is_expired(registration.expires_at):
         raise HTTPException(status_code=401, detail="Registration token expired")
@@ -79,7 +79,8 @@ async def pipelines_register_enterprise_runner(
         last_heartbeat=datetime.now(timezone.utc),
     )
     db.add(runner)
-    await db.delete(registration)
+    # The registration token stays until it expires: on GitHub one token
+    # registers any number of runners within its hour.
     await db.commit()
     await db.refresh(runner)
     base = _request_base(request)
@@ -106,15 +107,16 @@ async def pipelines_deregister_enterprise_runner(
     runner = result.scalar_one_or_none()
     if runner is None:
         raise HTTPException(status_code=404, detail="Runner not found")
-    await db.delete(runner)
-    await db.commit()
+    # Detach the jobs that ran on it (PostgreSQL enforces the foreign key);
+    # a job it still runs fails, as the runner will not finish it.
+    await _delete_runner_and_detach_history(db, runner, fail_live_jobs=True)
     return {"status": "removed"}
 
 
 @router.get("/_services/pipelines/enterprises/{enterprise}/_apis/pipelines/runs")
 async def pipelines_list_enterprise_runners(enterprise: str, db: DbSession):
     result = await db.execute(
-        select(Runner).where(Runner.enterprise_slug == enterprise)
+        select(Runner).where(Runner.enterprise_slug == enterprise, Runner.remove_only.is_not(True))
     )
     runners = result.scalars().all()
     return {
@@ -171,7 +173,8 @@ async def pipelines_register_runner(
         last_heartbeat=datetime.now(timezone.utc),
     )
     db.add(runner)
-    await db.delete(reg)
+    # The registration token stays until it expires: on GitHub one token
+    # registers any number of runners within its hour.
     await db.commit()
     await db.refresh(runner)
 
@@ -199,8 +202,9 @@ async def pipelines_deregister_runner(
     runner = result.scalar_one_or_none()
     if runner is None:
         raise HTTPException(status_code=404, detail="Runner not found")
-    await db.delete(runner)
-    await db.commit()
+    # Detach the jobs that ran on it (PostgreSQL enforces the foreign key);
+    # a job it still runs fails, as the runner will not finish it.
+    await _delete_runner_and_detach_history(db, runner, fail_live_jobs=True)
     return {"status": "removed"}
 
 
@@ -211,7 +215,7 @@ async def pipelines_list_runners(
     """List runners via GHES pipelines protocol."""
     repository = await get_repo_or_404(owner, repo, db)
     result = await db.execute(
-        select(Runner).where(Runner.repo_id == repository.id)
+        select(Runner).where(Runner.repo_id == repository.id, Runner.remove_only.is_not(True))
     )
     runners = result.scalars().all()
     return {

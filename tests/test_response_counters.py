@@ -89,7 +89,7 @@ async def test_review_counts_are_separate_from_issue_comments(client, db_session
     await check(0)
     # Test both comment creation mechanisms, including comments embedded in a review.
     response = await client.post(root + "/pulls/1/reviews", json={"event": "COMMENT", "body": "Summary is not an inline comment", "comments": [{"path": "feature.txt", "line": 1, "body": "Finding"}]}, headers=headers)
-    assert response.status_code == 201, response.text
+    assert response.status_code == 200, response.text
     await check(1)
     response = await client.post(root + "/pulls/1/comments", json={"path": "feature.txt", "line": 1, "body": "Another finding"}, headers=headers)
     assert response.status_code == 201

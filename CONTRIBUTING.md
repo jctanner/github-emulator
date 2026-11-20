@@ -1,0 +1,123 @@
+# Contributing
+
+This guide shows you how to pass the checks required for your change; start by completing the one-time local setup below.
+
+## Prerequisites
+
+Run these commands once from the repository root:
+
+1. Create the virtual environment and install the locked Python dependencies:
+   ```bash
+   uv sync --frozen --extra dev
+   ```
+
+2. Install pre-commit (the version CI uses) as a uv tool. It is not in the project's dependencies:
+   ```bash
+   uv tool install pre-commit==4.7.0
+   ```
+   ```
+   Installed 1 executable: pre-commit
+   ```
+   If uv warns that its tool directory is not on your `PATH`, run `uv tool update-shell` and open a new shell.
+
+3. Install the hooks (scripts that run automated checks before git records a commit):
+   ```bash
+   pre-commit install
+   ```
+   ```
+   pre-commit installed at .git/hooks/pre-commit
+   ```
+
+4. Install frontend dependencies (needed only for the two frontend hooks and the web UI build):
+   ```bash
+   make frontend-install
+   ```
+
+## Run the tests
+
+Run the test suite before you submit a change:
+```bash
+uv run pytest tests/ -q
+```
+
+```
+1373 passed, 4680 warnings in 581.79s (0:09:41)
+```
+
+The full suite takes about ten minutes, and the counts grow as tests are added. To run the server from source and build the web UI, see the [development guide](docs/guides/development.md).
+
+## Check your change
+
+Run the hooks on the files your change touches before submitting a pull request:
+```bash
+pre-commit run --from-ref origin/main --to-ref HEAD
+```
+
+```
+check for added large files..............................................Passed
+check for merge conflicts................................................Passed
+check toml...............................................................Passed
+check yaml...............................................................Passed
+fix end of files.........................................................Passed
+trim trailing whitespace.................................................Passed
+detect private key.......................................................Passed
+ruff check...............................................................Passed
+Detect hardcoded secrets.................................................Passed
+shellcheck...............................................................Passed
+Lint GitHub Actions workflow files.......................................Passed
+zizmor...................................................................Passed
+frontend eslint..........................................................Passed
+frontend prettier........................................................Passed
+```
+
+## Sign your commits (DCO)
+
+Commit with `git commit -s`, so each commit carries a `Signed-off-by:` line. The line certifies the [Developer Certificate of Origin](https://developercertificate.org/) for your contribution.
+
+## Work ledger
+
+Project state lives in files, so record your work there as well as in code. The rules, from [AGENTS.md](AGENTS.md) and [docs/agentic_work_ledger.md](docs/agentic_work_ledger.md):
+- [PLAN.md](PLAN.md) is an index. Keep it short and link out from it.
+- Each task is one file under `docs/tasks/`. Set its state by moving the file between `pending/`, `current/`, `blocked/` and `done/`.
+- Record bugs under `docs/bugs/open/`, and move them to `docs/bugs/fixed/` once fixed.
+- Record architectural decisions as ADRs under `docs/decisions/`.
+- Update the relevant ledger file with evidence before you call the work done.
+
+See [docs/agentic_work_ledger.md](docs/agentic_work_ledger.md) for detail.
+
+## CI Checks
+
+Continuous integration in [.github/workflows/hygiene.yml](.github/workflows/hygiene.yml) runs on every push and pull request:
+- pre-commit on the change: a pull request is checked against its base, a push against the commit it replaced.
+- gitleaks over the full git history.
+- pip-audit on the locked Python dependencies (`uv.lock`).
+- `npm audit --audit-level=high` for the frontend.
+- frontend lint, typecheck, format check and tests.
+
+## Policies
+
+### Lint Policy
+Ruff lints Python code (no formatter yet). Because hooks run on touched files, a file you edit must pass ruff even for findings that were there before you. Most are fixed by:
+```bash
+uvx ruff@0.17.3 check --fix <file>
+```
+Rules and deliberate exceptions are in [pyproject.toml](pyproject.toml) with the reason beside each.
+
+### Dependencies and Security Advisories
+- `uv.lock` is committed. After changing dependencies in [pyproject.toml](pyproject.toml), run `uv lock` and commit `uv.lock`. CI runs `uv lock --locked`, which fails if the lock is out of date.
+- Everything installs from `uv.lock` with hashes: `uv sync --frozen` locally, and the container images export the lock (`uv export --frozen --no-dev`) and install with `--require-hashes`. There is no `requirements.txt` to keep in step.
+- Dependabot opens weekly update pull requests, holding new releases back 14 days ([.github/dependabot.yml](.github/dependabot.yml)).
+- An advisory with no fix that cannot be reached here is accepted by adding `--ignore-vuln <ID>` in [.github/workflows/hygiene.yml](.github/workflows/hygiene.yml) with a comment saying why it is unreachable. Two are accepted today: PYSEC-2026-4298 (`python-jose`; every decode pins its algorithm) and PYSEC-2026-1325 (`ecdsa`; nothing signs with ECDSA).
+
+### Secrets
+Gitleaks allows exactly one value, the documented default admin token `ghp_admin_default_token` ([.gitleaks.toml](.gitleaks.toml)). Any other hit fails the commit and CI.
+
+## Troubleshooting
+
+| Error text | Cause | Fix |
+|---|---|---|
+| ``[ERROR] Cowardly refusing to install hooks with `core.hooksPath` set.`` | Your git config sets a global hooks directory (for example a machine-wide git guard). | Leave it. Before you push, run `pre-commit run --from-ref origin/main --to-ref HEAD` yourself. |
+| `ruff check....Failed` with `I001` or `F401` | Import order or an unused import in a file you touched. | `uvx ruff@0.17.3 check --fix <file>` |
+| `Detect hardcoded secrets....Failed` | A value that looks like a credential. | Remove it. If it is a published test value, add it to `.gitleaks.toml` with a comment. |
+| ``error: The lockfile at `uv.lock` needs to be updated, but `--locked` was provided.`` | `pyproject.toml` changed without `uv lock`. | Run `uv lock` and commit `uv.lock`. |
+| `sh: eslint: command not found` | Frontend packages are not installed. | `npm --prefix src/frontend ci` |

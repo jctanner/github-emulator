@@ -6,15 +6,17 @@ import os
 from fastapi import APIRouter, HTTPException
 from sqlalchemy import select
 
-from app.services.cross_repo_pulls import same_repository_head
-from app.api.deps import require_contents_write, AuthUser, CurrentUser, DbSession, get_repo_or_404
+from app.api.deps import AuthUser, CurrentUser, DbSession, get_repo_or_404, require_contents_write
 from app.config import settings
+from app.middleware.error_handler import ValidationError
 from app.models.branch import Branch
 from app.models.issue import Issue
 from app.models.pull_request import PullRequest
-from app.middleware.error_handler import ValidationError
 from app.schemas.browse import TagResponse
 from app.schemas.user import _make_node_id
+from app.services.branch_service import replay_ref_record
+from app.services.cross_repo_pulls import same_repository_head
+from app.services.repository_lock import hold_repository_lock
 
 router = APIRouter(tags=["git-refs"])
 
@@ -103,19 +105,16 @@ async def _get_branch_record(db, repository, ref: str) -> Branch | None:
     return result.scalar_one_or_none()
 
 
-async def _record_branch_change(db, repository, ref: str, sha: str | None, user) -> None:
+async def _stage_branch_change(db, repository, ref: str, sha: str | None, user) -> None:
+    """Record a moved branch and its open pull requests' heads, uncommitted.
+
+    Everything is read before anything is written, so nothing flushes (and
+    takes SQLite's writer lock) until the caller commits.
+    """
     name = _branch_name(ref)
     if name is None:
         return
     branch = await _get_branch_record(db, repository, ref)
-    if sha is None:
-        if branch is not None:
-            await db.delete(branch)
-    elif branch is None:
-        db.add(Branch(repo_id=repository.id, name=name, sha=sha))
-    else:
-        branch.sha = sha
-
     pull_requests = (
         await db.execute(
             select(PullRequest)
@@ -128,12 +127,27 @@ async def _record_branch_change(db, repository, ref: str, sha: str | None, user)
             )
         )
     ).scalars().all()
+
+    if sha is None:
+        if branch is not None:
+            await db.delete(branch)
+    elif branch is None:
+        db.add(Branch(repo_id=repository.id, name=name, sha=sha))
+    else:
+        branch.sha = sha
     if sha is not None:
         for pull_request in pull_requests:
             pull_request.head_sha = sha
             pull_request.last_push_by_id = user.id
-    await db.commit()
 
+
+async def _record_branch_change(db, repository, ref: str, sha: str | None, user) -> None:
+    await _stage_branch_change(db, repository, ref, sha, user)
+    await db.commit()
+    await _reevaluate_auto_merges(db, repository)
+
+
+async def _reevaluate_auto_merges(db, repository) -> None:
     from app.services.merge_readiness_service import reevaluate_auto_merges
 
     await reevaluate_auto_merges(db, repository.id)
@@ -189,7 +203,7 @@ async def get_ref(
     try:
         sha = (await _git(repository.disk_path, "rev-parse", full_ref)).strip()
     except RuntimeError:
-        raise HTTPException(status_code=404, detail="Not Found")
+        raise HTTPException(status_code=404, detail="Not Found") from None
 
     return _ref_json(full_ref, sha, owner, repo, BASE)
 
@@ -208,13 +222,35 @@ async def create_ref(
     sha = body.get("sha", "")
     if not ref or not sha:
         raise HTTPException(status_code=422, detail="ref and sha are required")
+    # One full name for git, the database and a rollback: a shorthand
+    # "heads/x" is refs/heads/x, as _branch_name reads it.
+    ref = ref if ref.startswith("refs/") else f"refs/{ref}"
+
+    await hold_repository_lock(repository.id)
+    # `git update-ref` moves a ref that is already there, so creating an
+    # existing branch answered 201 and silently repointed it. GitHub refuses
+    # with 422 "Reference already exists" and leaves the ref alone. The empty
+    # old value makes git itself refuse if the ref appears in between.
+    try:
+        await _git(repository.disk_path, "rev-parse", "--verify", "--quiet", ref)
+    except RuntimeError:
+        pass
+    else:
+        raise ValidationError(message="Reference already exists")
+    # The ref did not exist, so a rollback deletes it.
+    before = None
 
     try:
-        await _git(repository.disk_path, "update-ref", ref, sha)
+        await _git(repository.disk_path, "update-ref", ref, sha, "")
     except RuntimeError as e:
-        raise HTTPException(status_code=422, detail=str(e))
+        raise HTTPException(status_code=422, detail=str(e)) from None
 
-    await _record_branch_change(db, repository, ref, sha, user)
+    await replay_ref_record(
+        db, repository.id, repository.disk_path, ref, before, sha,
+        lambda: _stage_branch_change(db, repository, ref, sha, user),
+        refresh=(repository, user),
+    )
+    await _reevaluate_auto_merges(db, repository)
     return _ref_json(ref, sha, owner, repo, BASE)
 
 
@@ -239,26 +275,32 @@ async def update_ref(
         if force and not branch.protection.allow_force_pushes:
             raise ValidationError(message="Cannot force-update this protected branch")
 
+    await hold_repository_lock(repository.id)
     args = ["update-ref", full_ref, sha]
-    old_sha = None
+    try:
+        old_sha = (await _git(repository.disk_path, "rev-parse", full_ref)).strip()
+    except RuntimeError:
+        old_sha = None
     if not force:
-        try:
-            old_sha = (await _git(repository.disk_path, "rev-parse", full_ref)).strip()
+        if old_sha:
             args.append(old_sha)
-        except RuntimeError:
-            pass
         if old_sha:
             try:
                 await _git(repository.disk_path, "merge-base", "--is-ancestor", old_sha, sha)
             except RuntimeError:
-                raise ValidationError(message="Update is not a fast forward")
+                raise ValidationError(message="Update is not a fast forward") from None
 
     try:
         await _git(repository.disk_path, *args)
     except RuntimeError as e:
-        raise HTTPException(status_code=422, detail=str(e))
+        raise HTTPException(status_code=422, detail=str(e)) from None
 
-    await _record_branch_change(db, repository, full_ref, sha, user)
+    await replay_ref_record(
+        db, repository.id, repository.disk_path, full_ref, old_sha, sha,
+        lambda: _stage_branch_change(db, repository, full_ref, sha, user),
+        refresh=(repository, user),
+    )
+    await _reevaluate_auto_merges(db, repository)
     return _ref_json(full_ref, sha, owner, repo, BASE)
 
 
@@ -282,7 +324,7 @@ async def delete_ref(
     try:
         await _git(repository.disk_path, "rev-parse", "--verify", full_ref)
     except RuntimeError:
-        raise ValidationError(message="Reference does not exist")
+        raise ValidationError(message="Reference does not exist") from None
 
     branch = await _get_branch_record(db, repository, full_ref)
     if (
@@ -294,5 +336,5 @@ async def delete_ref(
     try:
         await _git(repository.disk_path, "update-ref", "-d", full_ref)
     except RuntimeError as e:
-        raise HTTPException(status_code=422, detail=str(e))
+        raise HTTPException(status_code=422, detail=str(e)) from None
     await _record_branch_change(db, repository, full_ref, None, user)

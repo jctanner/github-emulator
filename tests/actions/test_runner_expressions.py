@@ -12,7 +12,6 @@ from pathlib import Path
 
 import pytest
 
-
 RUNNER_PATH = (
     Path(__file__).parents[2] / "src" / "runners" / "emulator" / "runner.py"
 )
@@ -66,7 +65,7 @@ def test_comparisons_render_as_actions_spells_them():
     outputs = {"detect": {"install-method": "source"}}
     assert render(
         "${{ steps.detect.outputs.install-method == 'vendored' }}", {}, outputs
-    ) == ""
+    ) == "false"  # Actions writes a false result as "false"
     assert render(
         "${{ steps.detect.outputs.install-method != 'vendored' }}", {}, outputs
     ) == "true"
@@ -112,7 +111,7 @@ def test_the_runner_context_resolves_because_only_the_runner_knows_it():
 
 
 def test_runner_context_works_inside_a_compound_expression():
-    assert render("${{ runner.os == 'Linux' }}", {}, {}) in ("true", "")
+    assert render("${{ runner.os == 'Linux' }}", {}, {}) in ("true", "false")
     assert render("${{ runner.arch }}", {}, {}) in ("X64", "ARM64")
 
 
@@ -263,7 +262,6 @@ def test_a_condition_without_a_status_function_implies_success():
     save ran after the copy before it had failed, and cached an empty
     directory that the next job restored as a hit.
     """
-    outputs = {"cli-cache": {"outputs": {"cache-hit": "false"}}}
     condition = "steps.cli-cache.outputs.cache-hit != 'true'"
     assert runner_module._evaluate_step_if(condition, {"cli-cache": {"cache-hit": "false"}})
     assert not runner_module._evaluate_step_if(condition, {"cli-cache": {"cache-hit": "false"}}, failed=True)

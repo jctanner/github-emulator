@@ -2,20 +2,21 @@
 
 import asyncio
 import copy
-import fnmatch
 import itertools
 import logging
+import os
 import re
 import uuid
 from dataclasses import dataclass
 from datetime import datetime, timezone
 
 import yaml
-from sqlalchemy import select, func
+from sqlalchemy import event, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import Session
 
 from app.config import settings
-from app.models.actions import Workflow, WorkflowRun, WorkflowJob, Secret
+from app.models.actions import Secret, Workflow, WorkflowJob, WorkflowRun
 from app.models.issue import Issue
 from app.models.pull_request import PullRequest
 from app.models.repository import Repository
@@ -43,7 +44,7 @@ class EventEnvelope:
     occurred_at: datetime
 
 
-from app.services.workflow_expressions import (
+from app.services.workflow_expressions import (  # noqa: E402 (after the event types it needs)
     _EXPRESSION_RE,
     _ExpressionError,
     _IfExpressionParser,
@@ -51,8 +52,10 @@ from app.services.workflow_expressions import (
     bind_server_context,
     evaluate_expression_value,
     evaluate_job_if,
+    ref_facts,
     render_expressions,
 )
+
 
 async def detect_workflows(repo_disk_path: str, ref: str = "HEAD") -> list[dict]:
     """Read workflow files from *ref* in a bare repository."""
@@ -93,9 +96,11 @@ async def detect_workflows(repo_disk_path: str, ref: str = "HEAD") -> list[dict]
     return workflows
 
 
-from app.services.webhook_service import schedule_webhooks
-from app.services.cross_repo_pulls import same_repository_head, sync_head_ref
-from app.services.workflow_triggers import evaluate_trigger
+from app.services.cross_repo_pulls import same_repository_head, sync_head_ref  # noqa: E402
+from app.services.pull_request_runs import is_fork_pull_request_run, pull_request_branch_context  # noqa: E402
+from app.services.webhook_service import schedule_webhooks  # noqa: E402
+from app.services.workflow_triggers import evaluate_trigger  # noqa: E402
+
 
 def dynamic_matrix_expression(job_config: dict) -> str | None:
     """The expression of a dynamic matrix (``matrix: ${{ fromJSON(...) }}``),
@@ -127,7 +132,7 @@ def matrix_combinations(matrix: object) -> list[dict] | None:
     if keys:
         values = [matrix[k] if isinstance(matrix[k], list) else [matrix[k]] for k in keys]
         for combo in itertools.product(*values):
-            entry = dict(zip(keys, combo))
+            entry = dict(zip(keys, combo, strict=True))
             if not any(
                 isinstance(exc, dict) and all(entry.get(k) == v for k, v in exc.items())
                 for exc in exclude
@@ -138,7 +143,7 @@ def matrix_combinations(matrix: object) -> list[dict] | None:
         if not isinstance(inc, dict):
             continue
         merged = False
-        for combo, original in zip(combos, originals):
+        for combo, original in zip(combos, originals, strict=False):
             if all(original[k] == v for k, v in inc.items() if k in original):
                 combo.update(inc)
                 merged = True
@@ -225,6 +230,52 @@ def expand_matrix(job_config: dict) -> list[dict]:
     return expanded
 
 
+def _refusal_steps(name: str, why: str) -> list[dict]:
+    """One step that fails with ``why`` in place of a job this emulator cannot run.
+
+    The `::error::` line becomes an annotation on the run, so the refusal is
+    visible from the UI and not only from the step log. The message is one
+    single-quoted shell word, so nothing in it is read by the shell.
+    """
+    quoted = "'" + f"::error::{why}".replace("'", "'\\''") + "'"
+    return [{"name": name, "run": f"echo {quoted} >&2\nexit 1"}]
+
+
+def _reusable_placeholder(key: str, config: dict, why: str) -> dict:
+    """A job standing in for a reusable-workflow call that could not be inlined."""
+    placeholder = {
+        name: value for name, value in copy.deepcopy(config).items()
+        if name not in ("uses", "with", "secrets")
+    }
+    placeholder["steps"] = _refusal_steps("Resolve reusable workflow", why)
+    placeholder["name"] = placeholder.get("name", f"{key} (reusable workflow)")
+    # Failed when it would start, with no runner: GitHub fails a run whose
+    # reusable workflow cannot be resolved without assigning a runner, and a
+    # placeholder sent to one waits forever on a stack that lacks its labels.
+    placeholder["_refused"] = why
+    return placeholder
+
+
+def fail_refused_job(job: WorkflowJob, why: str) -> None:
+    """Conclude a job that is not run as failed, the reason in its log.
+
+    Its one step, the refusal, is recorded as the failed one; the reason is
+    also the job's log, which is where GitHub shows it for such a run.
+    """
+    job.status = "completed"
+    job.conclusion = "failure"
+    job.completed_at = datetime.now(timezone.utc)
+    job.steps = [
+        {**step, "status": "completed", "conclusion": "failure"}
+        for step in (job.steps or [])
+    ]
+    job.pending_render = None
+    log_dir = os.path.join(settings.DATA_DIR, "logs", "jobs")
+    os.makedirs(log_dir, exist_ok=True)
+    with open(os.path.join(log_dir, f"{job.id}.log"), "w", encoding="utf-8") as log:
+        log.write(f"##[error]{why}\n")
+
+
 def build_job_graph(workflow_yaml: dict) -> list[dict]:
     """Parse jobs section into a dependency-ordered list."""
     jobs_config = workflow_yaml.get("jobs", {})
@@ -254,6 +305,17 @@ def build_job_graph(workflow_yaml: dict) -> list[dict]:
             needs = [needs]
 
         steps = config.get("steps", [])
+        unsupported = [key_name for key_name in ("container", "services") if config.get(key_name)]
+        if unsupported:
+            # Neither runner here starts job or service containers. Running
+            # the steps anyway puts them on the runner host, where they pass
+            # or fail for reasons unrelated to the workflow: a false result
+            # either way. Refuse the job instead.
+            steps = _refusal_steps(
+                "Unsupported job keys",
+                f"{' and '.join(f'{k}:' for k in unsupported)} not supported by this "
+                "emulator's runners; the job's steps were NOT run",
+            )
 
         jobs.append({
             "key": key,
@@ -276,10 +338,15 @@ def build_job_graph(workflow_yaml: dict) -> list[dict]:
             "concurrency": config.get("concurrency"),
             "outputs": config.get("outputs", {}),
             "_call_inputs": config.get("_call_inputs", {}),
+            "_call_inputs_chain": config.get("_call_inputs_chain") or [],
             "_call_secrets": config.get("_call_secrets", {}),
             "_workflow_repository": config.get("_workflow_repository", ""),
             "_workflow_sha": config.get("_workflow_sha", ""),
             "_workflow_ref": config.get("_workflow_ref", ""),
+            "_caller": config.get("_caller"),
+            "_refused": config.get("_refused"),
+            "_needs_aliases": config.get("_needs_aliases") or {},
+            "_caller_needs": config.get("_caller_needs") or {},
             "timeout_minutes": config.get("timeout-minutes", 360),
         })
 
@@ -356,6 +423,13 @@ def _render_reusable_call_context(
             if not _BARE_CONTEXT_PATH_RE.fullmatch(expression):
                 return match.group(0)
             if expression.startswith("inputs."):
+                # An input that is itself an unrendered expression is in the
+                # calling workflow's terms. Substituted here, it would be
+                # rendered against this workflow's inputs instead; kept, it
+                # reads this workflow's rendered inputs (``_call_inputs_chain``).
+                passed = inputs.get(expression.split(".", 2)[1])
+                if isinstance(passed, str) and "${{" in passed:
+                    return match.group(0)
                 return _lookup_context({"inputs": inputs}, expression)
             if expression.startswith("secrets."):
                 if secrets is None:
@@ -457,6 +531,167 @@ async def _resolve_ref_sha(repo_disk_path: str, ref: str) -> str:
     if proc.returncode != 0:
         return ""
     return stdout.decode().strip()
+
+
+def _declared_call_outputs(called: dict) -> dict[str, str]:
+    """``on.workflow_call.outputs`` as name -> value expression."""
+    on = called.get("on") or called.get(True) or {}
+    call = on.get("workflow_call") if isinstance(on, dict) else None
+    declared = call.get("outputs") if isinstance(call, dict) else None
+    if not isinstance(declared, dict):
+        return {}
+    return {
+        str(name): str(spec.get("value", "")) if isinstance(spec, dict) else str(spec)
+        for name, spec in declared.items()
+    }
+
+
+def needs_alias_entries(aliases: dict, needs_context: dict, run_context: dict | None = None) -> dict:
+    """needs.<caller> for each reusable-workflow caller a job needs.
+
+    The result is the worst of the called jobs' results, as for a matrix;
+    outputs are the call's workflow_call outputs, evaluated with the contexts
+    GitHub allows there: ``jobs`` (the called jobs by their own keys),
+    ``inputs`` (the call's resolved inputs), and the run's ``github`` and
+    ``vars`` from ``run_context``. A caller inside the called workflow
+    (``callers``) is in ``jobs`` under its own key, its entry built the same
+    way, so an output can read ``jobs.<caller>.outputs``.
+
+    A ``with:`` expression on ``inputs`` reads the calling workflow's
+    inputs: for the run's own callers, the run's (``run_context['inputs']``),
+    as the called jobs' ``_job_context`` does; for a caller inside a called
+    workflow, that workflow's, resolved from the inputs of each enclosing
+    call (``parent_inputs_chain``, kept at materialization).
+    """
+    run_context = run_context or {}
+    return {
+        caller: _alias_entry(
+            alias, needs_context, run_context, _alias_parent_inputs(alias, needs_context, run_context),
+        )
+        for caller, alias in (aliases or {}).items()
+    }
+
+
+def resolve_call_inputs_chain(chain: list, inputs: dict, context: dict) -> list[dict]:
+    """Render the inputs of nested calls, outermost first.
+
+    ``chain[k]`` is the ``with:`` of the call at level k+1, written in the
+    terms of the workflow at level k. Each level is rendered with ``inputs``
+    set to the level before it, starting from ``inputs`` (the run's), and the
+    rendered levels are returned in the same order. Rendering every level
+    against the run's inputs read a nested ``with:`` in the wrong workflow's
+    terms once calls nested more than one level.
+    """
+    resolved: list[dict] = []
+    for level in chain or []:
+        rendered = render_expressions(level or {}, {**context, "inputs": inputs})
+        inputs = rendered if isinstance(rendered, dict) else {}
+        resolved.append(inputs)
+    return resolved
+
+
+def _alias_parent_inputs(alias: dict, needs_context: dict, run_context: dict) -> dict:
+    run_inputs = run_context.get("inputs") or {}
+    chain = alias.get("parent_inputs_chain") or []
+    if not chain:
+        return run_inputs
+    # The inputs of the workflow holding the caller, each enclosing call's
+    # ``with:`` rendered in its own calling workflow's terms.
+    return resolve_call_inputs_chain(chain, run_inputs, {
+        "github": run_context.get("github") or {},
+        "vars": run_context.get("vars") or {},
+        "needs": needs_context,
+    })[-1]
+
+
+def alias_result(alias: dict, results: dict) -> str:
+    """The result of a call from its called jobs' results, by the rule
+    ``needs_alias_entries`` uses: ``failure`` or ``cancelled`` if a job had
+    it, else ``success`` if one succeeded; ``skipped`` only when all were."""
+    result = ""
+    for outer in alias.get("jobs", {}).values():
+        result = _combined_result(result, results.get(outer) or "")
+    return result
+
+
+def _alias_entry(alias: dict, needs_context: dict, run_context: dict, parent_inputs: dict) -> dict:
+    # The call's ``with:`` values may still hold expressions in the calling
+    # workflow's terms (``${{ github.ref_name }}``, ``${{ needs.x.outputs.y }}``,
+    # or a compound one on the caller's own inputs), rendered here as
+    # ``_job_context`` renders them for the called jobs. A need on another
+    # caller (``needs_aliases``) reads that caller's entry, as the called
+    # jobs' own needs.<caller> does. A run's caller skipped by its own
+    # ``if:`` has none of its called jobs in the run, only one skipped job
+    # under its key: that job's entry stands, as run creation keeps it for
+    # the caller's direct dependents.
+    needs = {**needs_context}
+    for name, upstream in (alias.get("needs_aliases") or {}).items():
+        if name in needs_context and not any(
+            outer in needs_context for outer in upstream.get("jobs", {}).values()
+        ):
+            continue
+        needs[name] = _alias_entry(upstream, needs_context, run_context, parent_inputs)
+    inputs = render_expressions(alias.get("inputs") or {}, {
+        "github": run_context.get("github") or {},
+        "vars": run_context.get("vars") or {},
+        "needs": needs,
+        "inputs": parent_inputs,
+    })
+    if not isinstance(inputs, dict):
+        inputs = {}
+    jobs_context = {
+        inner: needs_context.get(outer) or {"outputs": {}, "result": ""}
+        for inner, outer in alias.get("jobs", {}).items()
+    }
+    result = alias_result(alias, {
+        outer: (needs_context.get(outer) or {}).get("result") or ""
+        for outer in alias.get("jobs", {}).values()
+    })
+    for name, nested in (alias.get("callers") or {}).items():
+        jobs_context[name] = _alias_entry(nested, needs_context, run_context, inputs)
+    output_context = {
+        "jobs": jobs_context,
+        "inputs": inputs,
+        "github": run_context.get("github") or {},
+        "vars": run_context.get("vars") or {},
+    }
+    outputs = {
+        name: str(render_expressions(expression, output_context) or "")
+        for name, expression in (alias.get("outputs") or {}).items()
+    }
+    return {"result": result, "outputs": outputs}
+
+
+def _prefix_alias(alias: dict, prefix: str, keys: set, call_inputs: dict | None = None) -> dict:
+    """An alias from a called workflow with its job keys as this level names
+    them, its own nested callers included.
+
+    ``call_inputs`` is the ``with:`` of the call this level makes into that
+    workflow. It goes in front of the alias's ``parent_inputs_chain``, so at
+    the run's level the chain holds the inputs of every enclosing call,
+    outermost first. A nested caller in ``callers`` or ``needs_aliases`` gets
+    its inputs from the entry built around it, so it needs no chain.
+    """
+    prefixed = {
+        **alias,
+        "jobs": {
+            inner: f"{prefix}{outer}" if outer in keys else outer
+            for inner, outer in alias.get("jobs", {}).items()
+        },
+        "callers": {
+            name: _prefix_alias(nested, prefix, keys)
+            for name, nested in (alias.get("callers") or {}).items()
+        },
+        "needs_aliases": {
+            name: _prefix_alias(upstream, prefix, keys)
+            for name, upstream in (alias.get("needs_aliases") or {}).items()
+        },
+    }
+    if call_inputs is not None:
+        prefixed["parent_inputs_chain"] = [
+            copy.deepcopy(call_inputs), *(alias.get("parent_inputs_chain") or []),
+        ]
+    return prefixed
 
 
 def _declared_call_inputs(called: dict) -> dict:
@@ -563,6 +798,11 @@ async def _materialize_reusable_jobs(
 
     result = copy.deepcopy(workflow_yaml)
     expanded: dict[str, dict] = {}
+    # Each inlined caller at this level: its called jobs by their own key and
+    # by the key they get here, its ``on.workflow_call.outputs`` and its inputs.
+    callers: dict[str, dict] = {}
+    # Each caller's own needs, for the callers among them (below).
+    caller_needs: dict[str, list] = {}
     for key, config in jobs.items():
         if not isinstance(config, dict) or not config.get("uses"):
             expanded[key] = _render_reusable_call_context(config, inputs, secrets)
@@ -570,22 +810,27 @@ async def _materialize_reusable_jobs(
 
         uses = str(config["uses"])
         if depth >= _MAX_REUSABLE_WORKFLOW_DEPTH or uses in ancestry:
-            placeholder = copy.deepcopy(config)
-            placeholder["steps"] = []
-            placeholder["name"] = placeholder.get("name", f"{key} (reusable workflow)")
-            expanded[key] = placeholder
+            expanded[key] = _reusable_placeholder(
+                key, config,
+                f"reusable workflow {uses} was not run: calls nest deeper than "
+                f"{_MAX_REUSABLE_WORKFLOW_DEPTH} levels or call themselves",
+            )
             continue
 
         called, called_repo_path, called_ref, _, called_full_name = (
             await _resolve_reusable_workflow(uses, repo_disk_path, ref, db)
         )
         if called is None or not isinstance(called.get("jobs"), dict):
-            # Keep unresolved calls inspectable and non-successful rather than
-            # silently dropping them from the run graph.
-            placeholder = copy.deepcopy(config)
-            placeholder["steps"] = []
-            placeholder["name"] = placeholder.get("name", f"{key} (reusable workflow)")
-            expanded[key] = placeholder
+            # Keep unresolved calls inspectable and failing rather than
+            # silently dropping them from the run graph. A placeholder with no
+            # steps used to pass, so a run whose whole pipeline was a call to
+            # a repository this emulator did not hold looked green.
+            expanded[key] = _reusable_placeholder(
+                key, config,
+                f"reusable workflow {uses} was not found on this emulator; it "
+                "resolves only against repositories stored here, so push the "
+                "repository that holds it at that ref first",
+            )
             continue
 
         call_inputs = _render_reusable_call_context(
@@ -632,9 +877,30 @@ async def _materialize_reusable_jobs(
         called_jobs = materialized.get("jobs", {})
         called_keys = set(called_jobs)
         prefix = f"{key} / "
+        # The called workflow's own callers stay in this caller's alias, so
+        # its outputs can read jobs.<nested caller>.outputs.
+        nested_callers = materialized.pop("_callers", None) or {}
+        callers[key] = {
+            "jobs": {called_key: f"{prefix}{called_key}" for called_key in called_jobs},
+            "outputs": _declared_call_outputs(called),
+            # The call's inputs, declared defaults included, which its outputs
+            # may read as ``inputs.<name>``.
+            "inputs": copy.deepcopy(call_inputs),
+            "callers": {
+                name: _prefix_alias(nested, prefix, called_keys)
+                for name, nested in nested_callers.items()
+            },
+        }
+        declared_needs = config.get("needs") or []
+        caller_needs[key] = [declared_needs] if isinstance(declared_needs, str) else list(declared_needs)
         for called_key, called_config in called_jobs.items():
             child = copy.deepcopy(called_config)
             child["name"] = child.get("name", f"{key} / {called_key}")
+            # Aliases a nested level gave this job name its jobs by their keys
+            # there; this level prefixes those keys, so prefix them here too.
+            aliases = child.get("_needs_aliases") or {}
+            for name, alias in aliases.items():
+                aliases[name] = _prefix_alias(alias, prefix, called_keys, call_inputs)
             caller_condition = config.get("if")
             child_condition = child.get("if")
             if caller_condition is not None:
@@ -647,6 +913,12 @@ async def _materialize_reusable_jobs(
             # substituted lexically, so the called workflow's inputs and
             # secrets travel with the job and enter its expression context.
             child["_call_inputs"] = {**call_inputs, **(child.get("_call_inputs") or {})}
+            # The same inputs by level, outermost first: a nested call's
+            # ``with:`` is in its own calling workflow's terms, so the job's
+            # inputs are rendered one level at a time (``call_inputs_context``).
+            child["_call_inputs_chain"] = [
+                copy.deepcopy(call_inputs), *(child.get("_call_inputs_chain") or []),
+            ]
             child["_call_secrets"] = {
                 **(call_secrets or {}), **(child.get("_call_secrets") or {}),
             }
@@ -668,14 +940,70 @@ async def _materialize_reusable_jobs(
                 f"{prefix}{dependency}" if dependency in called_keys else dependency
                 for dependency in child_needs
             ]
-            if config.get("needs"):
-                outer_needs = config["needs"]
-                if isinstance(outer_needs, str):
-                    outer_needs = [outer_needs]
+            outer_needs = config.get("needs") or []
+            if isinstance(outer_needs, str):
+                outer_needs = [outer_needs]
+            if outer_needs:
                 child["needs"] = [*outer_needs, *child["needs"]]
+            if depth == 0:
+                # The run's own caller job. When its ``if:`` is false, GitHub
+                # never expands the call and lists only this job, skipped.
+                child["_caller"] = {
+                    "key": key,
+                    "name": config.get("name", key),
+                    "if": caller_condition,
+                    "needs": list(outer_needs),
+                }
             expanded[f"{prefix}{called_key}"] = child
 
+    # A job that needs a caller needs every job the call inlined: the caller
+    # itself is no job in the run. needs.<caller> still has to answer, with
+    # the call's result and its workflow_call outputs, so the job carries
+    # what the scheduler needs to build that entry (_needs_aliases).
+    # A caller's ``with:`` may read needs.<another caller>.outputs, so each
+    # alias also holds the aliases of the callers it needs (``needs_aliases``),
+    # in any job order; a cycle in needs is cut rather than followed.
+    def linked(key: str, seen: frozenset) -> dict:
+        return {
+            **callers[key],
+            "needs_aliases": {
+                need: linked(need, seen | {need})
+                for need in caller_needs.get(key, [])
+                if need in callers and need not in seen
+            },
+        }
+
+    callers = {key: linked(key, frozenset({key})) for key in callers}
+    for job in expanded.values():
+        if not isinstance(job, dict):
+            continue
+        needs = job.get("needs") or []
+        if isinstance(needs, str):
+            needs = [needs]
+        if not any(need in callers for need in needs):
+            continue
+        remapped: list[str] = []
+        for need in needs:
+            if need in callers:
+                remapped.extend(callers[need]["jobs"].values())
+                # A called job already holding an alias under this key got it
+                # from its own workflow, where the key names that workflow's
+                # caller: keep it, since that is the job its needs.<key> reads.
+                job.setdefault("_needs_aliases", {}).setdefault(need, copy.deepcopy(callers[need]))
+                if depth == 0:
+                    # The run's own callers, by key, and the called jobs a
+                    # need on each became. Only these are decided at run
+                    # creation, so only these can be pointed back at a
+                    # skipped caller's job; a key from a nested workflow may
+                    # coincide with one of them and must not be.
+                    job.setdefault("_caller_needs", {})[need] = list(callers[need]["jobs"].values())
+            else:
+                remapped.append(need)
+        job["needs"] = list(dict.fromkeys(remapped))
+
     result["jobs"] = expanded
+    # For the calling level, which keeps them in its own caller's alias.
+    result["_callers"] = callers
     return result
 
 
@@ -697,7 +1025,7 @@ async def materialize_reusable_workflows(
     those lexical contexts and remaps dependencies so nested calls behave like
     their GitHub counterparts.
     """
-    return await _materialize_reusable_jobs(
+    materialized = await _materialize_reusable_jobs(
         workflow_yaml,
         repo_disk_path,
         ref,
@@ -707,6 +1035,8 @@ async def materialize_reusable_workflows(
         depth=0,
         ancestry=(),
     )
+    materialized.pop("_callers", None)
+    return materialized
 
 
 def _instance_strategy(job_config: dict, context: dict) -> dict:
@@ -717,6 +1047,28 @@ def _instance_strategy(job_config: dict, context: dict) -> dict:
             instance["options"], instance["index"], instance["total"], context,
         )
     return strategy_context(job_config.get("strategy"), context=context)
+
+
+def call_inputs_context(job_config: dict, run_inputs: dict, context: dict) -> dict | None:
+    """The ``inputs`` context of a job an inlined reusable workflow defined.
+
+    Each enclosing call's ``with:`` (``_call_inputs_chain``, outermost first)
+    is rendered against the inputs of the workflow it is written in, as
+    ``needs_alias_entries`` renders them for needs.<caller>. Keys of outer
+    levels stay visible under inner ones, as the merged ``_call_inputs`` has
+    them. A job with only ``_call_inputs`` has it rendered in one pass. None
+    when the job carries no call inputs.
+    """
+    chain = job_config.get("_call_inputs_chain") or []
+    if chain:
+        merged = dict(run_inputs)
+        for level in resolve_call_inputs_chain(chain, run_inputs, context):
+            merged.update(level)
+        return merged
+    call_inputs = job_config.get("_call_inputs") or {}
+    if call_inputs:
+        return {**run_inputs, **render_expressions(call_inputs, context)}
+    return None
 
 
 def _job_context(base_context: dict, job_config: dict) -> dict:
@@ -741,11 +1093,10 @@ def _job_context(base_context: dict, job_config: dict) -> dict:
             "workflow_sha": job_config.get("_workflow_sha") or github.get("sha", ""),
         },
     }
-    call_inputs = job_config.get("_call_inputs") or {}
     call_secrets = job_config.get("_call_secrets") or {}
-    if call_inputs:
-        rendered_inputs = render_expressions(call_inputs, context)
-        context["inputs"] = {**(base_context.get("inputs") or {}), **rendered_inputs}
+    inputs = call_inputs_context(job_config, base_context.get("inputs") or {}, context)
+    if inputs is not None:
+        context["inputs"] = inputs
     if call_secrets:
         rendered_secrets = render_expressions(call_secrets, context)
         context["secrets"] = {**(base_context.get("secrets") or {}), **rendered_secrets}
@@ -810,7 +1161,7 @@ def build_steps_data(steps: list, job_env: dict, context: dict) -> list[dict]:
             step_data["if"] = _resolve_step_condition(step["if"], context)
         for key in ("run", "shell", "working-directory", "uses", "with"):
             if key in step:
-                step_data[key] = render_expressions(step[key], context)
+                step_data[key] = render_expressions(step[key], context, for_runner=key in ("run", "with", "working-directory", "shell"))
         if "continue-on-error" in step:
             # Evaluated to its value, so the runner sees a boolean: rendered
             # as text, an input false became "False". One that reads
@@ -826,7 +1177,7 @@ def build_steps_data(steps: list, job_env: dict, context: dict) -> list[dict]:
         if "id" in step:
             step_data["id"] = step["id"]
         if step_env:
-            step_data["env"] = render_expressions(step_env, context)
+            step_data["env"] = render_expressions(step_env, context, for_runner=True)
         steps_data.append(step_data)
     return steps_data
 
@@ -868,6 +1219,9 @@ async def build_run_expression_context(db, run) -> dict:
             select(Secret).where(Secret.repo_id == run.repo_id)
         )).scalars().all()
     }
+    if is_fork_pull_request_run(run):
+        # GitHub passes no secrets to a fork's pull_request run.
+        secrets = {}
     repository = payload.get("repository", {}).get("full_name", "")
     return {
         "inputs": payload.get("inputs", {}),
@@ -883,7 +1237,90 @@ async def build_run_expression_context(db, run) -> dict:
             "run_number": run.run_number,
             "sha": run.head_sha,
             "server_url": settings.BASE_URL,
+            **pull_request_branch_context(run.event, payload),
+            **await github_identity_context(db, run),
         },
+    }
+
+
+async def github_identity_context(db: AsyncSession, run: WorkflowRun) -> dict:
+    """The ``github`` context values that name who and what started the run.
+
+    GitHub sets each of these on every run; expressions rendered here (step
+    env, with:, if:) read ``${{ github.actor }}`` and the rest, and they were
+    empty: actor, actor_id, triggering_actor, api_url, graphql_url,
+    repository_id, repository_owner_id, run_attempt and workflow_ref (probed
+    side by side with GitHub). GitHub gives ids and run_attempt as strings.
+    """
+    # Read with getattr: callers may pass a partial run (tests do).
+    repo_id = getattr(run, "repo_id", None)
+    actor_id = getattr(run, "actor_id", None)
+    workflow_id = getattr(run, "workflow_id", None)
+    # Columns only: the Repository and User entities load their eager
+    # relationships (issues, labels, branches, tokens, memberships...).
+    repo = (await db.execute(
+        select(Repository.id, Repository.owner_id, Repository.full_name, Repository.private)
+        .where(Repository.id == repo_id)
+    )).one_or_none() if repo_id else None
+    actor = (await db.execute(
+        select(User.id, User.login).where(User.id == actor_id)
+    )).one_or_none() if actor_id else None
+    workflow = (await db.execute(
+        select(Workflow.name, Workflow.path).where(Workflow.id == workflow_id)
+    )).one_or_none() if workflow_id else None
+    payload = getattr(run, "trigger_payload", None) or {}
+    ref = payload.get("ref") or f"refs/heads/{getattr(run, 'head_branch', '')}"
+    full_name = repo.full_name if repo else ""
+    login = actor.login if actor else ""
+    return {
+        "actor": login,
+        "actor_id": str(actor.id) if actor else "",
+        "triggering_actor": login,
+        "api_url": f"{settings.BASE_URL}/api/v3",
+        "graphql_url": f"{settings.BASE_URL}/api/graphql",
+        "repository_id": str(repo.id) if repo else "",
+        "repository_owner_id": str(repo.owner_id) if repo else "",
+        "run_attempt": str(getattr(run, "run_attempt", None) or 1),
+        "workflow": workflow.name if workflow else "",
+        "workflow_ref": f"{full_name}/{workflow.path}@{ref}" if workflow and full_name else "",
+        **static_github_facts(
+            ref, getattr(run, "head_sha", None) or "", full_name, repo.private if repo else None,
+            await _branch_protected(db, repo_id, ref),
+        ),
+    }
+
+
+async def _branch_protected(db: AsyncSession, repo_id: int | None, ref: str) -> bool:
+    """Whether ``ref`` is a protected branch of the repository."""
+    if not repo_id or not (ref or "").startswith("refs/heads/"):
+        return False
+    from app.models.branch import Branch
+
+    return bool((await db.execute(
+        select(Branch.protected).where(Branch.repo_id == repo_id, Branch.name == ref[len("refs/heads/"):])
+    )).scalar_one_or_none())
+
+
+def static_github_facts(
+    ref: str, sha: str, full_name: str, private: bool | None, protected: bool = False,
+) -> dict:
+    """The github context values derived from the ref, sha and repository.
+
+    GitHub sets each on every run, and the runner exports them as GITHUB_REF_NAME,
+    GITHUB_REF_TYPE, GITHUB_REF_PROTECTED and GITHUB_WORKFLOW_SHA. They rendered
+    empty here.
+    """
+    from urllib.parse import urlparse
+
+    host = urlparse(settings.BASE_URL).netloc or "localhost"
+    return {
+        **ref_facts(ref),
+        # A boolean, as on GitHub: whether the branch is protected.
+        "ref_protected": bool(protected),
+        "workflow_sha": sha,
+        "repository_visibility": "" if private is None else ("private" if private else "public"),
+        "repositoryUrl": f"git://{host}/{full_name}.git" if full_name else "",
+        "retention_days": "90",
     }
 
 
@@ -952,10 +1389,104 @@ def _topo_sort(jobs: list[dict]) -> list[dict]:
     return result
 
 
+# The default-branch workflows each repository's table was last synced from,
+# by repository id: (disk path, default branch, ``.github/workflows`` tree id).
+# Lookups skip the sync while the key is unchanged.
+#
+# A sync from any other path (a push to another branch adds that branch's
+# workflows) changes the table only when its transaction commits, so the cache
+# follows transactions, not calls: each sync records its repository on the
+# session, and when that session's transaction ends (commit, rollback or close)
+# the repository's entry is dropped and its generation bumped. A lookup
+# publishes its entry only if no other sync of the repository is still
+# uncommitted and none ended while it ran. One lookup per repository syncs at
+# a time; the others wait and then find the entry. The emulator serves from
+# one process, so an in-process cache sees every sync.
+_synced_workflows: dict[int, tuple] = {}
+_sync_generation: dict[int, int] = {}
+_syncs_in_flight: dict[int, int] = {}
+_sync_locks: dict[tuple[int, int], asyncio.Lock] = {}
+_SESSION_SYNCS = "workflow_syncs"
+
+
+def _invalidate_workflow_cache(repo_id: int) -> None:
+    _sync_generation[repo_id] = _sync_generation.get(repo_id, 0) + 1
+    _synced_workflows.pop(repo_id, None)
+
+
+def _record_sync(db: AsyncSession, repo_id: int) -> None:
+    """Note that this session's open transaction syncs ``repo_id``'s workflows."""
+    synced = db.sync_session.info.setdefault(_SESSION_SYNCS, set())
+    if repo_id not in synced:
+        synced.add(repo_id)
+        _syncs_in_flight[repo_id] = _syncs_in_flight.get(repo_id, 0) + 1
+    _synced_workflows.pop(repo_id, None)
+
+
+@event.listens_for(Session, "after_transaction_end")
+def _workflow_syncs_ended(session, transaction) -> None:
+    if transaction.parent is not None:
+        return
+    for repo_id in session.info.pop(_SESSION_SYNCS, ()):
+        _syncs_in_flight[repo_id] = max(0, _syncs_in_flight.get(repo_id, 0) - 1)
+        _invalidate_workflow_cache(repo_id)
+
+
+async def _default_workflows_key(repository: Repository) -> tuple:
+    """What the default branch's workflow inventory depends on."""
+    proc = await asyncio.create_subprocess_exec(
+        "git", "rev-parse", "--verify", "--quiet", "HEAD:.github/workflows",
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+        env={"GIT_DIR": repository.disk_path or ""},
+    )
+    stdout, _ = await proc.communicate()
+    tree = stdout.decode().strip() if proc.returncode == 0 else ""
+    return (repository.disk_path, repository.default_branch, tree)
+
+
+async def ensure_workflows_synced(db: AsyncSession, repository: Repository) -> None:
+    """Sync the workflow table from the default branch, and commit, unless
+    neither the default branch nor its workflow files changed since the
+    last sync."""
+    key = await _default_workflows_key(repository)
+    if _synced_workflows.get(repository.id) == key:
+        return
+    # Keyed by event loop too: a lock waits on the loop it was first used in.
+    lock_key = (id(asyncio.get_running_loop()), repository.id)
+    async with _sync_locks.setdefault(lock_key, asyncio.Lock()):
+        # A lookup that held the lock may have just synced this key.
+        if _synced_workflows.get(repository.id) == key:
+            return
+        # This session's own transaction may already hold a sync; end it so
+        # the generation below counts only what happens from here on.
+        await db.commit()
+        generation = _sync_generation.get(repository.id, 0)
+        await sync_workflows_to_db(db, repository, "HEAD")
+        await db.commit()
+        # Our commit bumped the generation once. Anything else (another sync
+        # that ended meanwhile, or one still uncommitted) leaves the entry
+        # unset, so the next lookup syncs again.
+        if (
+            _sync_generation.get(repository.id, 0) == generation + 1
+            and not _syncs_in_flight.get(repository.id)
+        ):
+            _synced_workflows[repository.id] = key
+
+
 async def sync_workflows_to_db(
     db: AsyncSession, repository: Repository, ref: str = "HEAD"
 ) -> list[Workflow]:
-    """Upsert Workflow rows from on-disk workflow files."""
+    """Upsert Workflow rows from on-disk workflow files.
+
+    The changes are the caller's to commit; the workflow-sync cache entry is
+    dropped now and again when that transaction ends.
+    """
+    _record_sync(db, repository.id)
+    return await _sync_workflows(db, repository, ref)
+
+
+async def _sync_workflows(db: AsyncSession, repository: Repository, ref: str) -> list[Workflow]:
     detected = await detect_workflows(repository.disk_path, ref)
 
     result = await db.execute(
@@ -999,6 +1530,7 @@ async def create_workflow_run(
     actor: User,
     head_sha: str,
     head_branch: str,
+    run_attempt: int = 1,
 ) -> WorkflowRun:
     """Create a WorkflowRun and its child WorkflowJob records."""
     count = (await db.execute(
@@ -1015,13 +1547,15 @@ async def create_workflow_run(
         event=event,
         status="queued",
         run_number=count + 1,
-        run_attempt=1,
+        # Set before the steps render: github.run_attempt is read from it.
+        run_attempt=run_attempt,
         actor_id=actor.id,
         trigger_payload=payload,
     )
-    db.add(run)
-    await db.flush()
 
+    # Everything read here is read before the run's INSERT: SQLite has one
+    # writer, and from the first write to the commit every other writer
+    # waits, so reads after it stretched that wait.
     # Organization variables the repository can use, its own over them.
     from app.services.org_variables import vars_context
 
@@ -1032,6 +1566,14 @@ async def create_workflow_run(
             select(Secret).where(Secret.repo_id == workflow.repo_id)
         )).scalars().all()
     }
+    if is_fork_pull_request_run(run):
+        # GitHub passes no secrets to a fork's pull_request run.
+        secrets = {}
+    # The run's own fields are all it needs.
+    identity = await github_identity_context(db, run)
+
+    db.add(run)
+    await db.flush()
     expression_context = {
         "inputs": payload.get("inputs", {}),
         "vars": variables,
@@ -1050,6 +1592,8 @@ async def create_workflow_run(
             "run_number": run.run_number,
             "sha": head_sha,
             "server_url": settings.BASE_URL,
+            **pull_request_branch_context(event, payload),
+            **identity,
         },
     }
 
@@ -1083,8 +1627,64 @@ async def create_workflow_run(
 
     job_list = build_job_graph(workflow_yaml)
     skipped_job_created = False
+    # Placeholders for reusable calls that could not be inlined, failed once
+    # the run is flushed and their rows have ids for a log.
+    refused_jobs: list[tuple[WorkflowJob, str]] = []
+    # Caller jobs of reusable workflows, by key: True when the call runs.
+    caller_runs: dict[str, bool] = {}
 
     for job_def in job_list:
+        # A need on a caller became a need on its called jobs. A skipped
+        # caller creates none of them, only one skipped job under its own
+        # key, so point the need back at that job. Its needs.<caller> is then
+        # that job's own entry (result "skipped"), not one built from called
+        # jobs that were never created, so the alias for it is dropped.
+        for top_caller, called_jobs in (job_def.get("_caller_needs") or {}).items():
+            if caller_runs.get(top_caller) is not False:
+                continue
+            called = set(called_jobs)
+            kept = [need for need in job_def.get("needs", []) if need not in called]
+            job_def["needs"] = [*kept, top_caller]
+            aliases = job_def.get("_needs_aliases") or {}
+            alias = aliases.get(top_caller)
+            if alias is not None and set(alias.get("jobs", {}).values()) == called:
+                job_def["_needs_aliases"] = {
+                    name: value for name, value in aliases.items() if name != top_caller
+                }
+        caller = job_def.get("_caller")
+        # A caller with needs is decided at promotion; its called jobs carry
+        # its condition and are skipped one by one there.
+        if caller and not caller.get("needs"):
+            caller_key = caller["key"]
+            if caller_key in caller_runs:
+                if not caller_runs[caller_key]:
+                    continue
+            else:
+                caller_context = _job_context(expression_context, {})
+                caller_runs[caller_key] = evaluate_job_if(caller.get("if"), caller_context)
+                if not caller_runs[caller_key]:
+                    # GitHub never expands a skipped call: the run lists the
+                    # caller job alone, named after it. Listing every called
+                    # job as skipped instead named jobs that never existed.
+                    db.add(WorkflowJob(
+                        run_id=run.id,
+                        name=str(render_expressions(caller["name"], caller_context)),
+                        workflow_name=workflow.name,
+                        status="completed",
+                        conclusion="skipped",
+                        completed_at=datetime.now(timezone.utc),
+                        steps=[],
+                        labels=[],
+                        run_attempt=1,
+                        needs=[],
+                        permissions={},
+                        job_key=caller_key,
+                        outputs_config={},
+                        outputs={},
+                    ))
+                    skipped_job_created = True
+                    continue
+
         dynamic_matrix = dynamic_matrix_expression(job_def)
         if dynamic_matrix is not None and not job_def.get("needs"):
             # Nothing to wait for: the matrix reads only the event and the
@@ -1134,10 +1734,15 @@ async def create_workflow_run(
                     "matrix": job_config.get("_matrix", {}),
                     "strategy": job_expression_context["strategy"],
                     "_call_inputs": job_config.get("_call_inputs") or {},
+                    "_call_inputs_chain": job_config.get("_call_inputs_chain") or [],
                     "_call_secrets": job_config.get("_call_secrets") or {},
                     "_workflow_repository": job_config.get("_workflow_repository") or "",
                     "_workflow_sha": job_config.get("_workflow_sha") or "",
+                    "_needs_aliases": job_config.get("_needs_aliases") or {},
                 }
+                if job_config.get("_refused"):
+                    # Failed at promotion, once its condition is known.
+                    pending_render["refused"] = job_config["_refused"]
                 if dynamic_matrix is not None:
                     # Expanded at promotion, once needs.*.outputs exist. The
                     # name and concurrency group read matrix.*, so they are
@@ -1205,7 +1810,7 @@ async def create_workflow_run(
                     job_config.get("runs_on", ["ubuntu-latest"]) if needs
                     else render_job_labels(job_config.get("runs_on", ["ubuntu-latest"]), job_expression_context)
                 ),
-                run_attempt=1,
+                run_attempt=run_attempt,
                 needs=needs,
                 permissions=job_config.get("permissions") or {},
                 job_key=job_config.get("key"),
@@ -1215,10 +1820,16 @@ async def create_workflow_run(
                 workflow_ref=job_config.get("_workflow_ref") or None,
             )
             db.add(job)
+            if job_config.get("_refused") and not needs and conclusion is None:
+                refused_jobs.append((job, job_config["_refused"]))
 
     await db.flush()
-    # A run containing only skipped jobs should finish immediately. Also
-    # propagate skipped dependencies before the first runner poll.
+    for job, why in refused_jobs:
+        fail_refused_job(job, why)
+        skipped_job_created = True
+    # A run containing only skipped (or refused) jobs should finish
+    # immediately. Also propagate those to dependents before the first
+    # runner poll.
     if skipped_job_created:
         await dispatch_ready_jobs(db, run.id)
         await check_run_completion(db, run.id)
@@ -1466,14 +2077,22 @@ async def dispatch_event(
     *,
     ref: str | None = None,
     sha: str | None = None,
+    _pull_request_side: bool = False,
 ) -> list[WorkflowRun]:
     """Dispatch one successful repository activity to matching workflows,
-    and to the repository's webhooks."""
+    and to the repository's webhooks.
+
+    A pull request activity is raised as ``pull_request_target``; it also
+    runs the ``pull_request`` workflows, from the pull request's merge commit
+    (``app.services.pull_request_runs``). That second dispatch passes
+    ``_pull_request_side`` and sends no webhooks: the activity has one.
+    """
     # Webhooks receive every activity, whether or not Actions can run for it.
-    try:
-        await schedule_webhooks(db, repository.id, repository.organization_id, event, payload)
-    except Exception:
-        logger.exception("Scheduling %s webhooks for %s failed", event, repository.full_name)
+    if not _pull_request_side:
+        try:
+            await schedule_webhooks(db, repository.id, repository.organization_id, event, payload)
+        except Exception:
+            logger.exception("Scheduling %s webhooks for %s failed", event, repository.full_name)
     if not repository.disk_path or not actor:
         return []
     if repository.actions_enabled is False:
@@ -1488,11 +2107,6 @@ async def dispatch_event(
     payload.setdefault("ref", f"refs/heads/{ref_name}")
     payload.setdefault("after", sha)
 
-    # Reconcile the Actions workflow inventory before matching this event. This
-    # keeps deleted workflows from remaining active after a push removes them,
-    # while sync_workflows_to_db only reconciles the default branch.
-    await sync_workflows_to_db(db, repository, ref_spec)
-
     envelope = EventEnvelope(
         delivery_id=str(uuid.uuid4()),
         event_name=event,
@@ -1505,10 +2119,36 @@ async def dispatch_event(
         occurred_at=datetime.now(timezone.utc),
     )
 
+    # Every git read comes before this function's first write: SQLite has one
+    # writer, and from the first flush to the commit other writers wait. So the
+    # workflow files and the reusable workflows a match calls are read, and the
+    # triggers evaluated, before the inventory sync and the run inserts below.
+    # (A caller that already wrote in this transaction holds the lock anyway.)
     workflows_yaml = await detect_workflows(repository.disk_path, ref_spec)
+    triggered = []
+    for workflow_yaml in workflows_yaml:
+        if not evaluate_trigger(workflow_yaml, envelope.event_name, envelope.payload):
+            continue
+        triggered.append((
+            workflow_yaml,
+            await materialize_reusable_workflows(
+                workflow_yaml,
+                repository.disk_path,
+                ref_spec,
+                db,
+                inputs=payload.get("inputs", {}),
+                # None: the secrets are the repository's, read at job promotion.
+                secrets=payload.get("secrets"),
+            ),
+        ))
+
+    # Reconcile the Actions workflow inventory before matching this event. This
+    # keeps deleted workflows from remaining active after a push removes them,
+    # while sync_workflows_to_db only reconciles the default branch.
+    await sync_workflows_to_db(db, repository, ref_spec)
+
     result = await db.execute(select(Workflow).where(Workflow.repo_id == repository.id))
     known = {workflow.path: workflow for workflow in result.scalars().all()}
-    runs = []
     for workflow_yaml in workflows_yaml:
         path = workflow_yaml.get("_path", "")
         workflow = known.get(path)
@@ -1520,23 +2160,20 @@ async def dispatch_event(
                 state="active",
             )
             db.add(workflow)
-            await db.flush()
             known[path] = workflow
         else:
             workflow.name = workflow_yaml.get("name", path)
             workflow.state = "active"
+    await db.flush()
+    matched = [(known[raw.get("_path", "")], materialized) for raw, materialized in triggered]
 
-        if not evaluate_trigger(workflow_yaml, envelope.event_name, envelope.payload):
-            continue
-        workflow_yaml = await materialize_reusable_workflows(
-            workflow_yaml,
-            repository.disk_path,
-            ref_spec,
-            db,
-            inputs=payload.get("inputs", {}),
-            # None: the secrets are the repository's, read at job promotion.
-            secrets=payload.get("secrets"),
-        )
+    # A pull_request run's ref is refs/pull/N/merge; its head_branch is the
+    # pull request's head branch, as on GitHub.
+    head_branch = ref_name
+    if event == "pull_request":
+        head_branch = ((payload.get("pull_request") or {}).get("head") or {}).get("ref") or ref_name
+    runs = []
+    for workflow, workflow_yaml in matched:
         run = await create_workflow_run(
             db,
             workflow,
@@ -1545,7 +2182,7 @@ async def dispatch_event(
             envelope.payload,
             envelope.actor,
             envelope.sha,
-            ref_name,
+            head_branch,
         )
         runs.append(run)
 
@@ -1558,6 +2195,10 @@ async def dispatch_event(
             len(runs),
             repository.full_name,
         )
+    if event == "pull_request_target" and not _pull_request_side and payload.get("pull_request"):
+        from app.services.pull_request_runs import dispatch_pull_request
+
+        runs.extend(await dispatch_pull_request(db, repository, actor, action, payload))
     return runs
 
 
@@ -1572,8 +2213,14 @@ async def process_push_event(
     created: bool = False,
     deleted: bool = False,
     forced: bool = False,
+    update_heads: bool = True,
 ) -> list[WorkflowRun]:
-    """Dispatch a push and any matching pull-request synchronizations."""
+    """Dispatch a push and any matching pull-request synchronizations.
+
+    ``update_heads=False`` raises the push itself (webhooks and push
+    workflows) but leaves the pull requests' heads, and their synchronize
+    activity, to the push that moved the branch since.
+    """
     if not repository.disk_path:
         return []
     user = user or repository.owner
@@ -1608,6 +2255,7 @@ async def process_push_event(
         "deleted": deleted,
         "forced": forced,
         "commits": commits,
+        "head_commit": await _head_commit(repository.disk_path, head_sha, deleted),
         "repository": _repository_payload(repository),
         "pusher": {"name": user.login, "email": user.email or ""},
         "sender": _user_payload(user),
@@ -1636,7 +2284,7 @@ async def process_push_event(
 
     # A deleted head ref cannot synchronize an open PR; the push event is the
     # only event generated for that ref update.
-    if deleted:
+    if deleted or not update_heads:
         return runs
 
     # A push to a pull request's head branch is the source of the
@@ -1746,6 +2394,16 @@ async def _get_head_sha(repo_disk_path: str) -> str:
     return stdout.decode().strip() if proc.returncode == 0 else ""
 
 
+async def _head_commit(disk_path: str, head_sha: str, deleted: bool) -> dict | None:
+    """The push payload's head_commit: null for a deleted branch, as on GitHub."""
+    if deleted or not head_sha or set(head_sha) == {"0"}:
+        return None
+    from app.git.bare_repo import get_commit_info
+
+    info = await get_commit_info(disk_path, head_sha)
+    return {"id": head_sha, "message": (info or {}).get("message", "")}
+
+
 async def _get_changed_files_between(
     repo_disk_path: str, before_sha: str, after_sha: str
 ) -> list[tuple[str, str]]:
@@ -1795,8 +2453,8 @@ async def get_ref_sha(repo_disk_path: str, ref: str) -> str:
     return stdout.decode().strip() if proc.returncode == 0 else ""
 
 
-from app.services.workflow_scheduler import (
-    cancel_workflow_run,
+from app.services.workflow_scheduler import (  # noqa: E402 (imports this module back)
+    cancel_workflow_run,  # noqa: F401 (re-exported: callers import it from here)
     check_run_completion,
     dispatch_ready_jobs,
 )

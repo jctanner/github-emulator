@@ -42,7 +42,8 @@ export function ActionJobPage() {
       } catch {
         // Transient network error: try again on the next poll.
       }
-      if (active && !finished) timer = globalThis.setTimeout(() => void refresh(), 1500);
+      if (active && !finished)
+        timer = globalThis.setTimeout(() => void refresh(), 1500);
     }
     void refresh();
     return () => {

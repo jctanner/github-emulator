@@ -78,9 +78,14 @@ async def test_contents_registers_first_commit_and_updates_branch(client, db_ses
     assert response.status_code == 201
     root = f"{API}/repos/testuser/empty"
     assert (await client.get(root + "/branches")).json() == []
+    blob_shas = {}
     for branch in ["main", "main", "other"]:
-        response = await client.put(root + f"/contents/{branch}.txt", json={"message": "Write file", "branch": branch, "content": base64.b64encode(f"{branch} content".encode()).decode()}, headers=headers)
+        body = {"message": "Write file", "branch": branch, "content": base64.b64encode(f"{branch} content".encode()).decode()}
+        if branch in blob_shas:
+            body["sha"] = blob_shas[branch]
+        response = await client.put(root + f"/contents/{branch}.txt", json=body, headers=headers)
         assert response.status_code in (200, 201), response.text
+        blob_shas[branch] = response.json()["content"]["sha"]
         sha = await _disk_sha(db_session, "testuser/empty", branch)
         assert response.json()["commit"]["sha"] == sha
         await _assert_branch(client, "testuser/empty", branch, sha)

@@ -7,7 +7,9 @@ agent protocol that the runner binary expects.
 
 import asyncio
 import base64
+import itertools
 import json
+import logging
 import os
 import secrets
 import uuid
@@ -16,9 +18,25 @@ from urllib.parse import parse_qs, urlsplit, urlunsplit
 
 from fastapi import APIRouter, HTTPException, Query, Request
 from fastapi.responses import FileResponse, JSONResponse, Response
-from sqlalchemy import select
+from sqlalchemy import and_, exists, func, or_, select, update
 from sqlalchemy.orm.attributes import flag_modified
 
+from app.api.actions_dispatch import _claim_queued_job
+from app.api.actions_runner_protocol import (
+    _SERVICE_OWNER,
+    EMULATOR_INSTANCE_ID,
+    EMULATOR_USER_ID,
+    TASK_AREA_ID,
+    _agent_json,
+    _context_dictionary,
+    _job_access_token,
+    _runner_client_id,
+    _service_definition,
+    _template_mapping,
+    _variable,
+    _workflow_guid,
+)
+from app.api.actions_runners import _delete_runner_and_detach_history, normalise_runner_os
 from app.api.deps import DbSession
 from app.config import settings
 from app.models.actions import (
@@ -32,21 +50,32 @@ from app.models.actions import (
 from app.models.repository import Repository
 from app.services.action_download_service import (
     UpstreamActionError,
+    build_local_action_archive,
     fetch_action_archive,
     parse_uses,
     resolve_action_sha,
+    resolve_local_action_sha,
 )
 from app.services.auth_service import hash_token
-from app.services.job_token_service import issue_job_token
+from app.services.job_token_service import validate_job_token
+from app.services.pull_request_runs import is_fork_pull_request_run
 from app.services.runner_credentials import (
     CLIENT_ASSERTION_TYPE,
     InvalidClientAssertion,
     public_key_pem_from_agent,
     verify_client_assertion,
 )
-from app.services.workflow_service import check_run_completion, dispatch_ready_jobs
+from app.services.workflow_service import (
+    _branch_protected,
+    check_run_completion,
+    dispatch_ready_jobs,
+    static_github_facts,
+)
 
 router = APIRouter(tags=["actions-distributed-task"])
+# Under github_emulator, which app.main sends to the server log: job
+# hand-outs, requeues, completions and cancellations can be traced there.
+logger = logging.getLogger("github_emulator.runner_broker")
 
 
 def _job_log_path(job_id: int) -> str:
@@ -140,24 +169,6 @@ def _request_base(request: Request) -> str:
     return _runner_reachable_base_url(configured)
 
 
-from app.api.actions_runners import normalise_runner_os
-from app.api.actions_runner_protocol import (
-    EMULATOR_INSTANCE_ID,
-    EMULATOR_USER_ID,
-    TASK_AREA_ID,
-    _SERVICE_OWNER,
-    _agent_json,
-    _base64url_json,
-    _context_dictionary,
-    _context_value,
-    _job_access_token,
-    _runner_client_id,
-    _service_definition,
-    _template_mapping,
-    _variable,
-    _workflow_guid,
-)
-
 @router.get("/_apis/connectionData")
 @router.get("/{owner}/{repo}/_apis/connectionData")
 async def connection_data(request: Request):
@@ -226,6 +237,13 @@ async def connection_data(request: Request):
                 "27d7f831-88c1-4719-8ca1-6a061dad90eb",
                 "action download info",
                 "_apis/distributedtask/hubs/{hubName}/plans/{planId}/actionsdownloadinfo",
+            ),
+            # TaskResourceIds.PlanEvents: the worker raises JobCompleted here,
+            # and that event is the only place the job's outputs travel.
+            _service_definition(
+                "557624af-b29e-4c20-8ab0-0399d2204f3f",
+                "events",
+                "_apis/distributedtask/hubs/{hubName}/plans/{planId}/events",
             ),
         ],
     }
@@ -336,8 +354,12 @@ async def dt_oauth_token(request: Request, db: DbSession, runner_id: int = Query
     }
 
 
-async def _get_runner_from_token(request: Request, db) -> Runner:
-    """Authenticate a runner from Authorization header."""
+async def _get_runner_from_token(request: Request, db, allow_remove_only: bool = False) -> Runner:
+    """Authenticate a runner from Authorization header.
+
+    A remove-only credential (config.sh remove's) is refused unless the route
+    allows it: only deleting an agent does.
+    """
     auth = request.headers.get("Authorization", "")
     challenge = {"WWW-Authenticate": "Bearer"}
     token = ""
@@ -356,9 +378,25 @@ async def _get_runner_from_token(request: Request, db) -> Runner:
         select(Runner).where(Runner.token_hash == token_hash)
     )
     runner = result.scalar_one_or_none()
-    if runner is None:
+    if runner is None or (runner.remove_only and not allow_remove_only):
         raise HTTPException(status_code=401, detail="Invalid token", headers=challenge)
     return runner
+
+
+def _same_scope_as(runner: Runner):
+    """Runners registered where ``runner`` was: the same repo, org or enterprise.
+
+    On GitHub a runner belongs to the repository, organization or enterprise
+    it registered with, and a runner credential sees only the agents there.
+    """
+    def eq(column, value):
+        return column.is_(None) if value is None else column == value
+
+    return and_(
+        eq(Runner.repo_id, runner.repo_id),
+        eq(Runner.org_id, runner.org_id),
+        eq(Runner.enterprise_slug, runner.enterprise_slug),
+    )
 
 
 async def _get_job_from_job_token(request: Request, db) -> WorkflowJob:
@@ -396,25 +434,12 @@ async def _get_job_from_download_credential(request: Request, db) -> WorkflowJob
 
 
 async def _job_from_token_value(token: str, db, challenge: dict) -> WorkflowJob:
-    try:
-        payload_part = token.split(".")[1]
-        payload_part += "=" * (-len(payload_part) % 4)
-        payload = json.loads(base64.urlsafe_b64decode(payload_part.encode("ascii")))
-    except (IndexError, ValueError, json.JSONDecodeError):
-        raise HTTPException(status_code=401, detail="Invalid job token", headers=challenge) from None
-
-    subject = str(payload.get("sub", ""))
-    if not subject.startswith("job:"):
+    # Verify the signature, issuer and lifetime the token was issued with;
+    # its claims are only as trustworthy as that check.
+    validated = await validate_job_token(db, token)
+    if validated is None:
         raise HTTPException(status_code=401, detail="Invalid job token", headers=challenge)
-    try:
-        job_id = int(subject.split(":", 1)[1])
-    except ValueError:
-        raise HTTPException(status_code=401, detail="Invalid job token", headers=challenge) from None
-
-    result = await db.execute(select(WorkflowJob).where(WorkflowJob.id == job_id))
-    job = result.scalar_one_or_none()
-    if job is None:
-        raise HTTPException(status_code=401, detail="Job token target not found", headers=challenge)
+    job, _run = validated
     return job
 
 
@@ -455,6 +480,8 @@ async def dt_register_pool_agent(
             )
         )
         enterprise_reg = result.scalar_one_or_none()
+    if enterprise_reg is not None and enterprise_reg.for_remove:
+        enterprise_reg = None  # a remove token registers no runner
     if reg is None and enterprise_reg is None:
         raise HTTPException(status_code=401, detail="Invalid registration token")
     registration = reg or enterprise_reg
@@ -479,7 +506,8 @@ async def dt_register_pool_agent(
         last_heartbeat=datetime.now(timezone.utc),
     )
     db.add(runner)
-    await db.delete(registration)
+    # The registration token stays until it expires: on GitHub one token
+    # registers any number of runners within its hour.
     await db.commit()
     await db.refresh(runner)
     return _agent_json(runner, runner_token, _request_base(request))
@@ -493,9 +521,16 @@ async def dt_list_pool_agents(
     db: DbSession,
     agentName: str | None = Query(None),
 ):
-    """List registered pool agents."""
-    await _get_runner_from_token(request, db)
-    query = select(Runner).order_by(Runner.id)
+    """List registered pool agents in the caller's scope.
+
+    config.sh remove looks its agent up here before deleting it, so the
+    remove-only credential may list too. Remove-only credentials are never
+    listed: they are not runners.
+    """
+    caller = await _get_runner_from_token(request, db, allow_remove_only=True)
+    query = select(Runner).where(
+        _same_scope_as(caller), Runner.remove_only.is_not(True),
+    ).order_by(Runner.id)
     if agentName:
         query = query.where(Runner.name == agentName)
     result = await db.execute(query)
@@ -514,8 +549,14 @@ async def dt_update_pool_agent(
     """Update an existing pool-scoped agent during runner replacement."""
     authenticated_runner = await _get_runner_from_token(request, db)
     body = await request.json()
-    result = await db.execute(select(Runner).where(Runner.id == agent_id))
-    runner = result.scalar_one_or_none()
+    # An ordinary runner sees only its own scope (#31): an agent outside it is
+    # 404. A registration broker (config.sh --replace) is looked up unscoped,
+    # so the broker authorization below can answer 403 for a target outside
+    # the token it was issued for (#44), as its tests pin.
+    query = select(Runner).where(Runner.id == agent_id)
+    if not authenticated_runner.registration_broker:
+        query = query.where(_same_scope_as(authenticated_runner))
+    runner = (await db.execute(query)).scalar_one_or_none()
     if runner is None:
         raise HTTPException(status_code=404, detail="Agent not found")
     if authenticated_runner.id != runner.id and not (
@@ -584,14 +625,39 @@ async def dt_delete_pool_agent(
     pool_id: int, agent_id: int, request: Request, db: DbSession,
 ):
     """Remove a pool-scoped agent."""
-    await _get_runner_from_token(request, db)
-    result = await db.execute(select(Runner).where(Runner.id == agent_id))
+    authenticated_runner = await _get_runner_from_token(request, db, allow_remove_only=True)
+    result = await db.execute(select(Runner).where(
+        Runner.id == agent_id, _same_scope_as(authenticated_runner),
+    ))
     runner = result.scalar_one_or_none()
     if runner is None:
         raise HTTPException(status_code=404, detail="Agent not found")
-    await db.delete(runner)
-    await db.commit()
+    if authenticated_runner.remove_only and authenticated_runner.id != runner.id:
+        # config.sh remove's credential is spent once the agent is gone.
+        await db.delete(authenticated_runner)
+    # Detach the jobs that ran on it (PostgreSQL enforces the foreign key);
+    # a job it still runs fails, as the runner will not finish it.
+    await _delete_runner_and_detach_history(db, runner, fail_live_jobs=True)
     return {"status": "removed"}
+
+
+def _pull_request_branch(run: WorkflowRun | None, side: str) -> str:
+    """github.base_ref / head_ref of a pull_request run: the pull request's
+    base and head branches. Empty for every other event here."""
+    if run is None or run.event != "pull_request":
+        return ""
+    pull_request = (run.trigger_payload or {}).get("pull_request") or {}
+    return str((pull_request.get(side) or {}).get("ref") or "")
+
+
+def _message_ref(run: WorkflowRun | None) -> str:
+    """The full ref the job message names: the event's, else the run's branch."""
+    ref = (
+        (run.trigger_payload or {}).get("ref")
+        if run and isinstance(run.trigger_payload, dict)
+        else None
+    )
+    return ref or f"refs/heads/{run.head_branch if run else 'main'}"
 
 
 def _job_request_message(
@@ -599,6 +665,7 @@ def _job_request_message(
     run: WorkflowRun | None,
     repo: Repository | None = None,
     base_url: str | None = None,
+    ref_protected: bool = False,
 ) -> dict:
     timeline_id = _workflow_guid("timeline", job.id)
     job_guid = _workflow_guid("job", job.id)
@@ -607,12 +674,7 @@ def _job_request_message(
     access_token = _job_access_token(job)
     repo_full_name = repo.full_name if repo else "unknown/unknown"
     repo_owner = repo_full_name.split("/", 1)[0]
-    ref = (
-        (run.trigger_payload or {}).get("ref")
-        if run and isinstance(run.trigger_payload, dict)
-        else None
-    )
-    ref = ref or f"refs/heads/{run.head_branch if run else 'main'}"
+    ref = _message_ref(run)
     sha = run.head_sha if run else "0" * 40
     workflow_name = job.workflow_name or job.name
     # Actions OIDC, as the upstream runner sees it. The runner's own plumbing
@@ -620,7 +682,10 @@ def _job_request_message(
     # directly in each step's environment, which is what actually has to hold
     # them when the step runs. A job that did not declare "id-token: write"
     # gets neither, matching GitHub.
-    may_mint = job.permissions is None or job.permissions.get("id-token") == "write"
+    may_mint = (
+        (job.permissions is None or job.permissions.get("id-token") == "write")
+        and not is_fork_pull_request_run(run)
+    )
     oidc_environment = (
         {
             "ACTIONS_ID_TOKEN_REQUEST_URL": (
@@ -631,6 +696,10 @@ def _job_request_message(
         if may_mint
         else {}
     )
+    # gh does not read GITHUB_API_URL. Without GH_HOST every gh call in a step
+    # went to api.github.com with the emulator's token and failed with "Bad
+    # credentials" (the Python runner sets it per step for the same reason).
+    step_environment = {**oidc_environment, "GH_HOST": _gh_host(runner_base_url)}
     body = {
         "messageType": "PipelineAgentJobRequest",
         "jobId": job_guid,
@@ -640,15 +709,23 @@ def _job_request_message(
         "plan": {
             "planId": plan_guid,
             "planType": "Build",
-            "version": 1,
+            # From plan version 8 the worker raises JobCompleted, carrying the
+            # job's outputs, and the listener no longer finishes the request
+            # (PlanUtil.GetFeatures). Below 8 the outputs are never sent, so
+            # dt_raise_plan_event completes the job instead.
+            "version": 8,
         },
         "timeline": {
             "id": timeline_id,
         },
         "steps": [
-            _job_step_message(job, step, oidc_environment)
+            _job_step_message(job, step, step_environment)
             for step in (job.steps or [])
         ],
+        # The job's `outputs:`, which the runner evaluates against its steps
+        # when the job ends and reports in JobCompleted. Without them it has
+        # nothing to report, and needs.<job>.outputs stays empty.
+        **({"jobOutputs": _template_mapping(job.outputs_config)} if job.outputs_config else {}),
         "variables": {
             "system.github.token": _variable(access_token, is_secret=True),
             "system.github.job": _variable(job.name),
@@ -657,6 +734,16 @@ def _job_request_message(
             "system.github.ref": _variable(ref),
             "system.github.sha": _variable(sha),
             "system.github.workflow": _variable(workflow_name),
+            # actions/runner processes `::notice::` only when the server
+            # turns this on (ActionCommandManager: "Enhanced Annotations not
+            # enabled on the server: 'notice' command will not be
+            # processed"); without it the line stays raw in the log. GitHub
+            # documents notice as a workflow command beside warning and
+            # error, rendered as `##[notice]` in the job log.
+            "DistributedTask.EnhancedAnnotations": _variable("true"),
+            # runner.environment and RUNNER_ENVIRONMENT. The jobs stand in for
+            # GitHub-hosted ones, which is what workflows here are written for.
+            "system.runnerEnvironment": _variable("github-hosted"),
         },
         "contextData": {
             # The runner expands an expression only when every context the
@@ -677,13 +764,15 @@ def _job_request_message(
             }),
             "matrix": None,
             "github": _context_dictionary({
+                "actor": run.actor.login if run and run.actor else "",
+                "actor_id": str(run.actor_id) if run and run.actor_id else "",
                 "api_url": f"{runner_base_url}/api/v3",
-                "base_ref": "",
+                "base_ref": _pull_request_branch(run, "base"),
                 "event_name": run.event if run else "workflow_dispatch",
                 "event_path": "",
                 "event": run.trigger_payload if run and run.trigger_payload else {},
                 "graphql_url": f"{runner_base_url}/api/graphql",
-                "head_ref": "",
+                "head_ref": _pull_request_branch(run, "head"),
                 "job": job.name,
                 "ref": ref,
                 "repository": repo_full_name,
@@ -697,8 +786,18 @@ def _job_request_message(
                 "server_url": runner_base_url,
                 "sha": sha,
                 "token": access_token,
+                "triggering_actor": run.actor.login if run and run.actor else "",
                 "workflow": workflow_name,
+                "workflow_ref": (
+                    f"{repo_full_name}/{run.workflow.path}@{ref}"
+                    if run and run.workflow and run.workflow.path else ""
+                ),
                 "workspace": "",
+                # ref_name, ref_type, ref_protected, workflow_sha and the
+                # rest: the runner exports the first four as GITHUB_* env.
+                **static_github_facts(
+                    ref, sha, repo_full_name, repo.private if repo else None, ref_protected,
+                ),
             }),
         },
         "resources": {
@@ -713,6 +812,13 @@ def _job_request_message(
                         "parameters": {
                             "AccessToken": access_token,
                         },
+                    },
+                    # The runner exports ResultsServiceUrl to node actions as
+                    # ACTIONS_RESULTS_URL (NodeScriptActionHandler), where
+                    # upload-artifact@v4+ and download-artifact@v4+ find the
+                    # results service (src/app/api/actions_results.py).
+                    "data": {
+                        "ResultsServiceUrl": f"{runner_base_url}/",
                     },
                     "isReady": True,
                 }
@@ -779,11 +885,37 @@ def _job_step_message(
         "condition": step.get("if") or "success()",
         # The step's own env wins, so a workflow can still override these.
         "environment": _template_mapping(
-            {**(extra_environment or {}), **(step.get("env") or {})}
+            _with_gh_enterprise_token({**(extra_environment or {}), **(step.get("env") or {})})
         ),
         "reference": reference,
         "inputs": _template_mapping(inputs),
     }
+
+
+def _gh_host(base_url: str) -> str:
+    """The emulator's host as gh's GH_HOST takes it: no scheme, no default port."""
+    parts = urlsplit(base_url)
+    default = {"http": 80, "https": 443}.get(parts.scheme)
+    if parts.port and parts.port != default:
+        return f"{parts.hostname}:{parts.port}"
+    return parts.hostname or ""
+
+
+def _with_gh_enterprise_token(environment: dict) -> dict:
+    """Mirror the token the workflow chose into gh's enterprise variables.
+
+    gh treats any host but github.com as GitHub Enterprise and reads its
+    credential from GH_ENTERPRISE_TOKEN, ignoring GH_TOKEN. Only a token the
+    workflow declared is mirrored, as the same expression so the runner
+    resolves it when the step starts: an ambient job token here would outrank
+    a narrower token a step mints for itself (the Python runner learnt the
+    same). A workflow that sets the enterprise variables itself wins.
+    """
+    token = environment.get("GH_TOKEN") or environment.get("GITHUB_TOKEN")
+    if token:
+        environment.setdefault("GH_ENTERPRISE_TOKEN", token)
+        environment.setdefault("GITHUB_ENTERPRISE_TOKEN", token)
+    return environment
 
 
 def _unsupported_uses_script(uses: str) -> str:
@@ -862,27 +994,19 @@ async def _claim_next_job(
         job_query = job_query.where(WorkflowRun.repo_id == runner.repo_id)
     job_result = await db.execute(job_query)
     runner_labels = {str(label).lower() for label in (runner.labels or [])}
-    job = next(
-        (
-            candidate
-            for candidate in job_result.scalars().all()
-            if {
-                str(label).lower()
-                for label in (candidate.labels or ["self-hosted"])
-            }.issubset(runner_labels)
-        ),
-        None,
-    )
+    job = None
+    for candidate in job_result.scalars().all():
+        if not {
+            str(label).lower()
+            for label in (candidate.labels or ["self-hosted"])
+        }.issubset(runner_labels):
+            continue
+        # Another runner's poll may have claimed this job since it was read.
+        if await _claim_queued_job(db, candidate, runner):
+            job = candidate
+            break
     if job is None:
         return Response(status_code=204)
-
-    job.status = "in_progress"
-    job.runner_id = runner.id
-    job.runner_name = runner.name
-    job.started_at = datetime.now(timezone.utc)
-    runner.busy = True
-    runner.status = "busy"
-    await db.commit()
 
     run_result = await db.execute(
         select(WorkflowRun).where(WorkflowRun.id == job.run_id)
@@ -897,7 +1021,11 @@ async def _claim_next_job(
         repo_result = await db.execute(select(Repository).where(Repository.id == run.repo_id))
         repo = repo_result.scalar_one_or_none()
 
-    return _job_request_message(job, run, repo, base_url)
+    # Looked up here, on the async session, rather than through
+    # repo.branches: the message builder is synchronous and must not load a
+    # relationship.
+    ref_protected = await _branch_protected(db, run.repo_id if run else None, _message_ref(run))
+    return _job_request_message(job, run, repo, base_url, ref_protected)
 
 
 async def _update_timeline_for_job(job: WorkflowJob, body: dict, db) -> None:
@@ -958,26 +1086,19 @@ async def _job_from_timeline_id(timeline_id: str, db) -> WorkflowJob | None:
     return None
 
 
-async def _job_from_plan_id(plan_id: str, db) -> WorkflowJob | None:
-    result = await db.execute(
-        select(WorkflowJob)
-        .where(WorkflowJob.status == "in_progress")
-        .order_by(WorkflowJob.started_at.desc())
-    )
-    in_progress_jobs = result.scalars().all()
-    for job in in_progress_jobs:
-        if _workflow_guid("run", job.run_id) == plan_id:
-            return job
+async def _job_for_plan(request: Request, db, plan_id: str, timeline_id: str | None = None) -> WorkflowJob:
+    """The job token's own job, when the plan and timeline in the path are its own.
 
-    result = await db.execute(
-        select(WorkflowJob)
-        .order_by(WorkflowJob.created_at.desc())
-        .limit(25)
-    )
-    for job in result.scalars().all():
-        if _workflow_guid("run", job.run_id) == plan_id:
-            return job
-    return None
+    The runner addresses each job-server call with the plan (the run) and
+    timeline (the job) ids from its job message. A token reaches only those;
+    any other plan or timeline is 404.
+    """
+    job = await _get_job_from_job_token(request, db)
+    if plan_id != _workflow_guid("run", job.run_id):
+        raise HTTPException(status_code=404, detail="Plan not found")
+    if timeline_id is not None and timeline_id not in (_workflow_guid("timeline", job.id), str(job.id)):
+        raise HTTPException(status_code=404, detail="Timeline not found")
+    return job
 
 
 def _complete_queued_steps(job: WorkflowJob, result_str: str | int) -> None:
@@ -993,20 +1114,397 @@ def _complete_queued_steps(job: WorkflowJob, result_str: str | int) -> None:
     flag_modified(job, "steps")
 
 
-async def _complete_job(job: WorkflowJob, runner: Runner, result_str: str, db) -> None:
-    job.status = "completed"
-    job.conclusion = _result_to_conclusion(result_str)
-    job.completed_at = datetime.now(timezone.utc)
-    if _is_success_result(result_str):
-        _complete_queued_steps(job, result_str)
+# The job each runner was last handed: runner id -> (job id, job guid). Kept
+# apart from the job row, because deleting a repository deletes its runs and
+# jobs while runners may still be executing them.
+_holding: dict[int, tuple[int, str]] = {}
 
+# How long after handing out a job a runner's "Online" is not believed.
+_IDLE_GRACE = timedelta(minutes=2)
+
+# The real runner abandons its message poll whenever its status changes and
+# opens a new one at once; the server keeps running the abandoned request. A
+# job that request claimed was answered to nobody, and sat in progress on a
+# runner that never saw it. So only a runner's newest poll may hand out a
+# job, and hand-outs and the settling of a runner's state are serialised per
+# runner.
+_poll_generation: dict[int, int] = {}
+# A poll's generation is its arrival number, taken before the poll's first
+# await. Taken after the token lookup and the heartbeat commit, an older poll
+# delayed there got a higher generation than a newer live one, and replaced
+# it. One counter for every runner: only the order matters.
+_poll_arrivals = itertools.count(1)
+# The job message each runner last acknowledged (DELETE of the message, which
+# the runner sends once it has dispatched the job, before its next poll): that
+# job was received for certain, whatever lastMessageId a late poll carries.
+# One entry per runner, replaced only by the runner's next acknowledgement,
+# which follows a hand-out that needed the previous job's report committed.
+# Dropping the entry when the report arrived opened a gap, before that report
+# committed, in which the job looked unreceived and was requeued after it ran.
+_acknowledged: dict[int, int] = {}
+# The job whose JobCancellation each runner last acknowledged. Until then the
+# cancellation is sent again on every live poll, so a response the runner
+# abandoned or never got does not lose it. In memory: after a restart the
+# runner may get it once more, and it ignores a cancellation for a job it no
+# longer runs.
+_cancellation_acknowledged: dict[int, int] = {}
+_runner_locks: dict[tuple[int, int], asyncio.Lock] = {}
+
+# JobCancellation message ids, apart from job message ids (the job id), so a
+# DELETE of one is not taken for the other.
+_CANCELLATION_MESSAGE_BASE = 1 << 40
+
+# How long a handed-out job may stay unacknowledged before a poll that does
+# not name it counts as proof the runner never received it.
+_ACK_WINDOW = timedelta(seconds=5)
+
+# Long-poll pacing; tests shorten them.
+_POLL_SECONDS = 30.0
+_POLL_INTERVAL_SECONDS = 2.0
+
+
+def _runner_lock(runner_id: int) -> asyncio.Lock:
+    # Keyed by event loop too: a lock is bound to the loop it first waits on.
+    loop = id(asyncio.get_running_loop())
+    key = (loop, runner_id)
+    lock = _runner_locks.get(key)
+    if lock is None:
+        # Locks of a loop that has gone (tests run one loop each) are dead.
+        for stale in [k for k, held in _runner_locks.items() if k[0] != loop and not held.locked()]:
+            del _runner_locks[stale]
+        lock = _runner_locks[key] = asyncio.Lock()
+    return lock
+
+
+def _reset_broker_state() -> None:
+    """Forget every runner's in-memory broker state (tests; ids restart at 1)."""
+    for state in (_holding, _poll_generation, _acknowledged, _cancellation_acknowledged, _runner_locks):
+        state.clear()
+
+
+async def _pending_cancellation(runner: Runner, db) -> dict | None:
+    """A JobCancellation message for the job this runner holds, once the job
+    was cancelled while it ran (a newer job superseding it under
+    ``concurrency: cancel-in-progress``, or a run cancelled through the API),
+    or no longer exists (its repository was deleted, as GitHub cancels a
+    deleted repository's running jobs).
+
+    Without it the runner never heard: the job was cancelled in the database
+    and ran to its end anyway, so a superseded stage ran twice; or the job
+    vanished and the runner stayed busy for good.
+
+    Reads are fresh (``populate_existing``): the long poll keeps one session,
+    which does not expire objects on commit, so a cancellation committed by
+    another request mid-poll was otherwise hidden behind the job row loaded
+    on the first pass.
+    """
+    held = _holding.get(runner.id)
+    if held is not None:
+        # Held means busy: the hold ends only where the runner is freed.
+        job_id, job_guid = held
+        job = (await db.execute(
+            select(WorkflowJob)
+            .where(WorkflowJob.id == job_id)
+            .execution_options(populate_existing=True)
+        )).scalar_one_or_none()
+        if job is not None and job.conclusion != "cancelled":
+            return None
+    else:
+        # After a restart nothing is held in memory; ask the database.
+        await db.refresh(runner, attribute_names=["busy", "status"])
+        if not (runner.busy or runner.status == "busy"):
+            return None
+        job = (await db.execute(
+            select(WorkflowJob)
+            .where(WorkflowJob.runner_id == runner.id)
+            .order_by(WorkflowJob.started_at.desc(), WorkflowJob.id.desc())
+            .limit(1)
+            .execution_options(populate_existing=True)
+        )).scalar_one_or_none()
+        if job is None or job.conclusion != "cancelled":
+            return None
+        job_id, job_guid = job.id, _workflow_guid("job", job.id)
+    if _cancellation_acknowledged.get(runner.id) == job_id:
+        return None
+    # The shape the runner's JobCancelMessage reads; the timeout is how long
+    # its steps get to stop before they are killed.
+    body = json.dumps({"jobId": job_guid, "timeout": "00:05:00"}, separators=(",", ":"))
+    message_id = _CANCELLATION_MESSAGE_BASE + job_id
+    return {
+        "messageId": message_id,
+        "messageType": "JobCancellation",
+        "body": body,
+        "MessageId": message_id,
+        "MessageType": "JobCancellation",
+        "Body": body,
+    }
+
+
+def _age(started: datetime | None, now: datetime) -> timedelta:
+    """How long ago a job was handed out; a job with no start time counts as old."""
+    if started is None:
+        return _IDLE_GRACE
+    if started.tzinfo is None:
+        started = started.replace(tzinfo=timezone.utc)
+    return now - started
+
+
+def _job_started(job: WorkflowJob) -> bool:
+    """Whether the runner reported any step of ``job`` (timeline updates)."""
+    return any((step or {}).get("status") not in (None, "queued") for step in (job.steps or []))
+
+
+async def _settle_idle_runner(runner: Runner, status: str, last_message_id: str, db) -> None:
+    """Believe a runner that says it is idle.
+
+    The runner reports its state (status=Online or Busy) and the id of the
+    last message it received (lastMessageId) on every poll. A runner we hold
+    busy that says Online either never received the job we handed it (the
+    poll that carried it was abandoned, see ``_poll_generation``), or
+    finished or lost it without a report reaching us (its job was deleted,
+    or the report failed). Left busy, it was never given another job.
+
+    A job it never received goes back to the queue. One it received and
+    still holds after the grace period fails, so the run is not left waiting
+    for good. Either way the runner is freed.
+    """
+    if status.strip().lower() != "online":
+        return
+    await db.refresh(runner, attribute_names=["busy", "status"])
+    if not (runner.busy or runner.status == "busy"):
+        return
+    now = datetime.now(timezone.utc)
+    held = _holding.get(runner.id)
+    # The held job whose cancellation, should one commit before the runner is
+    # freed, must still reach the runner.
+    watched = None
+    if held is not None and _cancellation_acknowledged.get(runner.id) != held[0]:
+        watched = held[0]
+        # The held job was cancelled and its cancellation is not yet
+        # acknowledged. An Online poll the runner sent before it took the job
+        # can still arrive; freeing the runner on it would drop the
+        # cancellation while the job runs. Keep it busy within the grace
+        # period, so the cancellation is sent.
+        held_job = (await db.execute(
+            select(WorkflowJob)
+            .where(WorkflowJob.id == held[0])
+            .execution_options(populate_existing=True)
+        )).scalar_one_or_none()
+        if held_job is None or (
+            held_job.conclusion == "cancelled"
+            and _age(held_job.started_at, now) < _IDLE_GRACE
+        ):
+            # A deleted job (its repository was deleted) has no start time to
+            # bound the wait; its cancellation goes out on this poll, and the
+            # runner's acknowledgement lets the next Online poll free it.
+            await db.commit()
+            return
+        if held_job.conclusion == "cancelled":
+            # Past the grace period the runner is idle for good.
+            watched = None
+    jobs = (await db.execute(
+        select(WorkflowJob)
+        .where(WorkflowJob.runner_id == runner.id, WorkflowJob.status == "in_progress")
+        .execution_options(populate_existing=True)
+    )).scalars().all()
+    for job in jobs:
+        age = _age(job.started_at, now)
+        # Never received: the runner names another message as its last, or
+        # (a runner that has had no message since it connected) names none
+        # and the job never started a step. A poll the runner gave up on
+        # before the hand-out came back looks like that; failing the job
+        # then lost a run the runner never saw.
+        # A runner restarted mid-job also sends no last message, but its
+        # job has started steps, so it still fails below.
+        never_received = (
+            (last_message_id and last_message_id != str(job.id))
+            or (not last_message_id and not _job_started(job))
+        )
+        if never_received and _acknowledged.get(runner.id) != job.id:
+            if age < _ACK_WINDOW:
+                # A request the runner sent before it got the job can still
+                # reach us after the hand-out; the acknowledgement follows
+                # within milliseconds. Decide on a later pass.
+                await db.commit()
+                return
+            # Conditional: a report of this job committed meanwhile wins.
+            requeued = await db.execute(
+                update(WorkflowJob)
+                .where(
+                    WorkflowJob.id == job.id,
+                    WorkflowJob.status == "in_progress",
+                    WorkflowJob.runner_id == runner.id,
+                )
+                .values(status="queued", runner_id=None, runner_name=None, started_at=None)
+                .execution_options(synchronize_session=False)
+            )
+            if requeued.rowcount == 1:
+                logger.info(
+                    "Runner %s never received job %s (its last message is %s); job requeued",
+                    runner.name, job.id, last_message_id or "none",
+                )
+            continue
+        if age < _IDLE_GRACE:
+            # The runner can poll once more as Online right after it took
+            # the job, before its dispatcher marks it Busy.
+            await db.commit()
+            return
+        logger.warning("Runner %s reports idle while holding job %s; failing the job", runner.name, job.id)
+        _holding[runner.id] = (job.id, _workflow_guid("job", job.id))
+        await _complete_job(job, runner, "Failed", db)
+    if watched is not None and not await _free_runner_unless_cancelled(runner, watched, db):
+        # The held job was cancelled (or deleted) after it was read above, so
+        # the in-progress list missed it. Keep the hold: the cancellation goes
+        # out on this poll.
+        logger.info("Runner %s's job %s was cancelled while its poll settled; left busy", runner.name, watched)
+        await db.commit()
+        return
+    _holding.pop(runner.id, None)
     runner.busy = False
     runner.status = "online"
+    await db.commit()
+
+
+async def _free_runner_unless_cancelled(runner: Runner, job_id: int, db) -> bool:
+    """Mark ``runner`` idle unless its job ``job_id`` is cancelled or gone.
+
+    One statement, so the job's conclusion is read where the runner is
+    written: SQLite runs it under its write lock, and a cancellation commits
+    either before it (the runner stays busy) or after it. The cancellation
+    writers run inside other requests' transactions (run cancel, concurrency
+    supersede, repository delete) and do not take the runner's lock.
+    """
+    await db.flush()
+    freed = await db.execute(
+        update(Runner)
+        .where(
+            Runner.id == runner.id,
+            exists().where(
+                WorkflowJob.id == job_id,
+                or_(WorkflowJob.conclusion.is_(None), WorkflowJob.conclusion != "cancelled"),
+            ),
+        )
+        .values(busy=False, status="online")
+        .execution_options(synchronize_session=False)
+    )
+    await db.refresh(runner, attribute_names=["busy", "status"])
+    return freed.rowcount == 1
+
+
+async def _release_claim(runner: Runner, job_id: int, db) -> None:
+    """Give back a job a poll claimed but cannot hand out; free the runner."""
+    # Conditional, as the requeue in _settle_idle_runner.
+    await db.execute(
+        update(WorkflowJob)
+        .where(
+            WorkflowJob.id == job_id,
+            WorkflowJob.status == "in_progress",
+            WorkflowJob.runner_id == runner.id,
+        )
+        .values(status="queued", runner_id=None, runner_name=None, started_at=None)
+        .execution_options(synchronize_session=False)
+    )
+    runner.busy = False
+    runner.status = "online"
+    await db.commit()
+    logger.info("Runner %s's poll was replaced while it claimed job %s; job requeued", runner.name, job_id)
+
+
+async def _runner_moved_on(runner: Runner, job: WorkflowJob, db) -> bool:
+    """Whether the runner now runs a job other than ``job``."""
+    held = _holding.get(runner.id)
+    if held is not None and held[0] != job.id:
+        return True
+    other = (await db.execute(
+        select(WorkflowJob.id).where(
+            WorkflowJob.runner_id == runner.id,
+            WorkflowJob.status == "in_progress",
+            WorkflowJob.id != job.id,
+        ).limit(1)
+    )).scalar_one_or_none()
+    return other is not None
+
+
+async def _complete_job(
+    job: WorkflowJob, runner: Runner, result_str: str, db, outputs: dict | None = None,
+) -> None:
+    # A job cancelled while it ran keeps that conclusion when its runner
+    # reports the end; the report still frees the runner, unless the runner
+    # has already taken another job. The write is conditional on the stored
+    # row, not on ``job``: cancellation writers do not take the runner's
+    # lock, so one can commit after the caller loaded the job. Reported
+    # outputs are written by the same conditional UPDATE, so a cancelled job
+    # keeps the outputs it had.
+    await db.flush()
+    values = {
+        "status": "completed",
+        "conclusion": _result_to_conclusion(result_str),
+        "completed_at": datetime.now(timezone.utc),
+    }
+    if outputs:
+        values["outputs"] = {**(job.outputs or {}), **outputs}
+    finished = await db.execute(
+        update(WorkflowJob)
+        .where(
+            WorkflowJob.id == job.id,
+            or_(
+                WorkflowJob.status != "completed",
+                WorkflowJob.conclusion.is_(None),
+                WorkflowJob.conclusion != "cancelled",
+            ),
+        )
+        .values(**values)
+        .execution_options(synchronize_session=False)
+    )
+    await db.refresh(job)
+    if finished.rowcount == 1 and _is_success_result(result_str):
+        _complete_queued_steps(job, result_str)
+
+    if await _runner_moved_on(runner, job, db):
+        # A late report of a job's end can land after the runner took its
+        # next job. Freeing it then hid that job's cancellation, and offered
+        # the runner a second job while it ran one.
+        logger.info("Runner %s reported job %s after taking another; left busy", runner.name, job.id)
+    else:
+        if _holding.get(runner.id, (None,))[0] == job.id:
+            del _holding[runner.id]
+        runner.busy = False
+        runner.status = "online"
+    logger.info("Runner %s reported job %s: %s (%s)", runner.name, job.id, result_str, job.conclusion)
     await db.flush()
 
     await dispatch_ready_jobs(db, job.run_id)
     await check_run_completion(db, job.run_id)
     await db.flush()
+
+
+async def _report_job_end(
+    job: WorkflowJob, runner: Runner, result_str: str, db, outputs: dict | None = None,
+) -> bool:
+    """A runner's report of a job's end, serialised with its polls.
+
+    Under the runner's lock, so the report sees a job a poll handed the
+    runner meanwhile and does not free the runner while it runs that job.
+
+    False, and nothing changed, when the job is no longer the runner's once
+    the lock is held: a poll requeued it (the runner never received it) or
+    another runner took it while this report waited. Ownership is checked
+    again here because those writers hold the lock, so a check made before
+    waiting can be stale.
+    """
+    async with _runner_lock(runner.id):
+        owner = (await db.execute(
+            select(WorkflowJob.runner_id)
+            .where(WorkflowJob.id == job.id)
+            .execution_options(populate_existing=True)
+        )).scalar_one_or_none()
+        if owner != runner.id:
+            await db.commit()
+            logger.info("Runner %s reported job %s, which it no longer holds; ignored", runner.name, job.id)
+            return False
+        await _complete_job(job, runner, result_str, db, outputs)
+        await db.commit()
+        return True
 
 
 @router.post("/_apis/distributedtask/connect")
@@ -1045,6 +1543,9 @@ async def dt_get_messages(
     session_id: str, request: Request, db: DbSession,
 ):
     """Long-poll for job messages. Returns a PipelineAgentJobRequest when available."""
+    # Before any await: the order polls arrived in, not the order they
+    # finished setting up, decides which one is the runner's newest.
+    generation = next(_poll_arrivals)
     runner = await _get_runner_from_token(request, db)
 
     result = await db.execute(
@@ -1058,13 +1559,61 @@ async def dt_get_messages(
     runner.last_heartbeat = session.last_seen
     await db.commit()
 
-    deadline = asyncio.get_event_loop().time() + 30
-    while asyncio.get_event_loop().time() < deadline:
-        message = await _claim_next_job(runner, db, _request_base(request))
-        if not isinstance(message, Response):
-            return message
+    runner_id = runner.id
+    # A newer poll that registered first keeps its place; this one then
+    # finds itself replaced on its first pass.
+    _poll_generation[runner_id] = max(_poll_generation.get(runner_id, 0), generation)
+    lock = _runner_lock(runner_id)
+    status = request.query_params.get("status", "")
+    last_message_id = request.query_params.get("lastMessageId", "")
 
-        await asyncio.sleep(2)
+    deadline = asyncio.get_event_loop().time() + _POLL_SECONDS
+    while asyncio.get_event_loop().time() < deadline:
+        async with lock:
+            if _poll_generation.get(runner_id) != generation or await request.is_disconnected():
+                # A newer poll from this runner replaced this one.
+                return Response(status_code=204)
+            # Every pass, not only the first: a lost hand-out is decided once
+            # its acknowledgement window has passed.
+            await _settle_idle_runner(runner, status, last_message_id, db)
+            # End the read transaction: under WAL a write in a transaction
+            # that began by reading fails at once when another writer
+            # committed meanwhile, without waiting on busy_timeout.
+            await db.commit()
+            cancellation = await _pending_cancellation(runner, db)
+            if cancellation is not None:
+                logger.info(
+                    "Runner %s sent cancellation of job %s",
+                    runner.name, cancellation["messageId"] - _CANCELLATION_MESSAGE_BASE,
+                )
+                return cancellation
+            # Again, right before a hand-out: a newer poll can start while
+            # this one awaited the database above, and the runner abandoned
+            # this one when it did.
+            if _poll_generation.get(runner_id) != generation or await request.is_disconnected():
+                return Response(status_code=204)
+            # This poll loaded the runner before it waited for the lock; an
+            # older poll may have handed it a job since (_claim_next_job
+            # hands nothing to a busy runner).
+            await db.refresh(runner, attribute_names=["busy", "status"])
+            await db.commit()
+            message = await _claim_next_job(runner, db, _request_base(request))
+            if not isinstance(message, Response):
+                body = json.loads(message["body"])
+                if _poll_generation.get(runner_id) != generation or await request.is_disconnected():
+                    # A newer poll started while this one claimed the job:
+                    # the runner reads only the newer one.
+                    await _release_claim(runner, int(body["requestId"]), db)
+                    return Response(status_code=204)
+                _holding[runner_id] = (int(body["requestId"]), str(body["jobId"]))
+                logger.info("Runner %s acquired job %s", runner.name, body["requestId"])
+                return message
+
+        # End the read transaction: under SQLite WAL it pins the snapshot it
+        # started with, and the next pass must see a cancellation or a newly
+        # queued job committed meanwhile.
+        await db.commit()
+        await asyncio.sleep(_POLL_INTERVAL_SECONDS)
 
     return Response(status_code=204)
 
@@ -1101,7 +1650,7 @@ async def dt_update_timeline(
     job_id: int, request: Request, db: DbSession,
 ):
     """Runner reports step timeline updates."""
-    runner = await _get_runner_from_token(request, db)
+    await _get_runner_from_token(request, db)
     body = await request.json()
 
     result = await db.execute(
@@ -1133,9 +1682,8 @@ async def dt_complete_job(
     if job is None:
         raise HTTPException(status_code=404, detail="Job not found")
 
-    await _complete_job(job, runner, body.get("result", "Succeeded"), db)
-    await db.commit()
-
+    if not await _report_job_end(job, runner, body.get("result", "Succeeded"), db):
+        raise HTTPException(status_code=404, detail="Job not found")
     return {"status": "completed"}
 
 
@@ -1184,7 +1732,17 @@ async def dt_delete_pool_message(
     sessionId: str | None = None,
 ):
     """Acknowledge removal of a delivered message from the queue."""
-    await _get_runner_from_token(request, db)
+    runner = await _get_runner_from_token(request, db)
+    # Under the runner's lock: a poll deciding whether the runner received
+    # its job must not miss an acknowledgement landing mid-decision.
+    async with _runner_lock(runner.id):
+        if message_id >= _CANCELLATION_MESSAGE_BASE:
+            job_id = message_id - _CANCELLATION_MESSAGE_BASE
+            _cancellation_acknowledged[runner.id] = job_id
+            logger.info("Runner %s acknowledged cancellation of job %s", runner.name, job_id)
+        elif _holding.get(runner.id, (None,))[0] == message_id:
+            _acknowledged[runner.id] = message_id
+            logger.info("Runner %s acknowledged job %s", runner.name, message_id)
     return {"messageId": message_id, "status": "deleted"}
 
 
@@ -1195,6 +1753,25 @@ async def dt_delete_pool_session(
 ):
     """Pool-scoped session cleanup."""
     return await dt_delete_session(session_id, request, db)
+
+
+def _job_request_not_found(request_id: int) -> JSONResponse:
+    """The job request is gone or held by another runner.
+
+    The runner stops renewing its lock, and abandons the job, only on
+    TaskAgentJobNotFoundException. A bare 404 is retried, so a runner that
+    lost the job would keep renewing instead of polling for another one.
+    """
+    response = _wrapped_exception(
+        404,
+        "TaskAgentJobNotFoundException",
+        f"Job request {request_id} was not found or is assigned to another runner.",
+    )
+    # Kept from the earlier plain 404 for clients that read it; the runner
+    # reads typeKey and ignores it.
+    body = json.loads(response.body)
+    body["detail"] = "Job request not found"
+    return JSONResponse(status_code=404, content=body)
 
 
 @router.post("/_apis/distributedtask/pools/{pool_id}/jobrequests/{request_id}")
@@ -1209,7 +1786,7 @@ async def dt_accept_pool_job_request(
     )
     job = result.scalar_one_or_none()
     if job is None:
-        raise HTTPException(status_code=404, detail="Job request not found")
+        return _job_request_not_found(request_id)
     return _job_request_response(job, runner)
 
 
@@ -1226,16 +1803,19 @@ async def dt_update_pool_job_request(
     )
     job = result.scalar_one_or_none()
     if job is None:
-        raise HTTPException(status_code=404, detail="Job request not found")
+        return _job_request_not_found(request_id)
 
     query_result = request.query_params.get("result")
     if "result" in body and body["result"] is not None:
-        await _complete_job(job, runner, body["result"], db)
+        result_str = body["result"]
     elif query_result is not None:
-        await _complete_job(job, runner, query_result, db)
+        result_str = query_result
     elif str(body.get("state", "")).lower() == "completed":
-        await _complete_job(job, runner, body.get("result", "Succeeded"), db)
-
+        result_str = body.get("result", "Succeeded")
+    else:
+        result_str = None
+    if result_str is not None and not await _report_job_end(job, runner, result_str, db):
+        return _job_request_not_found(request_id)
     await db.commit()
     return _job_request_response(job, runner, body.get("result"))
 
@@ -1252,10 +1832,10 @@ async def dt_delete_pool_job_request(
     )
     job = result.scalar_one_or_none()
     if job is None:
-        raise HTTPException(status_code=404, detail="Job request not found")
+        return _job_request_not_found(request_id)
 
-    await _complete_job(job, runner, request.query_params.get("result", "Succeeded"), db)
-    await db.commit()
+    if not await _report_job_end(job, runner, request.query_params.get("result", "Succeeded"), db):
+        return _job_request_not_found(request_id)
     return Response(status_code=204)
 
 
@@ -1315,14 +1895,7 @@ async def dt_append_timeline_record_feed(
     db: DbSession,
 ):
     """Append web console lines emitted by the upstream runner worker."""
-    auth_job = await _get_job_from_job_token(request, db)
-    job = (
-        await _job_from_plan_id(plan_id, db)
-        or await _job_from_timeline_id(timeline_id, db)
-        or auth_job
-    )
-    if job is None:
-        raise HTTPException(status_code=404, detail="Plan not found")
+    job = await _job_for_plan(request, db, plan_id, timeline_id)
 
     body = await request.json()
     lines = body.get("lines", body.get("Lines", body.get("value", body.get("Value", []))))
@@ -1360,6 +1933,68 @@ def _wrapped_exception(status: int, type_key: str, message: str) -> JSONResponse
     )
 
 
+@router.post("/_apis/distributedtask/hubs/{hub_name}/plans/{plan_id}/events")
+@router.post("/{owner}/{repo}/_apis/distributedtask/hubs/{hub_name}/plans/{plan_id}/events")
+async def dt_raise_plan_event(
+    hub_name: str, plan_id: str, request: Request, db: DbSession,
+):
+    """Complete the job from the worker's JobCompleted event.
+
+    The upstream runner resolves a job's ``outputs:`` itself and sends them
+    only in this event, which it raises from plan version 8; at that version
+    the listener no longer finishes the job request, so this event is the
+    job's completion too. The outputs are stored first, so the jobs that need
+    this one are released with them. A secret output is left out, as GitHub
+    leaves it out. The event completes a job and sets the outputs the jobs
+    that need it read, so the job token's signature and expiry are checked.
+    """
+    auth = request.headers.get("Authorization", "")
+    validated = await validate_job_token(db, auth[7:]) if auth.startswith("Bearer ") else None
+    if validated is None:
+        raise HTTPException(
+            status_code=401, detail="Authentication required", headers={"WWW-Authenticate": "Bearer"}
+        )
+    job, _run = validated
+    # The plan in the path is the job's own run, as on every job-server route.
+    if plan_id != _workflow_guid("run", job.run_id):
+        raise HTTPException(status_code=404, detail="Plan not found")
+    body = await request.json()
+    name = body.get("name", body.get("Name", ""))
+    if name != "JobCompleted":
+        return Response(status_code=200)
+    event_job = str(body.get("jobId", body.get("JobId", "")) or "")
+    if event_job and event_job.lower() != _workflow_guid("job", job.id).lower():
+        raise HTTPException(status_code=403, detail="Event is for another job")
+    # Only a running job completes. A repeat after completion, or an event
+    # for a job that is queued again, changes neither its outputs nor its
+    # result: the jobs that need it may already have read them. A job
+    # cancelled while it ran still reaches _complete_job, which keeps the
+    # cancelled conclusion and frees the runner; its outputs stay unchanged.
+    if job.status != "completed" or job.conclusion == "cancelled":
+        if job.status not in ("in_progress", "completed"):
+            return Response(status_code=200)
+    else:
+        return Response(status_code=200)
+    runner = (await db.execute(select(Runner).where(Runner.id == job.runner_id))).scalar_one_or_none()
+    if runner is None:
+        raise HTTPException(status_code=409, detail="Job has no runner to complete it")
+    result_str = body.get("result", body.get("Result", "Succeeded"))
+    resolved = {}
+    if job.status != "completed":
+        outputs = body.get("outputs", body.get("Outputs")) or {}
+        for key, value in outputs.items():
+            if isinstance(value, dict):
+                if value.get("isSecret", value.get("IsSecret")):
+                    continue
+                value = value.get("value", value.get("Value"))
+            resolved[key] = "" if value is None else str(value)
+    # Under the runner's lock, as every report of a job's end. A job that
+    # moved off the runner, or was cancelled, while this waited is left as
+    # it is, outputs included, as a job queued again is above.
+    await _report_job_end(job, runner, result_str, db, resolved)
+    return Response(status_code=200)
+
+
 @router.post("/_apis/distributedtask/hubs/{hub_name}/plans/{plan_id}/actionsdownloadinfo")
 @router.post("/{owner}/{repo}/_apis/distributedtask/hubs/{hub_name}/plans/{plan_id}/actionsdownloadinfo")
 async def dt_resolve_action_download_info(
@@ -1372,7 +2007,7 @@ async def dt_resolve_action_download_info(
     here: the runner downloads it with the job token as a Basic credential,
     which GitHub would reject and this service can verify.
     """
-    job = await _get_job_from_job_token(request, db)
+    job = await _job_for_plan(request, db, plan_id)
     body = await request.json()
     references = body.get("actions") or body.get("Actions") or []
     base = _runner_reachable_base_url(_request_base(request))
@@ -1386,14 +2021,35 @@ async def dt_resolve_action_download_info(
                 400, "NonRetryableActionDownloadInfoException",
                 f"action reference needs nameWithOwner and ref: {reference!r}",
             )
-        try:
-            sha = await resolve_action_sha(name, ref)
-        except UpstreamActionError as exc:
-            if exc.not_found:
-                return _wrapped_exception(
-                    404, "UnresolvableActionDownloadInfoException", str(exc)
-                )
-            return _wrapped_exception(502, "DistributedTaskException", str(exc))
+        # A repository on this emulator first, then upstream. GHES resolves a
+        # repository it holds locally and goes to github.com only for one it
+        # lacks; this emulator also goes upstream when a public repository is
+        # here but lacks the ref, so a partial local copy of a public action
+        # works. A private or internal repository here that lacks the ref is
+        # unresolvable, and its name is not looked up upstream.
+        held, local = await _local_action_repository(name, job, db)
+        if held and local is None:
+            # Here, but not usable by this job's repository: as unresolvable as
+            # on GitHub, and not looked up upstream under the same name.
+            return _wrapped_exception(
+                404, "UnresolvableActionDownloadInfoException",
+                f"Unable to resolve action {name}@{ref}, repository not found",
+            )
+        sha = await resolve_local_action_sha(local.disk_path, ref) if local else None
+        if sha is None and local is not None and not _is_public(local):
+            return _wrapped_exception(
+                404, "UnresolvableActionDownloadInfoException",
+                f"Unable to resolve action {name}@{ref}, unable to find version {ref}",
+            )
+        if sha is None:
+            try:
+                sha = await resolve_action_sha(name, ref)
+            except UpstreamActionError as exc:
+                if exc.not_found:
+                    return _wrapped_exception(
+                        404, "UnresolvableActionDownloadInfoException", str(exc)
+                    )
+                return _wrapped_exception(502, "DistributedTaskException", str(exc))
         archive = f"{base}/_apis/distributedtask/actions/archives/{name}/{sha}/archive"
         resolved[f"{name}@{ref}"] = {
             "nameWithOwner": name,
@@ -1406,15 +2062,63 @@ async def dt_resolve_action_download_info(
     return {"actions": resolved}
 
 
+async def _local_action_repository(
+    name_with_owner: str, job: WorkflowJob, db,
+) -> tuple[bool, Repository | None]:
+    """Whether this emulator holds the repository a `uses:` reference names,
+    and that repository when the job may use it as an action.
+
+    As GitHub does by default, a workflow may use an action from a public
+    repository or from its own repository. GitHub lets other repositories use
+    a private or internal repository's actions only when its owner enables
+    that access; this emulator has no such setting, so any other private or
+    internal repository, the same owner's included, is not usable.
+    """
+    repository = (await db.execute(
+        select(Repository)
+        .where(func.lower(Repository.full_name) == name_with_owner.lower())
+        .order_by(Repository.id)
+    )).scalars().first()
+    if repository is None or not repository.disk_path:
+        return False, None
+    if _is_public(repository):
+        return True, repository
+    job_repository = (await db.execute(
+        select(Repository)
+        .join(WorkflowRun, WorkflowRun.repo_id == Repository.id)
+        .where(WorkflowRun.id == job.run_id)
+    )).scalars().first()
+    if job_repository is not None and job_repository.id == repository.id:
+        return True, repository
+    return True, None
+
+
+def _is_public(repository: Repository) -> bool:
+    return not repository.private and (repository.visibility or "public") == "public"
+
+
 @router.get("/_apis/distributedtask/actions/archives/{owner}/{repo}/{sha}/archive.{fmt}")
 @router.get("/{owner_}/{repo_}/_apis/distributedtask/actions/archives/{owner}/{repo}/{sha}/archive.{fmt}")
 async def dt_action_archive(
     owner: str, repo: str, sha: str, fmt: str, request: Request, db: DbSession,
 ):
-    """Serve an action archive, fetched from upstream once per SHA."""
-    await _get_job_from_download_credential(request, db)
+    """Serve an action archive: built from a repository here when it holds the
+    commit, else fetched from upstream once per SHA. A private or internal
+    repository here that lacks the commit is 404, not fetched upstream."""
+    job = await _get_job_from_download_credential(request, db)
+    name = f"{owner}/{repo}"
+    held, local = await _local_action_repository(name, job, db)
+    if held and local is None:
+        # The same rule as when the download was resolved, since a job can
+        # also request this URL directly, without resolving it first.
+        raise HTTPException(status_code=404, detail="Not Found")
     try:
-        path = await fetch_action_archive(f"{owner}/{repo}", sha, fmt)
+        if local and await resolve_local_action_sha(local.disk_path, sha) == sha:
+            path = await build_local_action_archive(local.disk_path, name, sha, fmt)
+        elif local is not None and not _is_public(local):
+            raise HTTPException(status_code=404, detail="Not Found")
+        else:
+            path = await fetch_action_archive(name, sha, fmt)
     except UpstreamActionError as exc:
         raise HTTPException(status_code=404 if exc.not_found else 502, detail=str(exc)) from exc
     media = "application/gzip" if fmt == "tar.gz" else "application/zip"
@@ -1426,28 +2130,55 @@ async def dt_action_archive(
 async def dt_create_hub_plan_log(
     hub_name: str, plan_id: str, request: Request, db: DbSession,
 ):
-    """Create a log placeholder or append raw log bytes from the upstream runner."""
-    auth_job = await _get_job_from_job_token(request, db)
+    """Create a log for one of the job's timeline records.
+
+    The worker creates a log per step, then appends the step's whole log file
+    to it (JobServerQueue.UploadFile). It deserializes the answer into a
+    TaskLog, whose constructor requires the path: an answer without one threw
+    "Value cannot be null. (Parameter 'path')" and no step log was uploaded.
+    """
+    job = await _job_for_plan(request, db, plan_id)
     content_type = request.headers.get("content-type", "")
     if "application/octet-stream" in content_type:
-        job = await _job_from_plan_id(plan_id, db) or auth_job
-        if job is None:
-            raise HTTPException(status_code=404, detail="Plan not found")
-
-        log_data = await request.body()
-        log_path = _job_log_path(job.id)
-        os.makedirs(os.path.dirname(log_path), exist_ok=True)
-        with open(log_path, "ab") as f:
-            f.write(log_data)
-
-        return {"id": 1, "lineCount": 0}
+        log_id = _next_step_log_id(job.id)
+        _append_step_log(job.id, log_id, await request.body())
+        return _task_log(log_id, f"logs/{log_id}")
 
     body = await request.json()
-    return {
-        "id": body.get("id", body.get("Id", 1)),
-        "lineCount": 0,
-        "createdOn": datetime.now(timezone.utc).isoformat(),
-    }
+    log_id = _next_step_log_id(job.id)
+    return _task_log(log_id, str(body.get("path", body.get("Path", "")) or f"logs/{log_id}"))
+
+
+def _step_log_dir(job_id: int) -> str:
+    """Where a job's uploaded step logs live, one file per log id.
+
+    Kept apart from the job log, which the live console feed already writes:
+    the uploaded step logs repeat those lines, and appending them there
+    printed every line twice.
+    """
+    return os.path.join(os.path.dirname(_job_log_path(job_id)), str(job_id))
+
+
+def _next_step_log_id(job_id: int) -> int:
+    directory = _step_log_dir(job_id)
+    os.makedirs(directory, exist_ok=True)
+    taken = [int(name.split(".")[0]) for name in os.listdir(directory) if name.split(".")[0].isdigit()]
+    log_id = max(taken, default=0) + 1
+    # Reserve the id now: the worker appends to it in a later request.
+    open(os.path.join(directory, f"{log_id}.log"), "ab").close()
+    return log_id
+
+
+def _append_step_log(job_id: int, log_id: int, data: bytes) -> None:
+    directory = _step_log_dir(job_id)
+    os.makedirs(directory, exist_ok=True)
+    with open(os.path.join(directory, f"{log_id}.log"), "ab") as f:
+        f.write(data)
+
+
+def _task_log(log_id: int, path: str) -> dict:
+    now = datetime.now(timezone.utc).isoformat()
+    return {"id": log_id, "path": path, "lineCount": 0, "createdOn": now, "lastChangedOn": now}
 
 
 @router.post("/_apis/distributedtask/hubs/{hub_name}/plans/{plan_id}/logs/{log_id}")
@@ -1459,19 +2190,10 @@ async def dt_append_hub_plan_log(
     request: Request,
     db: DbSession,
 ):
-    """Append uploaded log file bytes from the upstream runner worker."""
-    auth_job = await _get_job_from_job_token(request, db)
-    job = await _job_from_plan_id(plan_id, db) or auth_job
-    if job is None:
-        raise HTTPException(status_code=404, detail="Plan not found")
-
-    log_data = await request.body()
-    log_path = _job_log_path(job.id)
-    os.makedirs(os.path.dirname(log_path), exist_ok=True)
-    with open(log_path, "ab") as f:
-        f.write(log_data)
-
-    return {"id": log_id, "lineCount": 0}
+    """Append an uploaded step log file to the log the worker created for it."""
+    job = await _job_for_plan(request, db, plan_id)
+    _append_step_log(job.id, log_id, await request.body())
+    return _task_log(log_id, f"logs/{log_id}")
 
 
 @router.patch("/_apis/distributedtask/hubs/{hub_name}/plans/{plan_id}/timelines/{timeline_id}/records")
@@ -1484,16 +2206,13 @@ async def dt_update_hub_timeline_records(
     db: DbSession,
 ):
     """Update timeline records emitted by the upstream runner worker."""
-    auth_job = await _get_job_from_job_token(request, db)
+    job = await _job_for_plan(request, db, plan_id, timeline_id)
     body = await request.json()
-    job = (
-        await _job_from_plan_id(plan_id, db)
-        or await _job_from_timeline_id(timeline_id, db)
-        or auth_job
-    )
-    if job is None:
-        raise HTTPException(status_code=404, detail="Timeline not found")
 
     await _update_timeline_for_job(job, body, db)
     await db.commit()
-    return body.get("value", body.get("records", []))
+    # The worker reads this as VssJsonCollectionWrapper<List<TimelineRecord>>,
+    # {"count", "value"}. A bare array failed to deserialize, so it treated
+    # every update as failed and kept resending it.
+    records = body.get("value", body.get("records", []))
+    return {"count": len(records), "value": records}
