@@ -510,3 +510,104 @@ def test_the_emulator_runner_honours_the_claims_id_token_flag(monkeypatch, tmp_p
         })
         seen[allowed] = "URL=unset" not in "".join(chunks)
     assert seen == {True: True, False: False}
+
+
+# --- Review round 2: what else a job token sees ----------------------------------
+
+
+async def _seed_private_world(client, headers, db_session):
+    """A private repository and a private org repository the run's actor can
+    see, each with an issue that names "needle"."""
+    for name, private in (("secret-repo", True), ("open-repo", False)):
+        made = await client.post(f"{API}/user/repos", headers=headers,
+                                 json={"name": name, "private": private, "auto_init": True,
+                                       "description": "needle"})
+        assert made.status_code == 201, made.text
+    org_private = await client.post(f"{API}/orgs/{ORG}/repos", headers=headers,
+                                    json={"name": "org-secret", "private": True, "auto_init": True,
+                                          "description": "needle"})
+    assert org_private.status_code == 201, org_private.text
+    for repo in ("testuser/secret-repo", f"{ORG}/org-secret", "testuser/open-repo"):
+        issue = await client.post(f"{API}/repos/{repo}/issues", headers=headers,
+                                  json={"title": f"needle in {repo}"})
+        assert issue.status_code == 201, issue.text
+
+
+async def _job_token(db_session, run, *, permissions=...):
+    job = (await db_session.execute(select(WorkflowJob).where(WorkflowJob.run_id == run.id))).scalars().first()
+    if permissions is not ...:
+        job.permissions = permissions
+        await db_session.commit()
+    return {"Authorization": f"Bearer {issue_job_token(job)}"}
+
+
+def _names(items):
+    return sorted(item.get("full_name") or item.get("repository_url", "").split("/repos/")[-1] for item in items)
+
+
+@pytest.mark.asyncio
+async def test_a_job_token_is_refused_user_scoped_endpoints(client, base, test_token, db_session):
+    headers = auth_headers(test_token)
+    await _seed_private_world(client, headers, db_session)
+    await _fork_pull_request(client, headers, base)
+    (fork_run,) = await _runs(db_session, "pull_request")
+    token = await _job_token(db_session, fork_run)
+    for path in ("/user", "/user/repos", "/user/orgs", "/user/starred", "/notifications"):
+        response = await client.get(f"{API}{path}", headers=token)
+        assert response.status_code == 403, (path, response.text)
+        assert response.json()["message"] == "Resource not accessible by integration"
+    # The run's actor, with their own token, still lists their private repository.
+    mine = await client.get(f"{API}/user/repos", headers=headers)
+    assert "testuser/secret-repo" in _names(mine.json())
+
+
+@pytest.mark.asyncio
+async def test_listings_and_search_show_a_job_token_its_repository_and_public_ones(
+    client, base, test_token, db_session,
+):
+    headers = auth_headers(test_token)
+    await _seed_private_world(client, headers, db_session)
+    await _fork_pull_request(client, headers, base)
+    (fork_run,) = await _runs(db_session, "pull_request")
+    token = await _job_token(db_session, fork_run)
+
+    user_repos = _names((await client.get(f"{API}/users/testuser/repos", headers=token)).json())
+    assert "testuser/open-repo" in user_repos and "testuser/secret-repo" not in user_repos
+    org_repos = _names((await client.get(f"{API}/orgs/{ORG}/repos", headers=token)).json())
+    assert f"{ORG}/base" in org_repos and f"{ORG}/org-secret" not in org_repos
+    everything = _names((await client.get(f"{API}/repositories", headers=token)).json())
+    assert "testuser/secret-repo" not in everything and f"{ORG}/org-secret" not in everything
+    found = _names((await client.get(f"{API}/search/repositories", headers=token,
+                                      params={"q": "needle"})).json()["items"])
+    assert found == ["testuser/open-repo"]
+    issues = (await client.get(f"{API}/search/issues", headers=token, params={"q": "needle"})).json()["items"]
+    assert [item["title"] for item in issues] == ["needle in testuser/open-repo"]
+    # Any other credential is unchanged: the actor's own search still finds them.
+    mine = _names((await client.get(f"{API}/search/repositories", headers=headers,
+                                    params={"q": "needle"})).json()["items"])
+    assert "testuser/secret-repo" in mine
+
+
+@pytest.mark.asyncio
+async def test_graphql_shows_a_job_token_no_other_private_repository(client, base, test_token, db_session):
+    headers = auth_headers(test_token)
+    await _seed_private_world(client, headers, db_session)
+    await _branch(client, headers, f"{ORG}/base", "topic")
+    await _put(client, headers, f"{ORG}/base", "topic.txt", "topic\n", branch="topic")
+    await _open(client, headers, "topic")
+    (run,) = await _runs(db_session, "pull_request")
+    # No permissions block: the token is permissive, so GraphQL runs as the actor.
+    token = await _job_token(db_session, run, permissions=None)
+    query = """query($o: String!, $n: String!) { repository(owner: $o, name: $n) { nameWithOwner } }"""
+
+    async def lookup(owner, name, auth):
+        response = await client.post("/api/graphql", headers=auth,
+                                     json={"query": query, "variables": {"o": owner, "n": name}})
+        assert response.status_code == 200, response.text
+        return (response.json().get("data") or {}).get("repository")
+
+    assert await lookup("testuser", "secret-repo", token) is None
+    assert await lookup(ORG, "org-secret", token) is None
+    assert (await lookup(ORG, "base", token))["nameWithOwner"] == f"{ORG}/base"
+    assert (await lookup("testuser", "open-repo", token))["nameWithOwner"] == "testuser/open-repo"
+    assert (await lookup("testuser", "secret-repo", headers))["nameWithOwner"] == "testuser/secret-repo"

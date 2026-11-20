@@ -14,6 +14,7 @@ Permissions are named as GitHub names App permissions (``pull_requests``,
 from sqlalchemy import select
 
 from app.services import job_permissions
+from app.services.job_token_scope import job_repository_id
 from app.services.pull_request_runs import is_fork_pull_request_run
 from app.services.repository_access import can_read, can_write_contents
 
@@ -148,6 +149,12 @@ async def visible(info, repo) -> bool:
     read resolves to nothing, exactly as a repository that does not exist.
     """
     if repo is None:
+        return False
+    own = job_repository_id.get()
+    if own is not None and repo.id != own and (
+        repo.private or (getattr(repo, "visibility", None) or "public") != "public"
+    ):
+        # A job token sees its own repository and public ones only.
         return False
     if not repo.private and getattr(_state(info), "installation_token", None) is None:
         return True

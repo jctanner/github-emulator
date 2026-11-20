@@ -23,6 +23,7 @@ from app.models.user import User
 from app.schemas.repository import RepoResponse
 from app.schemas.user import SimpleUser, _fmt_dt, _make_node_id
 from app.services import repo_service, repository_access
+from app.services.job_token_scope import visible_repositories
 from app.services.repo_service import delete_repo as delete_repository
 
 router = APIRouter(tags=["repos"])
@@ -166,6 +167,7 @@ async def list_public_repositories(
     )
     if current_user is None or not current_user.site_admin:
         query = query.where(Repository.private == False)
+    query = visible_repositories(query)
     repositories = (await db.execute(query)).scalars().all()
     return [_repo_json(repository, BASE) for repository in repositories]
 
@@ -359,6 +361,7 @@ async def list_user_repos(
     ):
         query = query.where(Repository.private == False)
 
+    query = visible_repositories(query)
     if type == "forks":
         query = query.where(Repository.fork == True)
     elif type == "sources":
@@ -492,6 +495,7 @@ async def list_org_repos(
         "full_name": Repository.full_name,
     }
     sort_column = sort_columns.get(sort, Repository.created_at)
+    query = visible_repositories(query)
     query = query.order_by(
         sort_column.asc() if direction == "asc" else sort_column.desc()
     )

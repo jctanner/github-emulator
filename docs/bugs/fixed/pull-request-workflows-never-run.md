@@ -52,9 +52,23 @@ Every activity raised as `pull_request_target` now also runs the
 
 `pull_request_target` runs are unchanged.
 
-A job token, for any event, now reads no repository other than its run's
-that is not public (404, through the API, git, raw and release-download
-routes), as GitHub's `GITHUB_TOKEN`. It read whatever the run's actor could.
+A job token, for any event, now sees what GitHub's `GITHUB_TOKEN` sees,
+not what the run's actor sees:
+
+- No repository other than its run's that is not public: 404 through the
+  API, git, raw and release-download routes.
+- User-scoped endpoints (`/user`, `/user/...`, `/notifications`) answer 403
+  "Resource not accessible by integration".
+- Listings and search hold its own repository plus public ones:
+  `/repositories`, `/users/{user}/repos`, `/orgs/{org}/repos`,
+  `/users/{user}/starred`, `/users/{user}/events`, an organization
+  variable's selected repositories, and `/search/repositories`, `issues`,
+  `code` and `commits` (`app.services.job_token_scope`).
+- GraphQL's visibility gate (`app.graphql.authz.visible`), which
+  `repository`, `node`, `search` and organization repository connections go
+  through, applies the same rule.
+
+`/installation/repositories` already listed only the run's repository.
 
 ## Known gaps
 
@@ -64,5 +78,9 @@ routes), as GitHub's `GITHUB_TOKEN`. It read whatever the run's actor could.
   set of runs, which adds to the single-writer load.
 - REST `create_pull` still accepts a non-branch same-repository head (GitHub
   answers 422); only its `pull_request` runs are withheld.
+- For other credentials, `/search/issues`, `/search/code` and
+  `/search/commits` still search every repository, private ones included.
+  A job token's GraphQL `viewer` is the run's actor, not
+  `github-actions[bot]`. Both predate this change.
 
 Tests: `tests/actions/test_pull_request_event.py`.

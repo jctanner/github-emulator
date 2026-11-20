@@ -25,6 +25,7 @@ from app.services.browser_session_service import (
     csrf_token_matches,
     verify_browser_session,
 )
+from app.services.job_token_scope import set_job_repository
 from app.services.job_token_service import validate_job_token
 from app.services.pull_request_runs import is_fork_pull_request_run
 
@@ -161,6 +162,13 @@ async def _resolve_user(
     validated = await validate_job_token(db, token_value)
     if validated is not None:
         job, run = validated
+        if _is_user_scoped(request.url.path):
+            # GitHub's GITHUB_TOKEN is an installation token: /user and
+            # /user/* are not for it, whoever triggered the run.
+            raise HTTPException(status_code=403, detail="Resource not accessible by integration")
+        # Listings and search narrow to this repository plus public ones
+        # (app.services.job_token_scope).
+        set_job_repository(run.repo_id)
         request.state.workflow_job = job
         request.state.workflow_run = run
         request.state.workflow_job_permissions = job.permissions
@@ -223,6 +231,14 @@ def _repository_in_path(path: str) -> str | None:
     """owner/repo named by a repository API route or a git transport route."""
     m = _REPO_PATH.match(path) or _GIT_PATH.match(path)
     return f"{m.group(1)}/{m.group(2)}" if m else None
+
+
+_USER_SCOPED = re.compile(r"^/(?:api/v3/)?(?:user|notifications)(?:/|$)")
+
+
+def _is_user_scoped(path: str) -> bool:
+    """/user, /user/... and /notifications: the authenticated user's own endpoints."""
+    return bool(_USER_SCOPED.match(path))
 
 
 # Root-mounted routes that serve a repository's content to a token too.

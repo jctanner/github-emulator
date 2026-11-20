@@ -606,11 +606,13 @@ async def test_pool_distributed_task_protocol_flow(
     job_token = body["variables"]["system.github.token"]["Value"]
     assert len(job_token.split(".")) == 3
     authenticated = await client.get(
-        f"{API}/user",
+        f"{API}/repos/testuser/actions-exec-repo",
         headers={"Authorization": f"token {job_token}"},
     )
     assert authenticated.status_code == 200
-    assert authenticated.json()["login"] == "testuser"
+    # As GitHub's GITHUB_TOKEN, the job token is not for user-scoped endpoints.
+    user = await client.get(f"{API}/user", headers={"Authorization": f"token {job_token}"})
+    assert user.status_code == 403
     assert body["variables"]["system.github.job"]["Value"] == "build"
     github_context = {
         item["k"]: item["v"] for item in body["contextData"]["github"]["d"]
