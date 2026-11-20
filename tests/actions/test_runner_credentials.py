@@ -266,6 +266,94 @@ async def test_replacing_a_runner_takes_the_new_key(
     assert accepted.status_code == 200
 
 
+@pytest.mark.asyncio
+async def test_replacing_a_runner_revokes_its_old_bearer_token(
+    client, executable_workflow, test_token,  # noqa: F811
+):
+    old_key = _new_key()
+    agent = await _configure_runner(client, test_token, "revoked-runner", old_key)
+    client_id = agent["authorization"]["clientId"]
+    audience = agent["authorization"]["authorizationUrl"]
+    old_exchange = await _exchange(client, agent["id"], _assertion(old_key, client_id, audience))
+    assert old_exchange.status_code == 200
+    old_headers = {"Authorization": f"Bearer {old_exchange.json()['access_token']}"}
+
+    token_resp = await client.post(
+        f"{API}/repos/testuser/actions-exec-repo/actions/runners/registration-token",
+        headers=auth_headers(test_token),
+    )
+    broker = await client.post(
+        f"{API}/actions/runner-registration",
+        json={"url": "http://testserver/testuser/actions-exec-repo", "runner_event": "register"},
+        headers={"Authorization": f"RemoteAuth {token_resp.json()['token']}"},
+    )
+    new_key = _new_key()
+    updated = await client.put(
+        f"/_apis/distributedtask/pools/1/agents/{agent['id']}",
+        json={
+            "name": "revoked-runner",
+            "authorization": {"publicKey": _public_key_json(new_key)},
+        },
+        headers={"Authorization": f"Bearer {broker.json()['token']}"},
+    )
+    assert updated.status_code == 200
+
+    # The former runner cannot undo the replacement with its old token.
+    attacker_key = _new_key()
+    for method in (client.put, client.patch):
+        resp = await method(
+            f"/_apis/distributedtask/pools/1/agents/{agent['id']}",
+            json={"authorization": {"publicKey": _public_key_json(attacker_key)}},
+            headers=old_headers,
+        )
+        assert resp.status_code == 401, resp.text
+    reregistered = await client.post(
+        "/_apis/distributedtask/pools/1/agents",
+        json={"name": "revoked-runner", "authorization": {"publicKey": _public_key_json(attacker_key)}},
+        headers=old_headers,
+    )
+    assert reregistered.status_code == 401, reregistered.text
+
+    accepted = await _exchange(client, agent["id"], _assertion(new_key, client_id, audience))
+    assert accepted.status_code == 200
+
+
+@pytest.mark.asyncio
+async def test_reregistering_a_runners_name_revokes_its_registered_key(
+    client, executable_workflow, test_token,  # noqa: F811
+):
+    old_key = _new_key()
+    agent = await _configure_runner(client, test_token, "reused-runner", old_key)
+    client_id = agent["authorization"]["clientId"]
+    audience = agent["authorization"]["authorizationUrl"]
+
+    token_resp = await client.post(
+        f"{API}/repos/testuser/actions-exec-repo/actions/runners/registration-token",
+        headers=auth_headers(test_token),
+    )
+    broker = await client.post(
+        f"{API}/actions/runner-registration",
+        json={
+            "url": "http://testserver/testuser/actions-exec-repo",
+            "runner_event": "register",
+            "name": "reused-runner",
+        },
+        headers={"Authorization": f"RemoteAuth {token_resp.json()['token']}"},
+    )
+    assert broker.status_code == 200, broker.text
+
+    # The old key cannot exchange for a token, which would overwrite the new
+    # broker's token and clear its broker state.
+    _assert_invalid_client(
+        await _exchange(client, agent["id"], _assertion(old_key, client_id, audience))
+    )
+    still_valid = await client.get(
+        "/_apis/distributedtask/pools",
+        headers={"Authorization": f"Bearer {broker.json()['token']}"},
+    )
+    assert still_valid.status_code == 200, still_valid.text
+
+
 async def _pipelines_runner(client, path: str, token: str, name: str) -> dict:
     resp = await client.post(
         f"/_services/pipelines/{path}/_apis/pipelines/runs/register",

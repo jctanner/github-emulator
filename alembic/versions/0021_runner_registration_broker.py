@@ -7,7 +7,7 @@ explicitly instead of being inferred from the runner's repository or
 enterprise. Existing rows are not brokers.
 
 Revision ID: 0021_runner_registration_broker
-Revises: 0019_runner_public_key
+Revises: 0020_runner_public_key
 Create Date: 2026-11-19
 """
 

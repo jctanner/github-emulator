@@ -588,6 +588,10 @@ async def dt_update_pool_agent(
         # updates the existing named runner. GitHub does not expose that broker
         # as a second runner registration.
         await db.delete(authenticated_runner)
+        # The replaced runner's bearer token dies with its key: the new
+        # runner gets a token through the assertion exchange. A token nobody
+        # holds keeps the column populated without matching any request.
+        runner.token_hash = hash_token(f"ghp_runner_{secrets.token_urlsafe(32)}")
     await db.commit()
     await db.refresh(runner)
     return _agent_json(runner, base=_request_base(request))

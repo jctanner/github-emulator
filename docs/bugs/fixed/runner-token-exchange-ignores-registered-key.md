@@ -35,7 +35,9 @@ its enterprise counterpart took no credential at all.
   in the same repository, organization and enterprise scope. It stops being
   a broker once it registers as the agent or exchanges a token. Two ordinary
   runners that share a repository or enterprise cannot replace each other's
-  key.
+  key. A replacement also invalidates the replaced runner's bearer token, and
+  registering a runner name that already exists clears the key and broker
+  state stored on the reused row.
 - Assertion times that are huge integers no longer escape as a 500: they are
   finite NumericDates and are compared as integers.
 - The pipelines deregister routes require the runner's own token: none is
@@ -60,5 +62,6 @@ the exchange, so they are unaffected.
   same repository) and a broker from another repository are refused with
   403. The deregister routes, repository
   and enterprise, accept only the runner's own token.
-- `tests/test_database_migrations.py`: 0018 adds the column to a database
-  at 0017 and keeps existing runners.
+- `tests/test_database_migrations.py`: 0020 adds `public_key` to a
+  database at 0019, and 0021 adds `registration_broker` to a database at
+  0020; both keep existing runners.

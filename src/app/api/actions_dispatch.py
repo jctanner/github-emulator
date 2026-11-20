@@ -161,6 +161,10 @@ async def _create_runner_from_registration(
         existing.labels = labels
         existing.busy = False
         existing.token_hash = hash_token(runner_token)
+        # The row now belongs to a new identity: the key its previous holder
+        # registered must not exchange for, or invalidate, the new token.
+        existing.public_key = None
+        existing.registration_broker = False
         existing.last_heartbeat = datetime.now(timezone.utc)
         lost = await _release_held_jobs(db, existing)
         await db.commit()
