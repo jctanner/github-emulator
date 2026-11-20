@@ -10,7 +10,7 @@ guesswork.
 `docker-compose.yml` already contains an `actions-runner` service. It uses the
 custom Python runner in `src/runners/emulator/runner.py` and expects:
 
-- `GITHUB_EMULATOR_URL=https://github-emulator`
+- `GITHUB_EMULATOR_URL=http://github-emulator:8000`
 - `GITHUB_EMULATOR_TOKEN=${GITHUB_EMULATOR_RUNNER_TOKEN:-}`
 - `RUNNER_REPO=${RUNNER_REPO:-admin/test-repo}`
 
@@ -57,3 +57,11 @@ Pending
   for desktop UI validation once a compose stack is running.
 - Live Docker Compose validation remains open in this environment because the
   available Docker/Podman installation has no compose provider.
+- [#81](https://github.com/fullsend-ai/github-emulator/issues/81): the
+  service used `https://github-emulator`, a name Caddy has no site or
+  certificate for, so registration failed with
+  `TLSV1_ALERT_INTERNAL_ERROR`. It now uses `http://github-emulator:8000`,
+  like `actions-real-runner`; the reporter verified registration and a
+  successful one-step job with that URL (Podman 5.8.3, docker-compose 2.33).
+  `tests/test_compose_runner_urls.py` checks that each runner URL names the
+  emulator and, over HTTPS, a Caddy site; it fails on the old URL.

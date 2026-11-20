@@ -36,20 +36,8 @@ stores in each job and uploads the captured logs.
      RUNNER_REPO=admin/test-repo
    ```
 
-2. Point the runner at the emulator over HTTP. As shipped, the runner uses
-   `https://github-emulator`, and Caddy has no certificate for that name, so
-   registration fails ([#81](https://github.com/fullsend-ai/github-emulator/issues/81)).
-   Until that is fixed, create `docker-compose.override.yml` next to
-   `docker-compose.yml`. Compose loads it automatically. Don't commit it.
-
-   ```yaml
-   services:
-     actions-runner:
-       environment:
-         - GITHUB_EMULATOR_URL=http://github-emulator:8000
-   ```
-
-3. Start the runner and check its log:
+2. Start the runner and check its log. It reaches the emulator over plain
+   HTTP at `http://github-emulator:8000`:
 
    ```console
    $ docker compose up -d actions-runner
@@ -59,7 +47,7 @@ stores in each job and uploads the captured logs.
    [INFO] Runner ready. Polling for jobs on admin/test-repo ...
    ```
 
-4. Push a workflow to the repository:
+3. Push a workflow to the repository:
 
    ```bash
    git clone http://localhost:8000/admin/test-repo.git /tmp/test-repo
@@ -79,7 +67,7 @@ stores in each job and uploads the captured logs.
    git push http://admin:ghp_admin_default_token@localhost:8000/admin/test-repo.git HEAD
    ```
 
-5. Watch the runner pick up the job. These lines are excerpts; the real log
+4. Watch the runner pick up the job. These lines are excerpts; the real log
    lines start with the service name and a timestamp:
 
    ```console
@@ -89,10 +77,10 @@ stores in each job and uploads the captured logs.
    [INFO] === Job #1 finished: success ===
    ```
 
-6. Open the run in the web UI at
+5. Open the run in the web UI at
    `http://localhost:8000/ui/admin/test-repo/actions`.
 
-To watch another repository, set `RUNNER_REPO`, then repeat steps 1 and 3:
+To watch another repository, set `RUNNER_REPO`, then repeat steps 1 and 2:
 
 ```bash
 RUNNER_REPO=admin/my-repo make actions-runner-env
@@ -130,7 +118,7 @@ Not run for this guide: it builds the upstream runner image.
 
 The project roadmap prefers real `actions/runner` compatibility for maximum
 fidelity. An opt-in Compose profile builds the upstream `actions/runner`
-binary. It already reaches the emulator at `http://github-emulator:8000`.
+binary. Like the Python runner, it reaches the emulator at `http://github-emulator:8000`.
 
 1. Create the runner token and default repository:
 
@@ -190,7 +178,6 @@ the others in your shell, or add them to `.env` after the last
 
 | Error text | Cause | Fix |
 |---|---|---|
-| `Registration failed: [SSL: TLSV1_ALERT_INTERNAL_ERROR] tlsv1 alert internal error (_ssl.c:1000) -- retrying in 10s` | The runner uses `https://github-emulator`, and Caddy has no certificate for that name ([#81](https://github.com/fullsend-ai/github-emulator/issues/81)). | Add the `docker-compose.override.yml` from step 2, then run `docker compose up -d --force-recreate actions-runner`. |
 | `RUNNER_REPO must be owner/repo, got: ...` | `RUNNER_REPO` is not in `owner/repo` form. | Set it as `owner/repo`, for example `admin/my-repo`. |
 | `json.decoder.JSONDecodeError: Expecting value: line 1 column 1 (char 0)` from `make actions-runner-env` | The script could not reach the API to create its token. | Check that the stack is up: `curl -s http://localhost:8000/api/v3`. On another port, set `GITHUB_EMULATOR_API_URL` as in step 1. |
 | `Failed to create or confirm repository ... (HTTP ...)` | The API answered the repository request with an error. | Read the JSON printed above that line. |
