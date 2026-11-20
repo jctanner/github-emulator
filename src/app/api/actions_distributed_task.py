@@ -1432,13 +1432,16 @@ async def _runner_moved_on(runner: Runner, job: WorkflowJob, db) -> bool:
 async def _complete_job(
     job: WorkflowJob, runner: Runner, result_str: str, db, outputs: dict | None = None,
 ) -> None:
-    # A job cancelled while it ran keeps that conclusion when its runner
-    # reports the end; the report still frees the runner, unless the runner
-    # has already taken another job. The write is conditional on the stored
-    # row, not on ``job``: cancellation writers do not take the runner's
-    # lock, so one can commit after the caller loaded the job. Reported
-    # outputs are written by the same conditional UPDATE, so a cancelled job
-    # keeps the outputs it had.
+    # A finished job keeps its first end: a job cancelled while it ran keeps
+    # that conclusion, and a later report of an already finished job (a
+    # PATCH, a complete POST or a JobCompleted event after another of them)
+    # leaves the conclusion, outputs and completion time as they are; the
+    # jobs that need it may already have read them. The report still frees
+    # the runner, unless the runner has already taken another job. The write
+    # is conditional on the stored row, not on ``job``: cancellation writers
+    # do not take the runner's lock, so one can commit after the caller
+    # loaded the job. Reported outputs are written by the same conditional
+    # UPDATE.
     await db.flush()
     values = {
         "status": "completed",
@@ -1454,7 +1457,6 @@ async def _complete_job(
             or_(
                 WorkflowJob.status != "completed",
                 WorkflowJob.conclusion.is_(None),
-                WorkflowJob.conclusion != "cancelled",
             ),
         )
         .values(**values)
@@ -1570,6 +1572,13 @@ async def dt_get_messages(
     lock = _runner_lock(runner_id)
     status = request.query_params.get("status", "")
     last_message_id = request.query_params.get("lastMessageId", "")
+    # The runner says Busy from the start of a job's dispatch until that
+    # job's worker has exited, and polls as Online at once when it has. A
+    # job handed out in between (its end reported, its worker still exiting)
+    # makes the runner cancel the old worker before it starts the new job,
+    # so a Busy poll gets cancellations only. GitHub does not document what
+    # its broker does here; this is the emulator's choice.
+    busy_poll = status.strip().lower() == "busy"
 
     deadline = asyncio.get_event_loop().time() + _POLL_SECONDS
     while asyncio.get_event_loop().time() < deadline:
@@ -1596,12 +1605,16 @@ async def dt_get_messages(
             # this one when it did.
             if _poll_generation.get(runner_id) != generation or await request.is_disconnected():
                 return Response(status_code=204)
-            # This poll loaded the runner before it waited for the lock; an
-            # older poll may have handed it a job since (_claim_next_job
-            # hands nothing to a busy runner).
-            await db.refresh(runner, attribute_names=["busy", "status"])
-            await db.commit()
-            message = await _claim_next_job(runner, db, _request_base(request))
+            if busy_poll:
+                # Keep long-polling for a cancellation; no job.
+                message = Response(status_code=204)
+            else:
+                # This poll loaded the runner before it waited for the lock;
+                # an older poll may have handed it a job since
+                # (_claim_next_job hands nothing to a busy runner).
+                await db.refresh(runner, attribute_names=["busy", "status"])
+                await db.commit()
+                message = await _claim_next_job(runner, db, _request_base(request))
             if not isinstance(message, Response):
                 body = json.loads(message["body"])
                 if _poll_generation.get(runner_id) != generation or await request.is_disconnected():
@@ -1776,6 +1789,44 @@ def _job_request_not_found(request_id: int) -> JSONResponse:
     body = json.loads(response.body)
     body["detail"] = "Job request not found"
     return JSONResponse(status_code=404, content=body)
+
+
+# A job's conclusion as the runner's TaskResult, which its JSON settings write
+# as a camelCase string.
+_TASK_RESULTS = {
+    "success": "succeeded",
+    "failure": "failed",
+    "cancelled": "canceled",
+    "skipped": "skipped",
+}
+
+
+@router.get("/_apis/distributedtask/pools/{pool_id}/jobrequests/{request_id}")
+@router.get("/{owner}/{repo}/_apis/distributedtask/pools/{pool_id}/jobrequests/{request_id}")
+async def dt_get_pool_job_request(
+    pool_id: int, request_id: int, request: Request, db: DbSession,
+):
+    """A job request as the runner reads it before it starts its next job.
+
+    The runner's JobDispatcher.EnsureDispatchFinished reads the previous
+    request when a new job arrives before that request's worker exited. A
+    ``result`` (or TaskAgentJobNotFoundException) lets it cancel the old
+    worker and run the new job; any other error, or no ``result``, drops
+    the new job.
+    """
+    runner = await _get_runner_from_token(request, db)
+    result = await db.execute(
+        select(WorkflowJob).where(WorkflowJob.id == request_id, WorkflowJob.runner_id == runner.id)
+    )
+    job = result.scalar_one_or_none()
+    if job is None:
+        return _job_request_not_found(request_id)
+    response = _job_request_response(job, runner)
+    if job.status == "completed" and job.conclusion:
+        response["result"] = _TASK_RESULTS.get(job.conclusion, "failed")
+        finished = job.completed_at or datetime.now(timezone.utc)
+        response["finishTime"] = finished.isoformat()
+    return response
 
 
 @router.post("/_apis/distributedtask/pools/{pool_id}/jobrequests/{request_id}")
