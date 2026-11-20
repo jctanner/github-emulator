@@ -9,6 +9,8 @@ precedence over an organization variable of the same name.
 
 from __future__ import annotations
 
+from types import SimpleNamespace
+
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -44,7 +46,15 @@ async def visible_to(db: AsyncSession, repository: Repository) -> list[OrgVariab
 async def vars_context(db: AsyncSession, repo_id: int) -> dict[str, str]:
     """A workflow run's ``vars``: visible organization variables, then the
     repository's own over them."""
-    repository = (await db.execute(select(Repository).where(Repository.id == repo_id))).scalar_one_or_none()
+    # Only the columns visible_to reads. Loading the Repository entity also
+    # loaded its eager relationships (every issue, label, branch and
+    # collaborator, and the owner's repositories), dozens of statements a
+    # workflow run paid while it held SQLite's writer lock.
+    row = (await db.execute(
+        select(Repository.id, Repository.organization_id, Repository.private, Repository.visibility)
+        .where(Repository.id == repo_id)
+    )).one_or_none()
+    repository = SimpleNamespace(**row._mapping) if row else None
     context = {variable.name: variable.value for variable in await visible_to(db, repository)}
     for variable in (await db.execute(select(Variable).where(Variable.repo_id == repo_id))).scalars().all():
         context[variable.name] = variable.value

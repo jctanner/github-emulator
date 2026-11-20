@@ -251,9 +251,9 @@ async def create_issue(
     if not title:
         raise HTTPException(status_code=422, detail="title is required")
 
-    number = repository.next_issue_number
-    repository.next_issue_number = number + 1
-    repository.open_issues_count += 1
+    from app.services.issue_number import allocate_issue_number
+
+    number = await allocate_issue_number(db, repository)
 
     issue = Issue(
         repo_id=repository.id,

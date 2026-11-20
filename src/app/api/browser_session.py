@@ -15,7 +15,7 @@ from app.services.browser_session_service import (
     csrf_token_for,
     sign_browser_session,
 )
-
+from app.services.user_service import public_repo_counts
 
 router = APIRouter(prefix="/api/_ui", tags=["ui-session"])
 
@@ -30,9 +30,10 @@ class BrowserSessionResponse(BaseModel):
     csrf_token: str
 
 
-def _session_response(user: User, token: str) -> BrowserSessionResponse:
+async def _session_response(db, user: User, token: str) -> BrowserSessionResponse:
+    counts = await public_repo_counts(db, [user.id])
     return BrowserSessionResponse(
-        user=UserResponse.from_db(user, settings.BASE_URL),
+        user=UserResponse.from_db(user, settings.BASE_URL, counts.get(user.id, 0)),
         csrf_token=csrf_token_for(token),
     )
 
@@ -60,15 +61,15 @@ async def create_browser_session(
         httponly=True,
         samesite="lax",
     )
-    return _session_response(user, token)
+    return await _session_response(db, user, token)
 
 
 @router.get("/session", response_model=BrowserSessionResponse)
-async def get_browser_session(request: Request, user: AuthUser):
+async def get_browser_session(request: Request, user: AuthUser, db: DbSession):
     token = request.cookies.get(COOKIE_NAME)
     if not token:
         raise HTTPException(status_code=401, detail="Browser session required")
-    return _session_response(user, token)
+    return await _session_response(db, user, token)
 
 
 @router.delete("/session", status_code=204)

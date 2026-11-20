@@ -199,3 +199,16 @@ async def test_timeline_merges_comments_and_events_in_order(client, test_token):
     assert [item["event"] for item in timeline] == ["commented", "cross-referenced"]
     assert timeline[0]["body"] == "first"
     assert timeline[0]["actor"]["login"] == "testuser"
+
+
+async def test_a_comment_whose_issue_was_deleted_meanwhile_commits(db_session, test_user):
+    """A repository deleted while a comment is posted must not turn into a 500.
+
+    The comment route finds the issue, then the repository and its issues are
+    deleted before the comment commits. Resolving the comment's mentions then
+    finds no issue; it should record nothing rather than raise.
+    """
+    from app.models.comment import IssueComment
+
+    db_session.add(IssueComment(issue_id=987654, user_id=test_user.id, body="see #1"))
+    await db_session.commit()

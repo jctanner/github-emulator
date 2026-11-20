@@ -3,12 +3,12 @@
 import logging
 import os
 
-from sqlalchemy import delete
+from sqlalchemy import delete, insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.git.bare_repo import list_tree, get_file_content, get_log
-from app.models.search_index import FileContent, CommitMetadata
+from app.git.bare_repo import get_file_content, get_log, list_tree
 from app.models.repository import Repository
+from app.models.search_index import CommitMetadata, FileContent
 
 logger = logging.getLogger("github_emulator.index")
 
@@ -86,11 +86,19 @@ async def index_repository(db: AsyncSession, repo: Repository) -> int:
         return 0
 
     ref = repo.default_branch or "main"
-    count = 0
+    repo_id = repo.id
+    full_name = repo.full_name
+    file_rows: list[dict] = []
+    commit_rows: list[dict] = []
 
-    # Clear existing index for this repo
-    await db.execute(delete(FileContent).where(FileContent.repo_id == repo.id))
-    await db.execute(delete(CommitMetadata).where(CommitMetadata.repo_id == repo.id))
+    # SQLite has one writer at a time. Reading the tree takes a git
+    # subprocess per file, which for a repository of a few thousand files is
+    # long enough that holding the write lock through it made every other
+    # write wait past the busy timeout and fail ("database is locked", served
+    # as 503). So release whatever write the caller has open, read
+    # everything first, and only then replace the index in one short
+    # transaction.
+    await db.commit()
 
     # Index files
     try:
@@ -115,26 +123,24 @@ async def index_repository(db: AsyncSession, repo: Repository) -> int:
 
             language = _detect_language(path)
 
-            fc = FileContent(
-                repo_id=repo.id,
+            file_rows.append(dict(
+                repo_id=repo_id,
                 file_path=path,
                 blob_sha=sha,
                 content=content_text,
                 language=language,
                 size=size,
                 ref=ref,
-            )
-            db.add(fc)
-            count += 1
+            ))
     except Exception:
-        logger.exception("Error indexing files for repo %s", repo.full_name)
+        logger.exception("Error indexing files for repo %s", full_name)
 
     # Index commits
     try:
         commits = await get_log(disk_path, ref, max_count=500)
         for commit in commits:
-            cm = CommitMetadata(
-                repo_id=repo.id,
+            commit_rows.append(dict(
+                repo_id=repo_id,
                 commit_sha=commit["sha"],
                 author_name=commit.get("author_name"),
                 author_email=commit.get("author_email"),
@@ -143,12 +149,21 @@ async def index_repository(db: AsyncSession, repo: Repository) -> int:
                 message=commit.get("message", ""),
                 author_date=commit.get("author_date"),
                 committer_date=commit.get("committer_date"),
-            )
-            db.add(cm)
-            count += 1
+            ))
     except Exception:
-        logger.exception("Error indexing commits for repo %s", repo.full_name)
+        logger.exception("Error indexing commits for repo %s", full_name)
 
+    # Replace the index: the only part that writes.
+    await db.execute(delete(FileContent).where(FileContent.repo_id == repo_id))
+    await db.execute(delete(CommitMetadata).where(CommitMetadata.repo_id == repo_id))
+    # Core executemany, one statement per table: ORM inserts went one row at
+    # a time (fetching each new id), about a thousand statements inside
+    # SQLite's write lock for a repository with history.
+    if file_rows:
+        await db.execute(insert(FileContent), file_rows)
+    if commit_rows:
+        await db.execute(insert(CommitMetadata), commit_rows)
     await db.commit()
-    logger.info("Indexed %d items for repo %s", count, repo.full_name)
+    count = len(file_rows) + len(commit_rows)
+    logger.info("Indexed %d items for repo %s", count, full_name)
     return count

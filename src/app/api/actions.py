@@ -372,12 +372,12 @@ async def _resolve_workflow(db, repository, workflow_id: str) -> Workflow | None
     GitHub's ``workflow_id`` parameter is "the ID of the workflow" or "the
     workflow file name", for example ``main.yaml``. The file name resolves
     beneath ``.github/workflows``. The workflow table is synchronized from
-    the default branch first, so a workflow file added since is found.
+    the default branch first if it changed, so a workflow file added since
+    is found.
     """
-    from app.services.workflow_service import sync_workflows_to_db
+    from app.services.workflow_service import ensure_workflows_synced
 
-    await sync_workflows_to_db(db, repository, "HEAD")
-    await db.commit()
+    await ensure_workflows_synced(db, repository)
     query = select(Workflow).where(Workflow.repo_id == repository.id)
     if workflow_id.isdigit():
         query = query.where(Workflow.id == int(workflow_id))
@@ -438,10 +438,9 @@ async def list_workflows(
     """List workflows."""
     repository = await get_repo_or_404(owner, repo, db)
     await _check_read_access(db, repository, current_user)
-    from app.services.workflow_service import sync_workflows_to_db
+    from app.services.workflow_service import ensure_workflows_synced
 
-    await sync_workflows_to_db(db, repository, "HEAD")
-    await db.commit()
+    await ensure_workflows_synced(db, repository)
     query = (
         select(Workflow)
         .where(Workflow.repo_id == repository.id)

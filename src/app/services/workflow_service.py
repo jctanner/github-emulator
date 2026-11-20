@@ -11,8 +11,9 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 
 import yaml
-from sqlalchemy import func, select
+from sqlalchemy import event, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import Session
 
 from app.config import settings
 from app.models.actions import Secret, Workflow, WorkflowJob, WorkflowRun
@@ -1383,10 +1384,104 @@ def _topo_sort(jobs: list[dict]) -> list[dict]:
     return result
 
 
+# The default-branch workflows each repository's table was last synced from,
+# by repository id: (disk path, default branch, ``.github/workflows`` tree id).
+# Lookups skip the sync while the key is unchanged.
+#
+# A sync from any other path (a push to another branch adds that branch's
+# workflows) changes the table only when its transaction commits, so the cache
+# follows transactions, not calls: each sync records its repository on the
+# session, and when that session's transaction ends (commit, rollback or close)
+# the repository's entry is dropped and its generation bumped. A lookup
+# publishes its entry only if no other sync of the repository is still
+# uncommitted and none ended while it ran. One lookup per repository syncs at
+# a time; the others wait and then find the entry. The emulator serves from
+# one process, so an in-process cache sees every sync.
+_synced_workflows: dict[int, tuple] = {}
+_sync_generation: dict[int, int] = {}
+_syncs_in_flight: dict[int, int] = {}
+_sync_locks: dict[tuple[int, int], asyncio.Lock] = {}
+_SESSION_SYNCS = "workflow_syncs"
+
+
+def _invalidate_workflow_cache(repo_id: int) -> None:
+    _sync_generation[repo_id] = _sync_generation.get(repo_id, 0) + 1
+    _synced_workflows.pop(repo_id, None)
+
+
+def _record_sync(db: AsyncSession, repo_id: int) -> None:
+    """Note that this session's open transaction syncs ``repo_id``'s workflows."""
+    synced = db.sync_session.info.setdefault(_SESSION_SYNCS, set())
+    if repo_id not in synced:
+        synced.add(repo_id)
+        _syncs_in_flight[repo_id] = _syncs_in_flight.get(repo_id, 0) + 1
+    _synced_workflows.pop(repo_id, None)
+
+
+@event.listens_for(Session, "after_transaction_end")
+def _workflow_syncs_ended(session, transaction) -> None:
+    if transaction.parent is not None:
+        return
+    for repo_id in session.info.pop(_SESSION_SYNCS, ()):
+        _syncs_in_flight[repo_id] = max(0, _syncs_in_flight.get(repo_id, 0) - 1)
+        _invalidate_workflow_cache(repo_id)
+
+
+async def _default_workflows_key(repository: Repository) -> tuple:
+    """What the default branch's workflow inventory depends on."""
+    proc = await asyncio.create_subprocess_exec(
+        "git", "rev-parse", "--verify", "--quiet", "HEAD:.github/workflows",
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+        env={"GIT_DIR": repository.disk_path or ""},
+    )
+    stdout, _ = await proc.communicate()
+    tree = stdout.decode().strip() if proc.returncode == 0 else ""
+    return (repository.disk_path, repository.default_branch, tree)
+
+
+async def ensure_workflows_synced(db: AsyncSession, repository: Repository) -> None:
+    """Sync the workflow table from the default branch, and commit, unless
+    neither the default branch nor its workflow files changed since the
+    last sync."""
+    key = await _default_workflows_key(repository)
+    if _synced_workflows.get(repository.id) == key:
+        return
+    # Keyed by event loop too: a lock waits on the loop it was first used in.
+    lock_key = (id(asyncio.get_running_loop()), repository.id)
+    async with _sync_locks.setdefault(lock_key, asyncio.Lock()):
+        # A lookup that held the lock may have just synced this key.
+        if _synced_workflows.get(repository.id) == key:
+            return
+        # This session's own transaction may already hold a sync; end it so
+        # the generation below counts only what happens from here on.
+        await db.commit()
+        generation = _sync_generation.get(repository.id, 0)
+        await sync_workflows_to_db(db, repository, "HEAD")
+        await db.commit()
+        # Our commit bumped the generation once. Anything else (another sync
+        # that ended meanwhile, or one still uncommitted) leaves the entry
+        # unset, so the next lookup syncs again.
+        if (
+            _sync_generation.get(repository.id, 0) == generation + 1
+            and not _syncs_in_flight.get(repository.id)
+        ):
+            _synced_workflows[repository.id] = key
+
+
 async def sync_workflows_to_db(
     db: AsyncSession, repository: Repository, ref: str = "HEAD"
 ) -> list[Workflow]:
-    """Upsert Workflow rows from on-disk workflow files."""
+    """Upsert Workflow rows from on-disk workflow files.
+
+    The changes are the caller's to commit; the workflow-sync cache entry is
+    dropped now and again when that transaction ends.
+    """
+    _record_sync(db, repository.id)
+    return await _sync_workflows(db, repository, ref)
+
+
+async def _sync_workflows(db: AsyncSession, repository: Repository, ref: str) -> list[Workflow]:
     detected = await detect_workflows(repository.disk_path, ref)
 
     result = await db.execute(
@@ -1452,12 +1547,10 @@ async def create_workflow_run(
         actor_id=actor.id,
         trigger_payload=payload,
     )
-    # Read before the run's INSERT, not inside the write that follows it:
-    # the run's own fields are all it needs.
-    identity = await github_identity_context(db, run)
-    db.add(run)
-    await db.flush()
 
+    # Everything read here is read before the run's INSERT: SQLite has one
+    # writer, and from the first write to the commit every other writer
+    # waits, so reads after it stretched that wait.
     # Organization variables the repository can use, its own over them.
     from app.services.org_variables import vars_context
 
@@ -1468,6 +1561,11 @@ async def create_workflow_run(
             select(Secret).where(Secret.repo_id == workflow.repo_id)
         )).scalars().all()
     }
+    # The run's own fields are all it needs.
+    identity = await github_identity_context(db, run)
+
+    db.add(run)
+    await db.flush()
     expression_context = {
         "inputs": payload.get("inputs", {}),
         "vars": variables,
@@ -1992,11 +2090,6 @@ async def dispatch_event(
     payload.setdefault("ref", f"refs/heads/{ref_name}")
     payload.setdefault("after", sha)
 
-    # Reconcile the Actions workflow inventory before matching this event. This
-    # keeps deleted workflows from remaining active after a push removes them,
-    # while sync_workflows_to_db only reconciles the default branch.
-    await sync_workflows_to_db(db, repository, ref_spec)
-
     envelope = EventEnvelope(
         delivery_id=str(uuid.uuid4()),
         event_name=event,
@@ -2009,10 +2102,36 @@ async def dispatch_event(
         occurred_at=datetime.now(timezone.utc),
     )
 
+    # Every git read comes before this function's first write: SQLite has one
+    # writer, and from the first flush to the commit other writers wait. So the
+    # workflow files and the reusable workflows a match calls are read, and the
+    # triggers evaluated, before the inventory sync and the run inserts below.
+    # (A caller that already wrote in this transaction holds the lock anyway.)
     workflows_yaml = await detect_workflows(repository.disk_path, ref_spec)
+    triggered = []
+    for workflow_yaml in workflows_yaml:
+        if not evaluate_trigger(workflow_yaml, envelope.event_name, envelope.payload):
+            continue
+        triggered.append((
+            workflow_yaml,
+            await materialize_reusable_workflows(
+                workflow_yaml,
+                repository.disk_path,
+                ref_spec,
+                db,
+                inputs=payload.get("inputs", {}),
+                # None: the secrets are the repository's, read at job promotion.
+                secrets=payload.get("secrets"),
+            ),
+        ))
+
+    # Reconcile the Actions workflow inventory before matching this event. This
+    # keeps deleted workflows from remaining active after a push removes them,
+    # while sync_workflows_to_db only reconciles the default branch.
+    await sync_workflows_to_db(db, repository, ref_spec)
+
     result = await db.execute(select(Workflow).where(Workflow.repo_id == repository.id))
     known = {workflow.path: workflow for workflow in result.scalars().all()}
-    runs = []
     for workflow_yaml in workflows_yaml:
         path = workflow_yaml.get("_path", "")
         workflow = known.get(path)
@@ -2024,23 +2143,15 @@ async def dispatch_event(
                 state="active",
             )
             db.add(workflow)
-            await db.flush()
             known[path] = workflow
         else:
             workflow.name = workflow_yaml.get("name", path)
             workflow.state = "active"
+    await db.flush()
+    matched = [(known[raw.get("_path", "")], materialized) for raw, materialized in triggered]
 
-        if not evaluate_trigger(workflow_yaml, envelope.event_name, envelope.payload):
-            continue
-        workflow_yaml = await materialize_reusable_workflows(
-            workflow_yaml,
-            repository.disk_path,
-            ref_spec,
-            db,
-            inputs=payload.get("inputs", {}),
-            # None: the secrets are the repository's, read at job promotion.
-            secrets=payload.get("secrets"),
-        )
+    runs = []
+    for workflow, workflow_yaml in matched:
         run = await create_workflow_run(
             db,
             workflow,
@@ -2076,8 +2187,14 @@ async def process_push_event(
     created: bool = False,
     deleted: bool = False,
     forced: bool = False,
+    update_heads: bool = True,
 ) -> list[WorkflowRun]:
-    """Dispatch a push and any matching pull-request synchronizations."""
+    """Dispatch a push and any matching pull-request synchronizations.
+
+    ``update_heads=False`` raises the push itself (webhooks and push
+    workflows) but leaves the pull requests' heads, and their synchronize
+    activity, to the push that moved the branch since.
+    """
     if not repository.disk_path:
         return []
     user = user or repository.owner
@@ -2141,7 +2258,7 @@ async def process_push_event(
 
     # A deleted head ref cannot synchronize an open PR; the push event is the
     # only event generated for that ref update.
-    if deleted:
+    if deleted or not update_heads:
         return runs
 
     # A push to a pull request's head branch is the source of the

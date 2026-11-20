@@ -6,20 +6,21 @@ from datetime import datetime, timezone
 from typing import Optional
 
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
 from app.database import Base
 from app.database_retry import commit_with_sqlite_retry
-from app.services.repository_purge import purge_repository
-from app.models import Organization, Repository, User
 from app.git.bare_repo import create_initial_commit
+from app.models import Organization, Repository, User
 from app.services.branch_service import record_branch
 from app.services.git_service import (
     delete_bare_repo,
     get_repo_size,
     init_bare_repo,
 )
+from app.services.repository_purge import purge_repository
 
 # Valid repository name pattern: alphanumeric, hyphens, underscores, dots
 REPO_NAME_PATTERN = re.compile(r"^[a-zA-Z0-9._-]+$")
@@ -133,7 +134,14 @@ async def create_repo(
             setattr(repo, key, value)
 
     db.add(repo)
-    await db.commit()
+    try:
+        await db.commit()
+    except IntegrityError as exc:
+        # Two requests for the same name both passed the check above; the
+        # unique index on full_name lets one win. The loser gets the same
+        # 422 as a sequential duplicate, as on GitHub, not a 500.
+        await db.rollback()
+        raise ValueError(f"Repository '{full_name}' already exists.") from exc
     await db.refresh(repo)
 
     await initialize_repository(db, repo, owner, auto_init)

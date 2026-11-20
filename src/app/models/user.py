@@ -32,7 +32,8 @@ class User(Base):
 
     # Relationships
     tokens = relationship("PersonalAccessToken", back_populates="user", lazy="selectin")
-    repositories = relationship("Repository", back_populates="owner", lazy="selectin")
+    # Loaded only on request; see Repository's relationships.
+    repositories = relationship("Repository", back_populates="owner", lazy="select")
     owned_orgs = relationship(
         "Organization",
         secondary="org_memberships",
