@@ -165,6 +165,12 @@ Actions visibility and runner evaluation.
 - `docs/bugs/fixed/runners-registering-together-lose-their-tokens.md`
 - `docs/bugs/fixed/github-context-identity-values-are-empty.md`
 - `docs/bugs/fixed/rendered-github-context-differs-from-github.md`
+- `docs/bugs/fixed/container-and-services-jobs-run-on-the-host.md`
+- `docs/bugs/fixed/unresolved-reusable-workflow-call-passes.md`
+- `docs/bugs/fixed/skipped-reusable-workflow-caller-lists-the-called-jobs.md`
+- `docs/bugs/fixed/job-needing-a-reusable-workflow-caller-waits-forever.md`
+- `docs/bugs/fixed/actions-in-emulator-repositories-are-fetched-upstream.md`
+- `docs/bugs/fixed/jobs-list-shows-jobs-waiting-on-needs.md`
 
 ## Decisions
 

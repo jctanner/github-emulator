@@ -710,7 +710,12 @@ async def list_jobs(
     if run_result.scalar_one_or_none() is None:
         raise HTTPException(status_code=404, detail="Not Found")
 
-    query = select(WorkflowJob).where(WorkflowJob.run_id == run_id)
+    # A job still waiting on its `needs` is not listed: GitHub lists a job
+    # once it is queued (or decided, e.g. skipped). Its "waiting" status is
+    # for a job held for an environment approval, which this emulator does
+    # not have; listing blocked jobs as waiting made a not-yet-started stage
+    # look like one that ran.
+    query = select(WorkflowJob).where(WorkflowJob.run_id == run_id, WorkflowJob.status != "waiting")
     jobs = (await db.execute(query)).scalars().all()
     items = [_job_json(j, owner, repo) for j in jobs]
     return {"total_count": len(items), "jobs": items}

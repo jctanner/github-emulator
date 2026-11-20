@@ -395,7 +395,8 @@ async def test_job_if_false_is_skipped_and_not_queued(
     assert job.conclusion == "skipped"
     assert job.steps[0]["conclusion"] == "skipped"
     assert run.status == "completed"
-    assert run.conclusion == "success"
+    # GitHub concludes a run whose every job was skipped as skipped.
+    assert run.conclusion == "skipped"
 
 
 @pytest.mark.asyncio
