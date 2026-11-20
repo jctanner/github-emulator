@@ -89,6 +89,12 @@ PORT="${CI_STACK_PORT:-8000}"
 PY="${CI_STACK_PYTHON:-python3}"
 LABELS="${CI_STACK_RUNNER_LABELS:-self-hosted,linux,ubuntu-latest,ubuntu-24.04}"
 HOST="${CI_STACK_HOST:-127.0.0.1}"
+# A lower-case DNS name or an IPv4 address, checked before any use: HOST
+# reaches URLs, certificates, dnsmasq and /etc/hosts.
+if ! [[ "$HOST" =~ ^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)*$ ]]; then
+  echo "CI_STACK_HOST must be a lower-case host name or IPv4 address, got '$HOST'" >&2
+  exit 2
+fi
 LOCALHOST_DNS="${CI_STACK_LOCALHOST_DNS:-0}"
 if [ "$LOCALHOST_DNS" = 1 ]; then
   BIND="${CI_STACK_BIND:-0.0.0.0}"
@@ -216,7 +222,12 @@ localhost_dns() {
   # refuses ("connect: permission denied"), instead of asking policy DNS
   # and going through the proxy. glibc ("files dns") still gets HOST from
   # the dnsmasq below. Remove a line an earlier version left.
-  sudo sed -i -E "/[[:space:]]$HOST([[:space:]]|\$)/d" /etc/hosts
+  # The name is compared as a string, never built into a program.
+  if awk -v h="$HOST" '$1 !~ /^#/ { for (i = 2; i <= NF; i++) if ($i == h) found = 1 } END { exit !found }' /etc/hosts; then
+    awk -v h="$HOST" '$1 !~ /^#/ { for (i = 2; i <= NF; i++) if ($i == h) next } { print }' /etc/hosts >"$DIR/hosts.new"
+    sudo cp "$DIR/hosts.new" /etc/hosts
+    rm -f "$DIR/hosts.new"
+  fi
   # Everything that asks DNS. Keep the first resolver seen as the
   # upstream, so a second start does not forward dnsmasq to itself.
   if [ ! -f "$DIR/resolv.conf.orig" ]; then
@@ -434,6 +445,10 @@ start_upstream_runner() {
   local i="$1"
   local home="$DIR/runner-$i" enterprise="${CI_STACK_ENTERPRISE:-breadboard}"
   mkdir -p "$home"
+  # A restart in the same CI_STACK_DIR: config.sh refuses a runner that is
+  # already configured, even with --replace, and the emulator it pointed at
+  # may be a fresh one. Register again from scratch.
+  rm -f "$home/.runner" "$home/.credentials" "$home/.credentials_rsaparams" "$home/.env"
   cp -a "$DIR/actions-runner-$UPSTREAM_VERSION/." "$home/"
   export_trust
   local reg
