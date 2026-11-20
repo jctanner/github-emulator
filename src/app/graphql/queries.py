@@ -5,8 +5,8 @@ from enum import Enum
 from typing import Annotated, Optional, Union
 
 import strawberry
+from sqlalchemy import or_, select
 from strawberry.types import Info
-from sqlalchemy import select, or_
 
 from app.graphql.connections import Connection, build_connection
 from app.graphql.types.enums import (
@@ -15,11 +15,11 @@ from app.graphql.types.enums import (
     RepositoryOrderField,
     RepositoryPrivacy,
 )
-from app.graphql.types.user import GitHubUser, user_from_model, _node_id
-from app.graphql.types.repository import Repository, repository_from_model
 from app.graphql.types.issue import Issue, issue_from_model
-from app.graphql.types.pull_request import PullRequest, pull_request_from_model
 from app.graphql.types.node import Node
+from app.graphql.types.pull_request import PullRequest, pull_request_from_model
+from app.graphql.types.repository import Repository, repository_from_model
+from app.graphql.types.user import GitHubUser, Viewer, _node_id, bot_from_model, user_from_model
 
 
 @strawberry.enum
@@ -193,7 +193,7 @@ def _decode_node_id(global_id: str) -> tuple[str, int]:
         type_name, id_str = raw.split(":", 1)
         return type_name, int(id_str)
     except Exception:
-        raise ValueError(f"Invalid node ID: {global_id}")
+        raise ValueError(f"Invalid node ID: {global_id}") from None
 
 
 def _encode_node_id(type_name: str, db_id: int) -> str:
@@ -242,11 +242,22 @@ class Query:
         return None
 
     @strawberry.field
-    async def viewer(self, info: Info) -> GitHubUser:
-        """Return the currently authenticated user."""
+    async def viewer(self, info: Info) -> Viewer:
+        """Return the currently authenticated account.
+
+        A workflow job token is GitHub's GITHUB_TOKEN, an installation token
+        of the GitHub Actions App, so its viewer is the ``github-actions[bot]``
+        Bot, not the run's actor it otherwise acts as.
+        """
         current_user = info.context.get("user")
         if current_user is None:
             raise PermissionError("Authentication required")
+        state = getattr(info.context.get("request"), "state", None)
+        if getattr(state, "workflow_job", None) is not None:
+            from app.services.auth_service import ensure_actions_bot
+
+            bot = await ensure_actions_bot(info.context["db"])
+            return bot_from_model(bot, login=bot.login)
         return user_from_model(current_user)
 
     @strawberry.field
@@ -269,8 +280,8 @@ class Query:
         self, info: Info, login: str
     ) -> Optional[RepositoryOwner]:
         """Look up a repository owner (user or organization) by login."""
-        from app.models.user import User
         from app.models.organization import Organization
+        from app.models.user import User
 
         db = info.context["db"]
 

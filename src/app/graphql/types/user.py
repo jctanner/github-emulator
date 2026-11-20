@@ -32,21 +32,17 @@ class Actor:
     url: str = ""
 
 
-@strawberry.type(name="Bot")
-class Bot(Actor, Node):
-    """A GitHub App acting on its own. Its login is the App slug, without the
-    "[bot]" suffix REST shows; gh tells a bot by the missing User fields and
-    prints it as "app/<login>"."""
-    database_id: int
+@strawberry.interface(name="Viewer")
+class Viewer(Actor, Node):
+    """The authenticated account, which ``Query.viewer`` returns: the User, or
+    for a workflow job token the ``github-actions[bot]`` Bot.
 
-    @strawberry.field
-    def id(self) -> strawberry.ID:
-        return _node_id("Bot", self.database_id)
-
-
-@strawberry.type(name="User")
-class GitHubUser(Actor, Node):
-    """A GitHub user account."""
+    Not a GitHub type. GitHub declares ``viewer: User!`` and still answers a
+    Bot for a GITHUB_TOKEN; a schema can only do that through an abstract
+    type, so this one carries every User field, and a user's viewer query
+    reads exactly as before. For a Bot the account fields describe the bot
+    account and its connections hold only what that account owns.
+    """
     database_id: int
     name: Optional[str] = None
     email: Optional[str] = None
@@ -55,10 +51,6 @@ class GitHubUser(Actor, Node):
     location: Optional[str] = None
     created_at: datetime = strawberry.UNSET
     is_site_admin: bool = False
-
-    @strawberry.field
-    def id(self) -> strawberry.ID:
-        return _node_id("User", self.database_id)
 
     @strawberry.field
     async def contributions_collection(
@@ -127,6 +119,27 @@ class GitHubUser(Actor, Node):
         )
 
 
+@strawberry.type(name="Bot")
+class Bot(Viewer):
+    """A GitHub App acting on its own. As an author its login is the App slug,
+    without the "[bot]" suffix REST shows; gh tells a bot by the missing User
+    fields and prints it as "app/<login>". As a job token's viewer it is
+    ``github-actions[bot]``, suffix included, as on GitHub."""
+
+    @strawberry.field
+    def id(self) -> strawberry.ID:
+        return _node_id("Bot", self.database_id)
+
+
+@strawberry.type(name="User")
+class GitHubUser(Viewer):
+    """A GitHub user account."""
+
+    @strawberry.field
+    def id(self) -> strawberry.ID:
+        return _node_id("User", self.database_id)
+
+
 @strawberry.type
 class SimpleUser:
     """A simplified user type for embedding in other objects."""
@@ -163,13 +176,33 @@ def actor_from_model(user) -> Actor:
     """The Actor for an account: a Bot for an App's bot account, else a User."""
     if getattr(user, "type", "User") != "Bot":
         return user_from_model(user)
+    from app.services.auth_service import ACTIONS_BOT_LOGIN
+
+    # The github-actions[bot] account is a job token's viewer and keeps its
+    # "[bot]" suffix there, so node(id:) must answer the same login for the
+    # same id. It authors nothing, so no author path shows it bare.
+    if user.login == ACTIONS_BOT_LOGIN:
+        return bot_from_model(user, login=user.login)
+    return bot_from_model(user, login=user.login.removesuffix("[bot]"))
+
+
+def bot_from_model(user, login: str) -> Bot:
+    """The Bot for a bot account, shown as ``login``: an author's Bot drops
+    the "[bot]" suffix, a job token's viewer keeps it."""
     from app.config import settings
     slug = user.login.removesuffix("[bot]")
     return Bot(
-        login=slug,
+        login=login,
         database_id=user.id,
+        name=user.name,
+        email=user.email,
+        bio=user.bio,
+        company=user.company,
+        location=user.location,
         avatar_url=user.avatar_url or f"{settings.BASE_URL}/avatars/{user.login}",
         url=f"{settings.BASE_URL}/apps/{slug}",
+        created_at=user.created_at,
+        is_site_admin=user.site_admin,
     )
 
 

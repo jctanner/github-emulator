@@ -10,6 +10,7 @@ from typing import Optional
 
 from passlib.context import CryptContext
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database_retry import rollback_after_sqlite_lock
@@ -114,6 +115,45 @@ async def ensure_app_bot(db: AsyncSession, app: GitHubApp) -> User:
         app.bot_user_id = bot.id
         await db.flush()
     return bot
+
+
+ACTIONS_BOT_LOGIN = "github-actions[bot]"
+
+
+async def ensure_actions_bot(db: AsyncSession) -> User:
+    """Return the ``github-actions[bot]`` account, creating it once.
+
+    GitHub's GITHUB_TOKEN is an installation token of the GitHub Actions App,
+    whose bot is ``github-actions[bot]``. Like :func:`ensure_app_bot`, the
+    account is created lazily, the first time a job token needs it. It is
+    created and committed in a session of its own, so the caller's session
+    (a GraphQL query's, say) holds no write, and a concurrent request that
+    created it first costs only that session's rollback.
+    """
+    query = (
+        select(User)
+        .options(*scalar_only_options())
+        .where(User.login == ACTIONS_BOT_LOGIN)
+    )
+    bot = (await db.execute(query)).scalar_one_or_none()
+    if bot is not None:
+        return bot
+    async with AsyncSession(db.bind, expire_on_commit=False) as own:
+        own.add(User(
+            login=ACTIONS_BOT_LOGIN,
+            name="GitHub Actions",
+            email=f"{ACTIONS_BOT_LOGIN}@users.noreply.github-emulator.local",
+            hashed_password=hash_password(secrets.token_urlsafe(32)),
+            site_admin=False,
+            type="Bot",
+        ))
+        try:
+            await own.commit()
+        except IntegrityError:
+            await own.rollback()
+        return (
+            await own.execute(query.execution_options(populate_existing=True))
+        ).scalar_one()
 
 
 async def get_installation_actor(
