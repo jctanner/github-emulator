@@ -1,8 +1,22 @@
 # Default Admin Personal Access Token
 
-Fresh GitHub Emulator instances can seed a default admin user and personal
-access token during startup. This gives automation a non-interactive way to call
-the REST API immediately after the server boots.
+Every fresh emulator seeds an admin token, `ghp_admin_default_token`, so your
+scripts can call the API as soon as the server is up. Start a server with the
+[README quickstart](../../README.md#quickstart-container), then use the token.
+
+## Use it
+
+```console
+$ curl -s http://localhost:8000/api/v3/user -H "Authorization: token ghp_admin_default_token" | python3 -m json.tool | head -4
+{
+    "login": "admin",
+    "id": 1,
+    "node_id": "VXNlcjox",
+```
+
+A wrong token returns
+`{"message":"Bad credentials","documentation_url":"https://docs.github.com/rest"}`.
+For more calls, see the [API usage guide](api-usage.md).
 
 ## What Gets Seeded
 
@@ -34,25 +48,19 @@ GITHUB_EMULATOR_DEFAULT_ADMIN_TOKEN=ghp_admin_default_token
 ```
 
 Set `GITHUB_EMULATOR_DEFAULT_ADMIN_TOKEN` to choose a different deterministic
-token for your local environment or CI job:
+token for your local environment or CI job. Not run for this guide. This form
+is for a server started from source; `docker-compose.yml` does not pass this
+variable into the container.
 
 ```bash
-GITHUB_EMULATOR_DEFAULT_ADMIN_TOKEN=ghp_my_ci_admin_token make up
+GITHUB_EMULATOR_DEFAULT_ADMIN_TOKEN=ghp_my_ci_admin_token uv run uvicorn app.main:app
 ```
 
 Set `GITHUB_EMULATOR_SEED_DATA=false` to disable startup seeding.
 
-## API Usage
+## Other auth forms
 
-Use the seeded token with GitHub-style token auth:
-
-```bash
-curl -s http://localhost:8000/api/v3/user \
-  -H "Authorization: token ghp_admin_default_token" \
-  | python3 -m json.tool
-```
-
-Bearer auth works too:
+Bearer auth also returns `admin`:
 
 ```bash
 curl -s http://localhost:8000/api/v3/user \
@@ -60,7 +68,8 @@ curl -s http://localhost:8000/api/v3/user \
   | python3 -m json.tool
 ```
 
-Basic auth also works when the password field is the token:
+Basic auth also works when the password field is the token. Not run for this
+guide: Basic auth was not part of the verified run.
 
 ```bash
 basic="$(printf 'admin:ghp_admin_default_token' | base64 -w0)"

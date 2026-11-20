@@ -36,12 +36,14 @@ When you need detailed status, follow links from `PLAN.md` into:
 - ORM models live in `src/app/models/`.
 - Business logic lives in `src/app/services/`.
 - Git transport code lives in `src/app/git/`.
-- Admin and web UI routes/templates live in `src/app/admin/` and `src/app/web/`.
+- The React web UI and admin UI live in `src/frontend/`, served by `src/app/frontend.py`.
+- Admin JSON APIs live in `src/app/api/admin_frontend.py`.
 - Tests live in `tests/`.
 
 ## Development Commands
 
-- Install dependencies: `uv pip install -e ".[dev]"`
+- Install dependencies: `uv sync --frozen --extra dev`
+- Build the web UI: `make frontend-install`, then `npm --prefix src/frontend run build`
 - Run tests: `uv run pytest tests/ -v`
 - Start local server: `uv run uvicorn app.main:app --reload`
 - Docker startup: `make up`
