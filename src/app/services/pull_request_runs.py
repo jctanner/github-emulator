@@ -98,6 +98,28 @@ async def update_pull_request_refs(
     return merge_sha
 
 
+async def _head_is_branch_tip(repo_path: str, ref: str, sha: str) -> bool:
+    """Whether ``ref`` is a branch name of the repository whose tip is ``sha``."""
+    if not ref or not sha or ref.startswith("refs/") or ref.startswith("-"):
+        return False
+    code, _, _ = await _git(repo_path, "check-ref-format", "--branch", ref)
+    if code != 0:
+        return False
+    code, tip, _ = await _git(repo_path, "rev-parse", "--verify", "--quiet", f"refs/heads/{ref}^{{commit}}")
+    return code == 0 and tip == sha
+
+
+async def _head_is_trusted(repo_path: str, number: int, ref: str, sha: str) -> bool:
+    """A same-repository head is a branch of the repository at its tip; or,
+    once that branch is gone (deleted when the pull request closed), the
+    commit an earlier activity already checked and recorded as
+    refs/pull/N/head."""
+    if await _head_is_branch_tip(repo_path, ref, sha):
+        return True
+    code, recorded, _ = await _git(repo_path, "rev-parse", "--verify", "--quiet", pull_ref(number))
+    return bool(sha) and code == 0 and recorded == sha
+
+
 def pull_request_head_is_fork(payload: dict) -> bool:
     """Whether the pull request in ``payload`` comes from another repository:
     its ``head.repo.id`` differs from the repository's.
@@ -136,6 +158,19 @@ async def dispatch_pull_request(db, repository, actor, action: str, payload: dic
     base = pull_request.get("base") or {}
     if not number or not repository.disk_path:
         return []
+    if not pull_request_head_is_fork(payload) and not await _head_is_trusted(
+        repository.disk_path, int(number), head.get("ref") or "", head.get("sha") or "",
+    ):
+        # A same-repository head is a branch of this repository, at its tip.
+        # Any other head (another pull request's refs/pull/N/head, a bare
+        # commit, a branch that does not exist) is not one GitHub accepts,
+        # and running it as same-repository would hand it this repository's
+        # token and secrets: run no pull_request workflow for it.
+        logger.info(
+            "Head %r of %s#%s is not a branch of the repository at %s: no pull_request workflows run",
+            head.get("ref"), repository.full_name, number, head.get("sha"),
+        )
+        return []
     merge_sha = await update_pull_request_refs(
         repository.disk_path, int(number), head.get("sha") or "", base.get("ref") or "",
     )
@@ -152,3 +187,16 @@ async def dispatch_pull_request(db, repository, actor, action: str, payload: dic
         db, repository, actor, "pull_request", action, event_payload,
         ref=merge_ref(int(number)), sha=merge_sha, _pull_request_side=True,
     )
+
+
+def pull_request_branch_context(event: str, payload: dict) -> dict:
+    """github.base_ref and github.head_ref for a pull_request run: the pull
+    request's base and head branches. Nothing for every other event, whose
+    server-side context is unchanged."""
+    if event != "pull_request":
+        return {}
+    pull_request = (payload or {}).get("pull_request") or {}
+    return {
+        "base_ref": str((pull_request.get("base") or {}).get("ref") or ""),
+        "head_ref": str((pull_request.get("head") or {}).get("ref") or ""),
+    }

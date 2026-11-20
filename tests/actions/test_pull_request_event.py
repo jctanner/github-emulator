@@ -331,3 +331,182 @@ async def test_the_same_repository_guard_skips_a_forks_pull_request(client, base
     await _fork_pull_request(client, headers, base)
     job = await _guarded_job(db_session)
     assert job.conclusion == "skipped"
+
+
+# --- Review round 1 -----------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_a_head_naming_another_pull_requests_ref_runs_no_pull_request_workflow(
+    client, base, test_token, db_session,
+):
+    # A same-repository head must be a branch of the repository at its tip.
+    # A head naming another pull request's refs/pull/N/head (here a fork's),
+    # or a branch that does not exist with a supplied head_sha, would
+    # otherwise run that commit as a same-repository pull request.
+    headers = auth_headers(test_token)
+    fork_number = await _fork_pull_request(client, headers, base)
+    assert len(await _runs(db_session, "pull_request")) == 1  # the fork's own, restricted
+    disk = await _disk_path(db_session, f"{ORG}/base")
+    fork_head = _rev_parse(disk, f"refs/pull/{fork_number}/head")
+
+    other_ref = await client.post(f"{API}/repos/{ORG}/base/pulls", headers=headers, json={
+        "title": "names a pull ref", "head": f"refs/pull/{fork_number}/head", "base": "main",
+    })
+    assert other_ref.status_code == 201, other_ref.text
+    fallback = await client.post(f"{API}/repos/{ORG}/base/pulls", headers=headers, json={
+        "title": "no such branch", "head": "no-such-branch", "head_sha": fork_head, "base": "main",
+    })
+    assert fallback.status_code == 201, fallback.text
+
+    runs = await _runs(db_session, "pull_request")
+    assert len(runs) == 1, "neither head runs a pull_request workflow"
+    assert len(await _runs(db_session, "pull_request_target")) == 3
+    for pull in (other_ref.json(), fallback.json()):
+        assert _rev_parse(disk, f"refs/pull/{pull['number']}/merge") is None
+
+
+BRANCH_WORKFLOW = """name: branches
+on:
+  pull_request:
+    types: [opened]
+jobs:
+  on-main:
+    if: github.base_ref == 'main'
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo "head=${{ github.head_ref }} base=${{ github.base_ref }}"
+  on-other:
+    if: github.base_ref == 'release'
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo never
+  after:
+    needs: on-main
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo "after=${{ github.head_ref }}"
+"""
+
+
+@pytest.mark.asyncio
+async def test_base_ref_and_head_ref_are_in_the_server_side_context(client, base, test_token, db_session):
+    headers = auth_headers(test_token)
+    await _put(client, headers, f"{ORG}/base", ".github/workflows/branches.yml", BRANCH_WORKFLOW)
+    await _branch(client, headers, f"{ORG}/base", "topic")
+    await _put(client, headers, f"{ORG}/base", "topic.txt", "topic\n", branch="topic")
+    await _open(client, headers, "topic")
+
+    (run,) = [r for r in await _runs(db_session, "pull_request") if r.workflow.name == "branches"]
+    jobs = {job.name: job for job in (await db_session.execute(
+        select(WorkflowJob).where(WorkflowJob.run_id == run.id)
+    )).scalars().all()}
+    # A job if: on base_ref, evaluated on the server.
+    assert jobs["on-main"].conclusion != "skipped"
+    assert jobs["on-other"].conclusion == "skipped"
+    # A step value rendered on the server.
+    assert "head=topic base=main" in str(jobs["on-main"].steps)
+    # A job with needs renders later, from the run's stored context.
+    context = await build_run_expression_context(db_session, run)
+    assert context["github"]["head_ref"] == "topic"
+    assert context["github"]["base_ref"] == "main"
+    # pull_request_target's server-side context is unchanged.
+    (target,) = await _runs(db_session, "pull_request_target")
+    assert "head_ref" not in (await build_run_expression_context(db_session, target))["github"]
+
+
+@pytest.mark.asyncio
+async def test_a_job_token_reads_no_other_non_public_repository(
+    client, base, test_token, test_user, db_session,
+):
+    headers = auth_headers(test_token)
+    for name, private in (("secret-repo", True), ("open-repo", False)):
+        made = await client.post(f"{API}/user/repos", headers=headers,
+                                 json={"name": name, "private": private, "auto_init": True})
+        assert made.status_code == 201, made.text
+    # A maintainer's activity runs a fork's pull_request workflow, whose
+    # token reads as the maintainer did not.
+    await _fork_pull_request(client, headers, base)
+    (fork_run,) = await _runs(db_session, "pull_request")
+    job = (await db_session.execute(select(WorkflowJob).where(WorkflowJob.run_id == fork_run.id))).scalars().first()
+    token = {"Authorization": f"Bearer {issue_job_token(job)}"}
+
+    assert (await client.get(f"{API}/repos/testuser/secret-repo", headers=token)).status_code == 404
+    assert (await client.get(f"{API}/repos/testuser/secret-repo/contents/README.md", headers=token)).status_code == 404
+    assert (await client.get("/testuser/secret-repo/raw/main/README.md", headers=token)).status_code == 404
+    assert (await client.get("/testuser/secret-repo.git/info/refs?service=git-upload-pack",
+                             headers=token)).status_code == 404
+    assert (await client.get(f"{API}/repos/testuser/open-repo", headers=token)).status_code == 200
+    assert (await client.get(f"{API}/repos/{ORG}/base", headers=token)).status_code == 200
+
+    # The same holds for a same-repository run: the token is the run's.
+    await _branch(client, headers, f"{ORG}/base", "topic")
+    await _put(client, headers, f"{ORG}/base", "topic.txt", "topic\n", branch="topic")
+    await _open(client, headers, "topic")
+    own_run = (await _runs(db_session, "pull_request"))[-1]
+    own_job = (await db_session.execute(select(WorkflowJob).where(WorkflowJob.run_id == own_run.id))).scalars().first()
+    own_token = {"Authorization": f"Bearer {issue_job_token(own_job)}"}
+    assert (await client.get(f"{API}/repos/testuser/secret-repo", headers=own_token)).status_code == 404
+    assert (await client.get(f"{API}/repos/{ORG}/base", headers=own_token)).status_code == 200
+
+
+@pytest.mark.asyncio
+async def test_neither_runner_path_offers_a_fork_run_an_oidc_token(
+    client, base, test_token, admin_token, db_session,
+):
+    from app.api.actions_distributed_task import _job_request_message
+
+    headers = auth_headers(test_token)
+    await _fork_pull_request(client, headers, base)
+    (fork_run,) = await _runs(db_session, "pull_request")
+    fork_job = (await db_session.execute(
+        select(WorkflowJob).where(WorkflowJob.run_id == fork_run.id)
+    )).scalars().first()
+    assert fork_job.permissions.get("id-token") == "write"
+
+    # actions/runner: the job message's step environment.
+    message = _job_request_message(fork_job, fork_run, base_url="https://emu.test")
+    assert "ACTIONS_ID_TOKEN_REQUEST_URL" not in str(message)
+
+    # The emulator's own runner: the claim says no, and the runner obeys.
+    registered = await client.post(f"{API}/admin/actions/runners/register", headers=auth_headers(admin_token),
+                                   json={"name": "pr-runner", "labels": ["ubuntu-latest"]})
+    assert registered.status_code in (200, 201), registered.text
+    runner_headers = {"Authorization": f"Bearer {registered.json()['token']}"}
+    claimed = None
+    for _ in range(4):
+        response = await client.get(f"{API}/actions/runner/jobs", headers=runner_headers,
+                                    params={"labels": "ubuntu-latest", "timeout": 1})
+        assert response.status_code == 200, response.text
+        body = response.json()
+        if body and body.get("event") == "pull_request":
+            claimed = body
+            break
+    assert claimed is not None
+    assert claimed["id_token"] is False
+    assert claimed["permissions"].get("id-token") != "write"
+    assert claimed["permissions"].get("contents") == "read"
+
+
+def test_the_emulator_runner_honours_the_claims_id_token_flag(monkeypatch, tmp_path):
+    from tests.actions.test_runner_oidc_environment import runner_module
+
+    monkeypatch.setattr(runner_module, "WORKDIR", str(tmp_path))
+    monkeypatch.delenv("ACTIONS_ID_TOKEN_REQUEST_URL", raising=False)
+    monkeypatch.delenv("ACTIONS_ID_TOKEN_REQUEST_TOKEN", raising=False)
+    seen = {}
+    for allowed in (True, False):
+        runner = runner_module.RunnerClient()
+        chunks: list[str] = []
+        runner._upload_logs = lambda repository, job_id, chunk, chunks=chunks: chunks.append(chunk)
+        runner._report_progress = lambda repository, job_id, steps: None
+        runner._complete_job = lambda repository, job_id, conclusion, steps, step_outputs=None: None
+        runner.execute_job({
+            "job_id": 12, "name": "mint", "token": "job-token",
+            "permissions": {"id-token": "write"}, "id_token": allowed,
+            "steps": [{"number": 1, "name": "Show", "shell": "bash",
+                       "run": 'echo "URL=${ACTIONS_ID_TOKEN_REQUEST_URL:-unset}"'}],
+            "timeout_seconds": 10,
+        })
+        seen[allowed] = "URL=unset" not in "".join(chunks)
+    assert seen == {True: True, False: False}

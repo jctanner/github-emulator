@@ -5,7 +5,7 @@ import re
 from typing import Annotated, Optional
 
 from fastapi import Depends, HTTPException, Request
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database import get_db
@@ -205,6 +205,12 @@ async def _resolve_user(
                     detail=f"Resource not accessible by integration: "
                            f"job token for {own} cannot write to {target}",
                 )
+        # Nor does it read another repository that is not public, whoever
+        # triggered the run: the token is the run's, not the actor's. A
+        # repository that does not exist is left to the route.
+        target = _repository_read_in_path(request.url.path)
+        if target is not None and request.method in ("GET", "HEAD", "OPTIONS"):
+            await _refuse_other_non_public_repository(db, run, target)
         return run.actor
     return await validate_token(db, token_value)
 
@@ -217,6 +223,35 @@ def _repository_in_path(path: str) -> str | None:
     """owner/repo named by a repository API route or a git transport route."""
     m = _REPO_PATH.match(path) or _GIT_PATH.match(path)
     return f"{m.group(1)}/{m.group(2)}" if m else None
+
+
+# Root-mounted routes that serve a repository's content to a token too.
+_CONTENT_PATH = re.compile(r"^/([^/_][^/]*)/([^/]+)/(?:raw|releases/download)/")
+
+
+def _repository_read_in_path(path: str) -> str | None:
+    """owner/repo whose content a request reads: the repository API and git
+    routes, plus the raw and release-download routes."""
+    target = _repository_in_path(path)
+    if target is None:
+        m = _CONTENT_PATH.match(path)
+        target = f"{m.group(1)}/{m.group(2)}" if m else None
+    return target
+
+
+async def _refuse_other_non_public_repository(db: AsyncSession, run, target: str) -> None:
+    """404 for a job token reading a repository other than its run's that is
+    not public (private or internal), as GitHub's GITHUB_TOKEN gets."""
+    owner, _, name = target.partition("/")
+    other = (await db.execute(
+        select(Repository.id, Repository.private, Repository.visibility).where(
+            func.lower(Repository.full_name) == f"{owner}/{name.removesuffix('.git')}".lower()
+        )
+    )).first()
+    if other is None or other.id == run.repo_id:
+        return
+    if other.private or (other.visibility or "public") != "public":
+        raise HTTPException(status_code=404, detail="Not Found")
 
 
 _INSTALLATION_SCOPES = (

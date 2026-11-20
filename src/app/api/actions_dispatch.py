@@ -16,8 +16,10 @@ from app.api.deps import AuthUser, DbSession, get_repo_or_404
 from app.config import settings
 from app.models.actions import EnterpriseRunnerRegistrationToken, RegistrationToken, Runner, WorkflowJob, WorkflowRun
 from app.models.repository import Repository
+from app.services import job_permissions
 from app.services.auth_service import hash_token
 from app.services.job_token_service import issue_job_token
+from app.services.pull_request_runs import is_fork_pull_request_run
 from app.services.workflow_service import check_run_completion, dispatch_ready_jobs, resolve_job_outputs
 
 router = APIRouter(tags=["actions-dispatch"])
@@ -584,6 +586,16 @@ async def _poll_for_jobs(
                     run.status = "in_progress"
                     await db.commit()
 
+                permissions = job.permissions
+                fork_run = is_fork_pull_request_run(run)
+                if fork_run:
+                    # A fork's pull_request run: read-only, whatever the
+                    # workflow declared, as its token is at the API.
+                    permissions = job_permissions.read_only(
+                        job.permissions,
+                        repository.default_workflow_permissions if repository else None,
+                    )
+
                 return {
                     "job_id": job.id,
                     "run_id": job.run_id,
@@ -596,7 +608,13 @@ async def _poll_for_jobs(
                     # this job may request an Actions OIDC token. None means
                     # the job declared no permissions block at all, which is
                     # distinct from declaring an empty one.
-                    "permissions": job.permissions,
+                    "permissions": permissions,
+                    # Whether the job may request an Actions OIDC token: it
+                    # declared id-token: write (or no permissions block), and
+                    # it is not a fork's pull_request run, which never may.
+                    "id_token": not fork_run and (
+                        job.permissions is None or job.permissions.get("id-token") == "write"
+                    ),
                     "steps": job.steps or [],
                     "labels": job.labels,
                     "workflow_name": job.workflow_name,

@@ -97,7 +97,7 @@ async def detect_workflows(repo_disk_path: str, ref: str = "HEAD") -> list[dict]
 
 
 from app.services.cross_repo_pulls import same_repository_head, sync_head_ref  # noqa: E402
-from app.services.pull_request_runs import is_fork_pull_request_run  # noqa: E402
+from app.services.pull_request_runs import is_fork_pull_request_run, pull_request_branch_context  # noqa: E402
 from app.services.webhook_service import schedule_webhooks  # noqa: E402
 from app.services.workflow_triggers import evaluate_trigger  # noqa: E402
 
@@ -1237,6 +1237,7 @@ async def build_run_expression_context(db, run) -> dict:
             "run_number": run.run_number,
             "sha": run.head_sha,
             "server_url": settings.BASE_URL,
+            **pull_request_branch_context(run.event, payload),
             **await github_identity_context(db, run),
         },
     }
@@ -1591,6 +1592,7 @@ async def create_workflow_run(
             "run_number": run.run_number,
             "sha": head_sha,
             "server_url": settings.BASE_URL,
+            **pull_request_branch_context(event, payload),
             **identity,
         },
     }
