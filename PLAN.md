@@ -98,6 +98,7 @@ Actions visibility and runner evaluation.
 - `docs/bugs/open/graphql-installation-content-scopes.md`
 - `docs/bugs/open/graphql-contributions-count-hidden-activity.md`
 - `docs/bugs/open/job-tokens-cannot-use-graphql.md`
+- `docs/bugs/open/job-token-writes-are-authored-by-the-run-actor.md`
 
 ## Fixed Bugs
 
@@ -186,6 +187,7 @@ Actions visibility and runner evaluation.
 - `docs/bugs/fixed/pull-request-workflows-never-run.md`
 - `docs/bugs/fixed/search-returns-unreadable-private-repositories.md`
 - `docs/bugs/fixed/make-smoke-api-steps-cannot-fail.md`
+- `docs/bugs/fixed/graphql-job-token-viewer-is-the-run-actor.md`
 
 ## Decisions
 
