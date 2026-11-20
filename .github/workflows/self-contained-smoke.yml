@@ -300,6 +300,11 @@ jobs:
             scripts/ci-stack.sh stats
             echo '```'
           } | tee -a "$GITHUB_STEP_SUMMARY"
+      - name: Restart on the same state directory
+        run: |
+          scripts/ci-stack.sh stop
+          scripts/ci-stack.sh start
+          scripts/ci-workflow-smoke.sh
       - name: Stop the stack
         if: always()
         run: scripts/ci-stack.sh stop
