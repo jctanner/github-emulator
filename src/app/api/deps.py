@@ -26,6 +26,7 @@ from app.services.browser_session_service import (
     verify_browser_session,
 )
 from app.services.job_token_service import validate_job_token
+from app.services.pull_request_runs import is_fork_pull_request_run
 
 # ---------------------------------------------------------------------------
 # Database session dependency
@@ -170,13 +171,18 @@ async def _resolve_user(
         # so the run's repository has to be consulted rather than assuming
         # permissive.
         repo_default = None
-        if job.permissions in (None, {}):
+        if job.permissions in (None, {}) or is_fork_pull_request_run(run):
             repo = (await db.execute(
                 select(Repository).where(Repository.id == run.repo_id)
             )).scalar_one_or_none()
             repo_default = repo.default_workflow_permissions if repo else None
+        declared = job.permissions
+        if is_fork_pull_request_run(run):
+            # GitHub gives a fork's pull_request run a read-only token,
+            # whatever the workflow asks for.
+            declared = job_permissions.read_only(job.permissions, repo_default)
         refusal = job_permissions.check(
-            request.method, request.url.path, job.permissions, repo_default
+            request.method, request.url.path, declared, repo_default
         )
         if refusal is not None:
             raise HTTPException(

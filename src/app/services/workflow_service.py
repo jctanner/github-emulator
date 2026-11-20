@@ -97,6 +97,7 @@ async def detect_workflows(repo_disk_path: str, ref: str = "HEAD") -> list[dict]
 
 
 from app.services.cross_repo_pulls import same_repository_head, sync_head_ref  # noqa: E402
+from app.services.pull_request_runs import is_fork_pull_request_run  # noqa: E402
 from app.services.webhook_service import schedule_webhooks  # noqa: E402
 from app.services.workflow_triggers import evaluate_trigger  # noqa: E402
 
@@ -1218,6 +1219,9 @@ async def build_run_expression_context(db, run) -> dict:
             select(Secret).where(Secret.repo_id == run.repo_id)
         )).scalars().all()
     }
+    if is_fork_pull_request_run(run):
+        # GitHub passes no secrets to a fork's pull_request run.
+        secrets = {}
     repository = payload.get("repository", {}).get("full_name", "")
     return {
         "inputs": payload.get("inputs", {}),
@@ -1561,6 +1565,9 @@ async def create_workflow_run(
             select(Secret).where(Secret.repo_id == workflow.repo_id)
         )).scalars().all()
     }
+    if is_fork_pull_request_run(run):
+        # GitHub passes no secrets to a fork's pull_request run.
+        secrets = {}
     # The run's own fields are all it needs.
     identity = await github_identity_context(db, run)
 
@@ -2068,14 +2075,22 @@ async def dispatch_event(
     *,
     ref: str | None = None,
     sha: str | None = None,
+    _pull_request_side: bool = False,
 ) -> list[WorkflowRun]:
     """Dispatch one successful repository activity to matching workflows,
-    and to the repository's webhooks."""
+    and to the repository's webhooks.
+
+    A pull request activity is raised as ``pull_request_target``; it also
+    runs the ``pull_request`` workflows, from the pull request's merge commit
+    (``app.services.pull_request_runs``). That second dispatch passes
+    ``_pull_request_side`` and sends no webhooks: the activity has one.
+    """
     # Webhooks receive every activity, whether or not Actions can run for it.
-    try:
-        await schedule_webhooks(db, repository.id, repository.organization_id, event, payload)
-    except Exception:
-        logger.exception("Scheduling %s webhooks for %s failed", event, repository.full_name)
+    if not _pull_request_side:
+        try:
+            await schedule_webhooks(db, repository.id, repository.organization_id, event, payload)
+        except Exception:
+            logger.exception("Scheduling %s webhooks for %s failed", event, repository.full_name)
     if not repository.disk_path or not actor:
         return []
     if repository.actions_enabled is False:
@@ -2150,6 +2165,11 @@ async def dispatch_event(
     await db.flush()
     matched = [(known[raw.get("_path", "")], materialized) for raw, materialized in triggered]
 
+    # A pull_request run's ref is refs/pull/N/merge; its head_branch is the
+    # pull request's head branch, as on GitHub.
+    head_branch = ref_name
+    if event == "pull_request":
+        head_branch = ((payload.get("pull_request") or {}).get("head") or {}).get("ref") or ref_name
     runs = []
     for workflow, workflow_yaml in matched:
         run = await create_workflow_run(
@@ -2160,7 +2180,7 @@ async def dispatch_event(
             envelope.payload,
             envelope.actor,
             envelope.sha,
-            ref_name,
+            head_branch,
         )
         runs.append(run)
 
@@ -2173,6 +2193,10 @@ async def dispatch_event(
             len(runs),
             repository.full_name,
         )
+    if event == "pull_request_target" and not _pull_request_side and payload.get("pull_request"):
+        from app.services.pull_request_runs import dispatch_pull_request
+
+        runs.extend(await dispatch_pull_request(db, repository, actor, action, payload))
     return runs
 
 

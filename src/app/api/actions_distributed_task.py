@@ -57,6 +57,7 @@ from app.services.action_download_service import (
 )
 from app.services.auth_service import hash_token
 from app.services.job_token_service import validate_job_token
+from app.services.pull_request_runs import is_fork_pull_request_run
 from app.services.workflow_service import (
     _branch_protected,
     check_run_completion,
@@ -576,6 +577,15 @@ async def dt_delete_pool_agent(
     return {"status": "removed"}
 
 
+def _pull_request_branch(run: WorkflowRun | None, side: str) -> str:
+    """github.base_ref / head_ref of a pull_request run: the pull request's
+    base and head branches. Empty for every other event here."""
+    if run is None or run.event != "pull_request":
+        return ""
+    pull_request = (run.trigger_payload or {}).get("pull_request") or {}
+    return str((pull_request.get(side) or {}).get("ref") or "")
+
+
 def _message_ref(run: WorkflowRun | None) -> str:
     """The full ref the job message names: the event's, else the run's branch."""
     ref = (
@@ -608,7 +618,10 @@ def _job_request_message(
     # directly in each step's environment, which is what actually has to hold
     # them when the step runs. A job that did not declare "id-token: write"
     # gets neither, matching GitHub.
-    may_mint = job.permissions is None or job.permissions.get("id-token") == "write"
+    may_mint = (
+        (job.permissions is None or job.permissions.get("id-token") == "write")
+        and not is_fork_pull_request_run(run)
+    )
     oidc_environment = (
         {
             "ACTIONS_ID_TOKEN_REQUEST_URL": (
@@ -690,12 +703,12 @@ def _job_request_message(
                 "actor": run.actor.login if run and run.actor else "",
                 "actor_id": str(run.actor_id) if run and run.actor_id else "",
                 "api_url": f"{runner_base_url}/api/v3",
-                "base_ref": "",
+                "base_ref": _pull_request_branch(run, "base"),
                 "event_name": run.event if run else "workflow_dispatch",
                 "event_path": "",
                 "event": run.trigger_payload if run and run.trigger_payload else {},
                 "graphql_url": f"{runner_base_url}/api/graphql",
-                "head_ref": "",
+                "head_ref": _pull_request_branch(run, "head"),
                 "job": job.name,
                 "ref": ref,
                 "repository": repo_full_name,

@@ -14,6 +14,7 @@ Permissions are named as GitHub names App permissions (``pull_requests``,
 from sqlalchemy import select
 
 from app.services import job_permissions
+from app.services.pull_request_runs import is_fork_pull_request_run
 from app.services.repository_access import can_read, can_write_contents
 
 
@@ -50,6 +51,10 @@ async def _job_grants(db, job, repo, scopes: tuple[str, ...]) -> bool:
     run = (await db.execute(select(WorkflowRun).where(WorkflowRun.id == job.run_id))).scalar_one_or_none()
     if run is None or run.repo_id != repo.id:
         # A job token writes only to its own repository.
+        return False
+    if is_fork_pull_request_run(run):
+        # GitHub gives a fork's pull_request run a read-only token, whatever
+        # the workflow asks for.
         return False
     declared = job_permissions.normalise_permissions(job.permissions)
     if declared is None:
