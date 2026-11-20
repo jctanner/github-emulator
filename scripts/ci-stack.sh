@@ -510,8 +510,14 @@ stop() {
     kill -9 "$pid" 2>/dev/null || true
     rm -f "$f"
   done
-  # run.sh leaves Runner.Listener and Runner.Worker behind.
+  # run.sh leaves Runner.Listener and Runner.Worker behind. Wait for them to
+  # exit: a restart copies the runner over their binaries ("Text file busy").
   pkill -f "$DIR/runner-" 2>/dev/null || true
+  for _ in $(seq 1 20); do
+    pgrep -f "$DIR/runner-" >/dev/null || break
+    sleep 0.5
+  done
+  pkill -9 -f "$DIR/runner-" 2>/dev/null || true
 }
 
 # Print each process's peak resident memory (VmHWM) and CPU seconds so far,
