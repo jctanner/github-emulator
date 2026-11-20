@@ -188,6 +188,7 @@ Actions visibility and runner evaluation.
 - `docs/bugs/fixed/search-returns-unreadable-private-repositories.md`
 - `docs/bugs/fixed/make-smoke-api-steps-cannot-fail.md`
 - `docs/bugs/fixed/graphql-job-token-viewer-is-the-run-actor.md`
+- `docs/bugs/fixed/runner-drops-a-job-handed-out-while-its-worker-exits.md`
 
 ## Decisions
 
