@@ -28,10 +28,23 @@ Run these commands once from the repository root:
    pre-commit installed at .git/hooks/pre-commit
    ```
 
-4. Install frontend dependencies (needed only for the two frontend hooks):
+4. Install frontend dependencies (needed only for the two frontend hooks and the web UI build):
    ```bash
-   npm --prefix src/frontend ci
+   make frontend-install
    ```
+
+## Run the tests
+
+Run the test suite before you submit a change:
+```bash
+uv run pytest tests/ -q
+```
+
+```
+1373 passed, 4680 warnings in 581.79s (0:09:41)
+```
+
+The full suite takes about ten minutes, and the counts grow as tests are added. To run the server from source and build the web UI, see the [development guide](docs/guides/development.md).
 
 ## Check your change
 
@@ -56,6 +69,21 @@ zizmor...................................................................Passed
 frontend eslint..........................................................Passed
 frontend prettier........................................................Passed
 ```
+
+## Sign your commits (DCO)
+
+Commit with `git commit -s`, so each commit carries a `Signed-off-by:` line. The line certifies the [Developer Certificate of Origin](https://developercertificate.org/) for your contribution.
+
+## Work ledger
+
+Project state lives in files, so record your work there as well as in code. The rules, from [AGENTS.md](AGENTS.md) and [docs/agentic_work_ledger.md](docs/agentic_work_ledger.md):
+- [PLAN.md](PLAN.md) is an index. Keep it short and link out from it.
+- Each task is one file under `docs/tasks/`. Set its state by moving the file between `pending/`, `current/`, `blocked/` and `done/`.
+- Record bugs under `docs/bugs/open/`, and move them to `docs/bugs/fixed/` once fixed.
+- Record architectural decisions as ADRs under `docs/decisions/`.
+- Update the relevant ledger file with evidence before you call the work done.
+
+See [docs/agentic_work_ledger.md](docs/agentic_work_ledger.md) for detail.
 
 ## CI Checks
 
