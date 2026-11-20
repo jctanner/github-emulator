@@ -24,14 +24,13 @@ from __future__ import annotations
 
 import re
 
-from sqlalchemy import select
+from sqlalchemy import ColumnElement, and_, func, or_, select, true
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db_loaders import repository_identity_options
-from app.models.organization import Organization, OrgMembership
+from app.models.organization import OrgMembership
 from app.models.repository import Collaborator, Repository
 from app.models.user import User
-
 
 # ``/repos/{owner}/{repo}`` with or without the API prefix. Anything that does
 # not name a repository is not this module's business.
@@ -122,6 +121,93 @@ async def _installation_covers(db: AsyncSession, repository: Repository, user: U
         not item.repositories or repository.full_name in item.repositories
         for item in installations
     )
+
+
+async def readable_repositories(
+    db: AsyncSession, user: User | None, installation_token=None
+) -> ColumnElement[bool]:
+    """A condition over ``Repository`` selecting what the caller may read.
+
+    The query form of :func:`can_read`, for searches that filter many
+    repositories at once: public repositories, and for a signed-in user the
+    private ones they own, collaborate on, belong to the organization of, or
+    whose App installation covers them; a site admin reads everything.
+
+    An installation token is further held to the repositories it covers. A job
+    token sees its own repository plus public ones
+    (``app.services.job_token_scope``), whoever its run's actor is.
+    """
+    from app.services.job_token_scope import job_token_condition
+
+    job = job_token_condition()
+    if job is not None:
+        return job
+    readable = await _readable_by(db, user)
+    if installation_token is None:
+        return readable
+    return and_(readable, _installation_token_covers(installation_token))
+
+
+async def _readable_by(db: AsyncSession, user: User | None) -> ColumnElement[bool]:
+    """:func:`can_read` as a condition over ``Repository``, rule for rule."""
+    public = Repository.private.is_not(True)
+    if user is None:
+        return public
+    if user.site_admin:
+        return true()
+    conditions = [
+        public,
+        Repository.owner_id == user.id,
+        Repository.id.in_(
+            select(Collaborator.repo_id).where(Collaborator.user_id == user.id)
+        ),
+        and_(
+            Repository.owner_type == "Organization",
+            Repository.organization_id.in_(
+                select(OrgMembership.org_id).where(
+                    OrgMembership.user_id == user.id,
+                    OrgMembership.state == "active",
+                )
+            ),
+        ),
+    ]
+    conditions.extend(await _installation_conditions(db, user))
+    return or_(*conditions)
+
+
+async def _installation_conditions(db: AsyncSession, user: User) -> list:
+    """For an App's bot, one condition per installation of its App, selecting
+    the repositories that installation covers (as ``_installation_covers``)."""
+    from app.models.apps import AppInstallation, GitHubApp
+
+    app = (
+        await db.execute(select(GitHubApp).where(GitHubApp.bot_user_id == user.id))
+    ).scalar_one_or_none()
+    if app is None:
+        return []
+    installations = (
+        await db.execute(select(AppInstallation).where(AppInstallation.app_id == app.id))
+    ).scalars().all()
+    conditions = []
+    for item in installations:
+        if item.repositories:
+            conditions.append(Repository.full_name.in_(list(item.repositories)))
+        else:
+            conditions.append(
+                Repository.full_name.startswith(f"{item.account_login}/", autoescape=True)
+            )
+    return conditions
+
+
+def _installation_token_covers(token) -> ColumnElement[bool]:
+    """The repositories an installation token was minted for: its selection,
+    or every repository of the installed account (as ``app.api.deps``)."""
+    full_name = func.lower(Repository.full_name)
+    selected = [str(item).lower() for item in (token.repositories or [])]
+    if selected:
+        return full_name.in_(selected)
+    account = str(token.installation.account_login).lower()
+    return full_name.startswith(f"{account}/", autoescape=True)
 
 
 # Requests that address a repository now look it up twice: once for this

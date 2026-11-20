@@ -1,6 +1,6 @@
 """Search endpoints -- repos, issues, users, code, commits."""
 
-from fastapi import APIRouter, Query
+from fastapi import APIRouter, Query, Request
 from sqlalchemy import or_, select
 
 from app.api.deps import CurrentUser, DbSession
@@ -13,11 +13,27 @@ from app.models.search_index import CommitMetadata, FileContent
 from app.models.user import User
 from app.schemas.browse import GenericSearchResponse, RepositorySearchResponse
 from app.schemas.user import UserResponse
-from app.services.job_token_scope import visible_repositories, visible_repository_ids
+from app.services.repository_access import readable_repositories
 
 router = APIRouter(tags=["search"])
 
 BASE = settings.BASE_URL
+
+
+async def _readable(db, request: Request, user):
+    """The repositories this caller may read, as a condition over Repository.
+
+    GitHub's search returns results only from repositories the caller can
+    read; every search endpoint that returns repository content applies this.
+    """
+    token = getattr(request.state, "installation_token", None)
+    return await readable_repositories(db, user, token)
+
+
+async def _readable_ids(db, request: Request, user, column):
+    """``column`` (a repository id) restricted to what the caller may read."""
+    readable = await _readable(db, request, user)
+    return column.in_(select(Repository.id).where(readable))
 
 
 def _parse_qualifiers(q: str) -> tuple[str, dict[str, str]]:
@@ -40,6 +56,7 @@ def _parse_qualifiers(q: str) -> tuple[str, dict[str, str]]:
 
 @router.get("/search/repositories", response_model=RepositorySearchResponse)
 async def search_repositories(
+    request: Request,
     db: DbSession,
     current_user: CurrentUser,
     q: str = Query(...),
@@ -57,11 +74,7 @@ async def search_repositories(
         )
     )
 
-    # Hide private repos from unauthenticated users
-    if current_user is None:
-        query = query.where(Repository.private == False)
-
-    query = visible_repositories(query)
+    query = query.where(await _readable(db, request, current_user))
     if sort == "stars":
         sort_col = Repository.stargazers_count
     elif sort == "forks":
@@ -93,6 +106,7 @@ async def search_repositories(
 
 @router.get("/search/issues", response_model=GenericSearchResponse)
 async def search_issues(
+    request: Request,
     db: DbSession,
     current_user: CurrentUser,
     q: str = Query(...),
@@ -109,7 +123,7 @@ async def search_issues(
         )
     )
 
-    query = visible_repository_ids(query, Issue.repo_id)
+    query = query.where(await _readable_ids(db, request, current_user, Issue.repo_id))
     if sort == "created":
         sort_col = Issue.created_at
     elif sort == "updated":
@@ -190,6 +204,7 @@ async def search_users(
 
 @router.get("/search/code", response_model=GenericSearchResponse)
 async def search_code(
+    request: Request,
     db: DbSession,
     current_user: CurrentUser,
     q: str = Query(...),
@@ -231,7 +246,7 @@ async def search_code(
         )
 
     from sqlalchemy import func as sa_func
-    query = visible_repository_ids(query, FileContent.repo_id)
+    query = query.where(await _readable_ids(db, request, current_user, FileContent.repo_id))
     count_q = select(sa_func.count()).select_from(query.subquery())
     total = (await db.execute(count_q)).scalar() or 0
 
@@ -282,6 +297,7 @@ async def search_code(
 
 @router.get("/search/commits", response_model=GenericSearchResponse)
 async def search_commits(
+    request: Request,
     db: DbSession,
     current_user: CurrentUser,
     q: str = Query(...),
@@ -333,7 +349,7 @@ async def search_commits(
         query = query.order_by(sort_col.desc())
 
     from sqlalchemy import func as sa_func
-    query = visible_repository_ids(query, CommitMetadata.repo_id)
+    query = query.where(await _readable_ids(db, request, current_user, CommitMetadata.repo_id))
     count_q = select(sa_func.count()).select_from(query.subquery())
     total = (await db.execute(count_q)).scalar() or 0
 
