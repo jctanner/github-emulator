@@ -73,7 +73,8 @@ Run every command from the repository root.
 
    Not run for this guide: it starts two long-running dev servers.
 
-   Honcho starts the reloadable FastAPI backend on port 8000 and Vite on port
+   Honcho, a process manager from the dev dependencies, reads `Procfile.dev`
+   and starts the reloadable FastAPI backend on port 8000 and Vite on port
    5173. Open `http://127.0.0.1:5173/ui/`. Vite proxies API, avatar, admin API
    and GraphQL requests to FastAPI. The production image builds the same React
    source and serves its static bundle directly from FastAPI.
@@ -135,6 +136,6 @@ The Vagrant `vm-*` targets are in the [API usage guide](api-usage.md#vagrant-two
 | Error text | Cause | Fix |
 |---|---|---|
 | `RuntimeError: StaticFiles directory '<repo>/src/app/../frontend/dist' does not exist.` (and `GET /ui/` returns `Internal Server Error`) | The web UI is not built. | Run step 3: `make frontend-install`, then `npm --prefix src/frontend run build`. |
-| `listen tcp :443: bind: address already in use` from `make up` | Another process holds host port 443. Compose always publishes host ports 80 and 443 for Caddy. | Free ports 80 and 443, or use the [no-container quickstart](../../README.md#quickstart-no-container). |
+| `bind: address already in use` from `make up` (Podman prints `listen tcp :443: bind: address already in use`; Docker's wording differs) | Another process holds a host port the stack publishes. Compose always publishes host ports 80 and 443 for Caddy, plus `PORT` (8000) and 2222. | Port 80 or 443: free it, or use the [no-container quickstart](../../README.md#quickstart-no-container). Port 8000: `make PORT=9000 up`. Port 2222: `GITHUB_EMULATOR_SSH_PORT_HOST=2223 make up`. |
 | `{"message":"Bad credentials","documentation_url":"https://docs.github.com/rest"}` | The token is wrong, or the server was started with a different `GITHUB_EMULATOR_DEFAULT_ADMIN_TOKEN`. | Use `ghp_admin_default_token`, or the value you set. See the [default admin token guide](default-admin-pat.md). |
-| ``error: The lockfile at `uv.lock` needs to be updated, but `--locked` was provided.`` | `pyproject.toml` changed without `uv lock`. | Run `uv lock` and commit `uv.lock`. |
+| ``error: The lockfile at `uv.lock` needs to be updated, but `--locked` was provided.`` | `pyproject.toml` changed without `uv lock` (seen in the CI hygiene job). | Run `uv lock` and commit `uv.lock`. |

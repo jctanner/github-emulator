@@ -28,9 +28,9 @@ Run these commands once from the repository root:
    pre-commit installed at .git/hooks/pre-commit
    ```
 
-4. Install frontend dependencies (needed only for the two frontend hooks):
+4. Install frontend dependencies (needed only for the two frontend hooks and the web UI build):
    ```bash
-   npm --prefix src/frontend ci
+   make frontend-install
    ```
 
 ## Run the tests

@@ -68,14 +68,15 @@ curl -s http://localhost:8000/api/v3/user \
   | python3 -m json.tool
 ```
 
-Basic auth also works when the password field is the token. Not run for this
-guide: Basic auth was not part of the verified run.
+Basic auth also works when the password field is the token. `curl -u` builds
+the header for you:
 
-```bash
-basic="$(printf 'admin:ghp_admin_default_token' | base64 -w0)"
-curl -s http://localhost:8000/api/v3/user \
-  -H "Authorization: Basic ${basic}" \
-  | python3 -m json.tool
+```console
+$ curl -s -u admin:ghp_admin_default_token http://localhost:8000/api/v3/user | python3 -m json.tool | head -4
+{
+    "login": "admin",
+    "id": 1,
+    "node_id": "VXNlcjox",
 ```
 
 ## Operational Notes

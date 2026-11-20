@@ -14,6 +14,7 @@ instead of real GitHub.
 
 - Docker with Compose, or Podman (add `CONTAINER_ENGINE=podman` to each `make` command).
 - Host ports 80, 443, 8000 and 2222 free.
+- `make`, `curl`, `python3` and `git` on your host, for the steps below.
 
 **Steps**
 
@@ -25,10 +26,11 @@ instead of real GitHub.
    Server is up at http://localhost:8000
    ```
 
-   That last line is what `make up` prints on success. It was not reached on
-   the host used for this guide, where port 443 was taken (see
-   [Troubleshooting](docs/guides/development.md#troubleshooting)). Verified
-   with Podman; Docker itself was not run for this guide.
+   `make up` waits up to ten seconds for the API, then prints
+   `Server is up at http://localhost:8000` either way; step 2 is the real check.
+   If it stops with `bind: address already in use`, a port is taken:
+   see [Troubleshooting](docs/guides/development.md#troubleshooting), or use the
+   [no-container quickstart](#quickstart-no-container).
 
 2. Make your first API call with the seeded admin token:
 

@@ -4,7 +4,9 @@ This guide shows the calls you need most: authenticate, create a token, a
 repository and an issue, query GraphQL, push with git, and use `gh` over TLS.
 First start a server with the [README quickstart](../../README.md#quickstart-container).
 
-All REST paths start with `/api/v3`. The examples use `http://localhost:8000`.
+GitHub-style REST paths start with `/api/v3`, including token creation at
+`/api/v3/admin/tokens`. GraphQL is at `/api/graphql`, and App administration is
+under `/admin/api`. The examples use `http://localhost:8000`.
 
 ## Authenticate
 
@@ -62,8 +64,12 @@ curl -s -X POST http://localhost:8000/api/v3/user/repos \
   | python3 -m json.tool
 ```
 
-Success is `201`, with `"full_name": "admin/my-repo"` and
-`"clone_url": "http://localhost:8000/admin/my-repo.git"`.
+Success is `201`, with `"full_name": "admin/my-repo"`. The `clone_url` is
+built from `GITHUB_EMULATOR_BASE_URL`: a server run from source returns
+`http://localhost:8000/admin/my-repo.git`, and the container returns
+`https://ghemu.local/admin/my-repo.git` (see
+[Configuration](configuration.md#ports-and-host-names)). Both clone over HTTP
+from `http://localhost:8000/admin/my-repo.git`.
 
 ## Create an issue
 
@@ -89,43 +95,62 @@ $ curl -s -X POST http://localhost:8000/api/graphql \
 
 ## Use GitHub App endpoints
 
-The admin API creates an App. Send the admin token:
+Prerequisites: `uv` and a synced environment (`uv sync --frozen --extra dev`,
+see the [development guide](development.md)), because step 2 signs the token
+with the project's Python dependencies. Run every step from the repository
+root.
 
-```bash
-curl -s -X POST http://localhost:8000/admin/api/apps \
-  -H "Authorization: token $TOKEN" \
-  -H "Content-Type: application/json" \
-  -d '{"name":"my-app","owner":"admin"}' | python3 -m json.tool
-```
+1. Create an App with the admin API, and save the response to `app.json`:
 
-The response has the keys `app_id`, `client_id`, `created_at`,
-`installations_count`, `name`, `owner`, `private_key` and `slug`.
+   ```bash
+   curl -s -X POST http://localhost:8000/admin/api/apps \
+     -H "Authorization: token $TOKEN" \
+     -H "Content-Type: application/json" \
+     -d '{"name":"my-app","owner":"admin"}' -o app.json
+   ```
 
-Client IDs are persisted per App. Existing SQLite databases are backfilled on
-startup; private-key retrieval and rotation require the admin token.
+   The response has the keys `app_id`, `client_id`, `created_at`,
+   `installations_count`, `name`, `owner`, `private_key` and `slug`. Retrieving
+   or rotating the private key later needs the admin token.
 
-App metadata and installations use the GitHub-style API and an App JWT.
-Not run for this guide: they need an App JWT (`$APP_JWT`). Without one, they
-return `401`.
+2. Make an App JWT. An App JWT is a short-lived token signed with the App's
+   private key; GitHub's App endpoints accept only this token:
 
-```bash
-curl -s http://localhost:8000/api/v3/app \
-  -H "Authorization: Bearer $APP_JWT" | python3 -m json.tool
-curl -s http://localhost:8000/api/v3/app/installations \
-  -H "Authorization: Bearer $APP_JWT" | python3 -m json.tool
-```
+   ```bash
+   APP_JWT=$(uv run python -c 'import json, time; from jose import jwt
+   app = json.load(open("app.json")); now = int(time.time())
+   print(jwt.encode({"iat": now - 60, "exp": now + 540, "iss": str(app["app_id"])}, app["private_key"], algorithm="RS256"))')
+   ```
+
+3. Call the App endpoints with it:
+
+   ```console
+   $ curl -s http://localhost:8000/api/v3/app -H "Authorization: Bearer $APP_JWT" | python3 -m json.tool | head -4
+   {
+       "id": 294880,
+       "database_id": 2,
+       "client_id": "Iv1.cc678f77f1444c4e192ad33f0afb7de4",
+   $ curl -s http://localhost:8000/api/v3/app/installations -H "Authorization: Bearer $APP_JWT"
+   []
+   ```
+
+   Without the JWT, both return `{"message":"Requires authentication", ...}`.
 
 ## Clone and push over HTTP
 
 ```bash
 git clone http://localhost:8000/admin/my-repo.git /tmp/my-repo
 cd /tmp/my-repo
+git checkout -B main
 echo "# Hello" > README.md
 git add README.md && git commit -m "initial commit"
 git push http://admin:$TOKEN@localhost:8000/admin/my-repo.git main
 ```
 
-`make smoke` runs the same clone and push. On a new repository you see:
+`git checkout -B main` matters on a new, empty repository: without it, your
+local branch takes your git `init.defaultBranch` (often `master`), and the push
+fails with `error: src refspec main does not match any`. `make smoke` runs a
+similar clone and push. On a new repository you see:
 
 ```text
 warning: You appear to have cloned an empty repository.
@@ -158,15 +183,17 @@ off verification: `gh` has no setting for that, and
 `git config --global http.sslVerify false` affects every repository on your
 machine.
 
-**Prerequisites**
+### Prerequisites
 
 - The container stack is running, with host port 443 published.
 - `ghemu.local` resolves to your host. Add `127.0.0.1  ghemu.local` to `/etc/hosts`.
 
-**Steps**
+### Steps
 
 1. Copy Caddy's root certificate out of the container. The file exists once
-   Caddy has served its first HTTPS request:
+   Caddy has served its first HTTPS request. With Podman, use `podman compose`.
+   `make up` recreates the container and its CA, so copy the file again after
+   each `make up`:
 
    ```bash
    docker compose cp github-emulator:/root/.local/share/caddy/pki/authorities/local/root.crt ./caddy-root.crt
@@ -190,7 +217,7 @@ machine.
 These steps were verified with port 443 published on host port 8443, using
 `https://ghemu.local:8443/...` and `curl --resolve ghemu.local:8443:127.0.0.1`.
 
-**`gh` CLI**
+### `gh` CLI
 
 Not run for this guide: `gh` needs `ghemu.local` resolving to the host on
 port 443, and `caddy-root.crt` added to your system trust store.
@@ -202,7 +229,7 @@ gh repo list
 gh issue create --repo admin/my-repo --title "Test" --body "Hello"
 ```
 
-**Troubleshooting**
+### Troubleshooting
 
 | Error text | Cause | Fix |
 |---|---|---|
@@ -215,13 +242,18 @@ Not run for this guide: needs Vagrant with libvirt.
 
 For full `gh` CLI integration testing with TLS, a Vagrantfile provisions a
 **server** VM (Debian 12 + Docker, static IP `192.168.123.10`) and a **client**
-VM for running tests:
+VM for running tests. The `vm-test`, `vm-git-test` and `vm-gh` targets also
+need a `gh` binary at `../bin/gh`, next to your checkout; they copy it into the
+client VM.
 
 ```bash
 # Add the hostname to /etc/hosts
 echo "192.168.123.10  ghemu.local" | sudo tee -a /etc/hosts
 
-# Boot both VMs, sync code, build, and start
+# Boot both VMs (first run provisions them)
+make vm-up
+
+# Sync code, build, and start the containers in the server VM
 make vm-deploy
 
 # The server is now reachable at https://ghemu.local

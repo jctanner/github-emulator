@@ -113,7 +113,8 @@ smoke:
 	@echo "=== Verify clone ==="
 	@rm -rf /tmp/smoke-verify
 	@git clone http://localhost:$(PORT)/admin/smoke-repo.git /tmp/smoke-verify 2>&1
-	@cat /tmp/smoke-verify/README.md 2>/dev/null && echo "PASS: File content verified" || echo "FAIL: File not found"
+	@cat /tmp/smoke-verify/README.md 2>/dev/null && echo "PASS: File content verified" \
+		|| { echo "FAIL: File not found"; rm -rf /tmp/smoke-clone /tmp/smoke-verify; exit 1; }
 	@rm -rf /tmp/smoke-clone /tmp/smoke-verify
 	@echo ""
 	@echo "=== Smoke test complete ==="

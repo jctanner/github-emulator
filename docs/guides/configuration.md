@@ -1,15 +1,34 @@
 # Configuration
 
-This page lists every setting the emulator reads. Set each one as an
-environment variable with the `GITHUB_EMULATOR_` prefix before you start the
-server, for example `GITHUB_EMULATOR_SEED_DATA=false`. The source of truth is
-[`src/app/config.py`](../../src/app/config.py).
+This page lists every setting in
+[`src/app/config.py`](../../src/app/config.py). For a server started from
+source, set each one as an environment variable with the `GITHUB_EMULATOR_`
+prefix before you start it, for example
+`GITHUB_EMULATOR_SEED_DATA=false uv run uvicorn app.main:app`.
+
+## Settings with `make up`
+
+`docker-compose.yml` sets the container's environment itself, so most settings
+in your shell do not reach the container. Only these pass through:
+
+| Variable | Default | What it sets |
+|---|---|---|
+| `PORT` | `8000` | Host port for the HTTP API. |
+| `GITHUB_EMULATOR_SSH_PORT_HOST` | `2222` | Host port for git over SSH. |
+| `GITHUB_EMULATOR_APP_JWT_PERMISSIVE` | `true` | See [GitHub Apps](#github-apps). |
+
+The Compose file fixes `DATA_DIR`, `DATABASE_URL`, `BASE_URL`, `HOSTNAME`,
+`SECRET_KEY`, `ADMIN_USERNAME`, `ADMIN_PASSWORD`, `SSH_ENABLED` and `SSH_PORT`. To change any
+other setting in the container, add it to the `environment:` list of the
+`github-emulator` service, for example in a `docker-compose.override.yml`.
+The runner services read their own variables; see the
+[Actions runners guide](actions-runners.md#compose-variables-for-runners).
 
 ## Ports and host names
 
-- **Host port.** The Compose stack maps the HTTP API port from `${PORT:-8000}`.
-  For example, `make CONTAINER_ENGINE=podman PORT=9000 up` exposes the service
-  on port 9000 while the container continues listening on port 8000.
+- **Host port.** For example, `make CONTAINER_ENGINE=podman PORT=9000 up`
+  exposes the API on port 9000 while the container keeps listening on 8000.
+  Pass the same value to the smoke test: `make PORT=9000 smoke`.
 - **Response URLs.** The Compose file sets
   `GITHUB_EMULATOR_BASE_URL=https://ghemu.local`, so URLs in responses from
   the container use that host, for example
@@ -26,7 +45,7 @@ server, for example `GITHUB_EMULATOR_SEED_DATA=false`. The source of truth is
 | `GITHUB_EMULATOR_DATA_DIR` | `src/data` in the checkout | Directory for bare git repos and the SQLite database. The container sets `/data`. |
 | `GITHUB_EMULATOR_DATABASE_URL` | `sqlite+aiosqlite:///{DATA_DIR}/github_emulator.db` | SQLAlchemy database URL. |
 | `GITHUB_EMULATOR_SECRET_KEY` | `change-me-in-production` | Secret for JWT and session signing. |
-| `GITHUB_EMULATOR_HOSTNAME` | `ghemu.local` | Hostname for the Caddy TLS certificate and `gh` CLI integration. |
+| `GITHUB_EMULATOR_HOSTNAME` | `ghemu.local` | Hostname for the Caddy TLS certificate, `gh` CLI integration, and the host in GraphQL SSH clone URLs. |
 | `GITHUB_EMULATOR_HOST` | `0.0.0.0` | Defined in `config.py` but not read by the server; the `uvicorn --host` option sets the listen address. |
 | `GITHUB_EMULATOR_PORT` | `8000` | Defined in `config.py` but not read by the server; the `uvicorn --port` option sets the listen port. |
 | `GITHUB_EMULATOR_RATE_LIMIT` | `5000` | Requests per token per hour that the rate-limit headers and `GET /rate_limit` report. Nothing is refused at zero; raise it so a client that paces itself on the headers does not wait. |
@@ -44,9 +63,13 @@ server, for example `GITHUB_EMULATOR_SEED_DATA=false`. The source of truth is
 
 | Variable | Default | Description |
 |---|---|---|
-| `GITHUB_EMULATOR_SQLITE_BUSY_TIMEOUT_MS` | `5000` | How long SQLite waits for a lock before it fails a statement. |
-| `GITHUB_EMULATOR_SQLITE_WRITE_RETRY_ATTEMPTS` | `2` | How many times a write that hit a locked database is tried. |
+| `GITHUB_EMULATOR_SQLITE_BUSY_TIMEOUT_MS` | `30000` | How long a writer waits for SQLite's writer lock before the request fails with `503` "database is locked". |
+| `GITHUB_EMULATOR_SQLITE_WRITE_RETRY_ATTEMPTS` | `5` | How many times a write that hit a locked database is tried. |
 | `GITHUB_EMULATOR_SQLITE_WRITE_RETRY_DELAY_MS` | `100` | Wait between those write attempts. |
+| `GITHUB_EMULATOR_SQLITE_POOL_SIZE` | `20` | Pooled database connections. A request holds one from its first query until it ends. |
+| `GITHUB_EMULATOR_SQLITE_MAX_OVERFLOW` | `40` | Extra connections allowed beyond the pool size under load. |
+| `GITHUB_EMULATOR_SQLITE_SLOW_WRITE_LOG_MS` | `1000` | Log a write transaction that holds the writer lock this long. |
+| `GITHUB_EMULATOR_EVENT_LOOP_LAG_LOG_MS` | `500` | Log when the server's event loop runs a timer this late. |
 
 ### Git over SSH
 
