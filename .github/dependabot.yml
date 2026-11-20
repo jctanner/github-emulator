@@ -26,7 +26,23 @@ updates:
     cooldown: {default-days: 14}
 
   - package-ecosystem: docker
-    # The emulator images, and the two runner images.
-    directories: ["/", "/src/runners/emulator", "/src/runners/upstream"]
+    # The emulator images.
+    directory: /
     schedule: {interval: weekly}
     cooldown: {default-days: 14}
+
+  - package-ecosystem: docker
+    # The two runner images track GitHub's hosted ubuntu-24.04 workers, so
+    # the base stays on 24.04: no interim releases (24.10, 25.10), and no
+    # next LTS (26.04) either. Moving the base is a deliberate change: the
+    # upstream image's libicu74 pin (the 24.04 package name) has to move
+    # with it, and both runners have to be built and exercised, since CI
+    # builds neither image.
+    directories: ["/src/runners/emulator", "/src/runners/upstream"]
+    schedule: {interval: weekly}
+    cooldown: {default-days: 14}
+    ignore:
+      - dependency-name: ubuntu
+        update-types:
+          - version-update:semver-major
+          - version-update:semver-minor
