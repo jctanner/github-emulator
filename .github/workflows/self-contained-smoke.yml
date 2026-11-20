@@ -45,6 +45,9 @@ jobs:
 
       - name: Run a workflow on the emulator
         id: smoke
+        env:
+          # The script reads the admin token ci-stack.sh made there.
+          CI_STACK_DIR: /tmp/ci-stack
         run: |
           start=$(date +%s.%N)
           scripts/ci-workflow-smoke.sh
@@ -71,7 +74,7 @@ jobs:
 
       - name: Stack logs
         if: failure()
-        run: tail -n 200 /tmp/ci-stack/emulator.log /tmp/ci-stack/runner.log
+        run: tail -n 200 /tmp/ci-stack/emulator.log /tmp/ci-stack/runner-*.log
 
       - name: Stop the stack
         if: always()
@@ -128,6 +131,7 @@ jobs:
         env:
           EMU: ${{ steps.emu.outputs.url }}
           EMU_CA: ${{ steps.emu.outputs.ca-file }}
+          GITHUB_EMULATOR_DEFAULT_ADMIN_TOKEN: ${{ steps.emu.outputs.token }}
         run: scripts/ci-workflow-smoke.sh
       - name: Fetch a file through raw.githubusercontent.com
         if: matrix.dns == 'true'

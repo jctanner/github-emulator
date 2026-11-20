@@ -81,7 +81,7 @@ outputs:
     description: REST root, for GITHUB_API_URL.
     value: ${{ steps.start.outputs.api-url }}
   token:
-    description: Seeded site-admin token.
+    description: The site admin's token, made for this stack (masked in the log).
     value: ${{ steps.start.outputs.token }}
   ca-file:
     description: With tls, the run's CA (CURL_CA_BUNDLE, NODE_EXTRA_CA_CERTS).
@@ -141,6 +141,7 @@ runs:
         CI_STACK_RUNNER_ENV: ${{ inputs.runner-env }}
       run: |
         "$ROOT/scripts/ci-stack.sh" start
+        echo "::add-mask::$(cat "$CI_STACK_DIR/admin-token")"
         scheme=http
         [ "$CI_STACK_TLS" = 1 ] && scheme=https
         url="$scheme://$CI_STACK_HOST:$CI_STACK_PORT"
@@ -151,7 +152,7 @@ runs:
         {
           echo "url=$url"
           echo "api-url=$url/api/v3"
-          echo "token=${GITHUB_EMULATOR_DEFAULT_ADMIN_TOKEN:-ghp_admin_default_token}"
+          echo "token=$(cat "$CI_STACK_DIR/admin-token")"
           if [ "$CI_STACK_TLS" = 1 ]; then
             echo "ca-file=$CI_STACK_DIR/tls/ca.pem"
             echo "ca-bundle=$CI_STACK_DIR/tls/bundle.pem"
