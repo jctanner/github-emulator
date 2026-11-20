@@ -7,9 +7,11 @@ endpoints ("Resource not accessible by integration"), and anything else it
 lists or searches holds its own repository plus public ones.
 
 ``app.api.deps`` records the run's repository for a job-token request
-(:func:`set_job_repository`); listing and search routes narrow their queries
-with :func:`visible_repositories` or :func:`visible_repository_ids`. The
-value is per request: ``RequestContextMiddleware`` clears it.
+(:func:`set_job_repository`); listing routes narrow their queries with
+:func:`visible_repositories` or :func:`visible_repository_ids`, and search
+with ``app.services.repository_access.readable_repositories``, which applies
+:func:`job_token_condition`. The value is per request:
+``RequestContextMiddleware`` clears it.
 """
 
 from contextvars import ContextVar
@@ -29,13 +31,22 @@ def _public():
     return and_(Repository.private.is_not(True), func.coalesce(Repository.visibility, "public") == "public")
 
 
+def job_token_condition():
+    """The condition over Repository a job token is held to: its own
+    repository and public ones. None for any other credential."""
+    own = job_repository_id.get()
+    if own is None:
+        return None
+    return or_(Repository.id == own, _public())
+
+
 def visible_repositories(query):
     """``query`` over Repository, narrowed for a job token to its own
     repository and public ones; unchanged for any other credential."""
-    own = job_repository_id.get()
-    if own is None:
+    condition = job_token_condition()
+    if condition is None:
         return query
-    return query.where(or_(Repository.id == own, _public()))
+    return query.where(condition)
 
 
 def visible_repository_ids(query, column):
