@@ -119,7 +119,7 @@ async def test_an_installation_token_revokes_itself(
     assert resp.content == b""
 
     # The revoked token no longer authenticates.
-    assert (await client.get(f"{API}/installation/repositories", headers=headers)).status_code == 403
+    assert (await client.get(f"{API}/installation/repositories", headers=headers)).status_code == 401
     assert (await client.get(f"{API}/user", headers=headers)).status_code == 401
 
 
