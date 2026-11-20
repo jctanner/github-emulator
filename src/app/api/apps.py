@@ -22,6 +22,7 @@ from app.models.user import User
 from app.schemas.settings import InstallationResponse
 from app.schemas.user import _fmt_dt
 from app.services.auth_service import ensure_app_bot
+from app.services.job_token_service import revoke_job_token_for_api
 
 router = APIRouter(tags=["apps"])
 
@@ -423,6 +424,19 @@ async def revoke_installation_token(
     A personal access token is refused, as on the repositories route above.
     """
     installation_token = getattr(request.state, "installation_token", None)
+    if current_user is None:
+        # A revoked or unknown token, as on GitHub; a missing one is the
+        # usual "Requires authentication".
+        raise HTTPException(
+            status_code=401,
+            detail="Bad credentials" if request.headers.get("authorization") else "Requires authentication",
+        )
+    workflow_job_token = getattr(request.state, "workflow_job_token", None)
+    if installation_token is None and workflow_job_token is not None:
+        # A job's GITHUB_TOKEN is an installation token on GitHub, and a job
+        # may revoke it. The runner keeps its own use of the token.
+        revoke_job_token_for_api(workflow_job_token)
+        return None
     if installation_token is None:
         raise HTTPException(
             status_code=403,

@@ -38,6 +38,37 @@ def job_token_lifetime(job) -> int:
     return min(int(minutes) * 60 + _COMPLETION_MARGIN_SECONDS, _MAX_TOKEN_SECONDS)
 
 
+# Job tokens revoked through DELETE /installation/token, each with the time
+# it expires. The runner authenticates with the same token, so a revocation
+# applies only where the job token stands in for GITHUB_TOKEN (the REST,
+# GraphQL and git routes that authenticate through app.api.deps), never to
+# the runner protocol. An entry is kept until its token expires, which is up
+# to the job's timeout plus 5 minutes (6 h 5 min by default, 24 h at most):
+# after that validate_job_token refuses the token anyway. Kept in memory,
+# because the emulator is one process.
+_revoked_api_tokens: dict[str, int] = {}
+
+
+def _token_expiry(token: str) -> int:
+    """The token's exp claim, or 0 when it can't be read."""
+    try:
+        return int(_decode_json(token.split(".")[1]).get("exp", 0))
+    except (IndexError, TypeError, ValueError, json.JSONDecodeError):
+        return 0
+
+
+def revoke_job_token_for_api(token: str) -> None:
+    now = int(time.time())
+    for revoked, expires in list(_revoked_api_tokens.items()):
+        if expires < now:
+            del _revoked_api_tokens[revoked]
+    _revoked_api_tokens[token] = _token_expiry(token)
+
+
+def job_token_revoked_for_api(token: str) -> bool:
+    return token in _revoked_api_tokens
+
+
 def issue_job_token(job: WorkflowJob) -> str:
     """Issue the JWT-shaped OAuth token required by the upstream runner."""
     now = int(time.time())

@@ -754,14 +754,42 @@ async def get_job_logs(
             WorkflowRun.repo_id == repository.id,
         )
     )
-    if result.scalar_one_or_none() is None:
+    job = result.scalar_one_or_none()
+    if job is None:
         raise HTTPException(status_code=404, detail="Not Found")
 
+    # Once a job ends, serve the step logs the runner uploaded, joined in the
+    # order it created them, as GitHub does. The live console feed is the
+    # fallback while the job runs: the runner cuts each feed line at 1024
+    # characters, so a long line was served cut short.
+    if job.status == "completed":
+        uploaded = _uploaded_step_logs(job_id)
+        if uploaded:
+            return PlainTextResponse(uploaded)
     log_path = _job_log_path(job_id)
     if not os.path.isfile(log_path):
         raise HTTPException(status_code=404, detail="Logs not found")
     with open(log_path, "r", encoding="utf-8", errors="replace") as f:
         return PlainTextResponse(f.read())
+
+
+def _uploaded_step_logs(job_id: int) -> str:
+    """The job's uploaded step logs, in log-id order, or "" when there are none.
+
+    They live next to the job log, one file per log id; see _step_log_dir in
+    app.api.actions_distributed_task.
+    """
+    directory = os.path.join(os.path.dirname(_job_log_path(job_id)), str(job_id))
+    if not os.path.isdir(directory):
+        return ""
+    ids = sorted(int(n[:-4]) for n in os.listdir(directory) if n.endswith(".log") and n[:-4].isdigit())
+    parts = []
+    for log_id in ids:
+        with open(os.path.join(directory, f"{log_id}.log"), "r", encoding="utf-8", errors="replace") as f:
+            text = f.read()
+        if text:
+            parts.append(text if text.endswith("\n") else text + "\n")
+    return "".join(parts)
 
 
 # --- Secrets ---

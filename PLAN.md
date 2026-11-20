@@ -165,6 +165,7 @@ Actions visibility and runner evaluation.
 - `docs/bugs/fixed/runners-registering-together-lose-their-tokens.md`
 - `docs/bugs/fixed/github-context-identity-values-are-empty.md`
 - `docs/bugs/fixed/rendered-github-context-differs-from-github.md`
+- `docs/bugs/fixed/job-token-revoke-and-finished-job-logs.md`
 
 ## Decisions
 

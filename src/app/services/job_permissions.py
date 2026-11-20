@@ -171,6 +171,11 @@ def check(
     repo_default: str | None = None,
 ) -> str | None:
     """Return a refusal reason, or None when the request is permitted."""
+    if method.upper() == "DELETE" and path.split("?", 1)[0].rstrip("/") in (
+        "/api/v3/installation/token", "/installation/token",
+    ):
+        # A token may always revoke itself; no permission governs that.
+        return None
     permissions = normalise_permissions(declared)
     if permissions is None:
         # No permissions block: the repository's default decides. It is
