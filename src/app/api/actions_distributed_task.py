@@ -1462,9 +1462,17 @@ async def _complete_job(
         .values(**values)
         .execution_options(synchronize_session=False)
     )
-    await db.refresh(job)
-    if finished.rowcount == 1 and _is_success_result(result_str):
-        _complete_queued_steps(job, result_str)
+    # A job deleted with its repository after the caller's ownership check
+    # matches no row either; refreshing it then raised. Its report is a
+    # duplicate end of a job that no longer exists: it still frees the
+    # runner, and there is no run left to dispatch or complete.
+    gone = finished.rowcount == 0 and (await db.execute(
+        select(WorkflowJob.id).where(WorkflowJob.id == job.id)
+    )).scalar_one_or_none() is None
+    if not gone:
+        await db.refresh(job)
+        if finished.rowcount == 1 and _is_success_result(result_str):
+            _complete_queued_steps(job, result_str)
 
     if await _runner_moved_on(runner, job, db):
         # A late report of a job's end can land after the runner took its
@@ -1476,6 +1484,10 @@ async def _complete_job(
             del _holding[runner.id]
         runner.busy = False
         runner.status = "online"
+    if gone:
+        logger.info("Runner %s reported job %s, which was deleted meanwhile: %s", runner.name, job.id, result_str)
+        await db.flush()
+        return
     logger.info("Runner %s reported job %s: %s (%s)", runner.name, job.id, result_str, job.conclusion)
     await db.flush()
 
