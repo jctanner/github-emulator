@@ -16,7 +16,10 @@
 #   CI_STACK_PORT   API port (default 8000)
 #   CI_STACK_PYTHON python with the locked dependencies installed (default
 #                   python3), e.g. a `uv sync --frozen` .venv
-#   CI_STACK_RUNNER_LABELS  labels the runner serves
+#   CI_STACK_RUNNER_LABELS  labels the runner serves (default
+#                   self-hosted,linux,ubuntu-latest,ubuntu-<VERSION_ID> on an
+#                   Ubuntu host, from /etc/os-release, e.g. ubuntu-26.04 on
+#                   26.04; ubuntu-24.04 in its place on any other OS)
 #   CI_STACK_HOST   host name the emulator puts in its URLs (default
 #                   127.0.0.1). A sandbox that cannot reach loopback needs a
 #                   name that resolves to this machine, e.g. <ip>.nip.io.
@@ -87,7 +90,29 @@ ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 DIR="${CI_STACK_DIR:-$ROOT/.ci-stack}"
 PORT="${CI_STACK_PORT:-8000}"
 PY="${CI_STACK_PYTHON:-python3}"
-LABELS="${CI_STACK_RUNNER_LABELS:-self-hosted,linux,ubuntu-latest,ubuntu-24.04}"
+# The labels a runner on this host serves, from an os-release file: the
+# host's own Ubuntu release, so a job that asks for ubuntu-26.04 runs on a
+# 26.04 host, and ubuntu-24.04 on any other OS, as before. ubuntu-latest on
+# every host: a single-host stack has nowhere else to run such a job.
+default_labels() {
+  local id="" version="" key value
+  if [ -r "$1" ]; then
+    while IFS='=' read -r key value || [ -n "$key" ]; do
+      value="${value#[\"\']}"
+      value="${value%[\"\']}"
+      case "$key" in
+        ID) id="$value" ;;
+        VERSION_ID) version="$value" ;;
+      esac
+    done <"$1"
+  fi
+  if [ "$id" = ubuntu ] && [[ "$version" =~ ^[0-9]+\.[0-9]+$ ]]; then
+    echo "self-hosted,linux,ubuntu-latest,ubuntu-$version"
+  else
+    echo "self-hosted,linux,ubuntu-latest,ubuntu-24.04"
+  fi
+}
+LABELS="${CI_STACK_RUNNER_LABELS:-$(default_labels /etc/os-release)}"
 HOST="${CI_STACK_HOST:-127.0.0.1}"
 # A lower-case DNS name or an IPv4 address, checked before any use: HOST
 # reaches URLs, certificates, dnsmasq and /etc/hosts.
