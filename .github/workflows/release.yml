@@ -15,7 +15,7 @@ jobs:
           pattern: published-image-*
           path: published-images
       - name: Release only after the image was smoke-tested and published
-        uses: actions/github-script@v7
+        uses: actions/github-script@v9
         with:
           script: |
             const fs = require('fs');
