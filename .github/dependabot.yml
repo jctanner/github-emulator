@@ -26,7 +26,24 @@ updates:
     cooldown: {default-days: 14}
 
   - package-ecosystem: docker
-    # The emulator images, and the two runner images.
-    directories: ["/", "/src/runners/emulator", "/src/runners/upstream"]
+    # The emulator images.
+    directory: /
     schedule: {interval: weekly}
     cooldown: {default-days: 14}
+
+  - package-ecosystem: docker
+    # The two runner images stand in for GitHub's hosted Ubuntu workers,
+    # which run LTS releases only, so the base must never move to an
+    # interim release (24.10, 25.10, ...). Dependabot's ignore rules match
+    # update types and version ranges, not LTS vs interim, so this blocks
+    # every new Ubuntu release. LTS moves are made by hand: the libicu
+    # package name changes with the release, and both images have to be
+    # built and run on the new base.
+    directories: ["/src/runners/emulator", "/src/runners/upstream"]
+    schedule: {interval: weekly}
+    cooldown: {default-days: 14}
+    ignore:
+      - dependency-name: ubuntu
+        update-types:
+          - version-update:semver-major
+          - version-update:semver-minor
