@@ -1,19 +1,19 @@
-# Bug: Dependabot moves the runner images off Ubuntu 24.04
+# Bug: Dependabot proposes interim Ubuntu releases for the runner images
 
-Status: fixed 2026-11-20 (issue #102).
+Status: fixed 2026-11-21 (issue #102).
 
 ## Summary
 
 - `src/runners/emulator/Dockerfile` and `src/runners/upstream/Dockerfile`
-  build `FROM ubuntu:24.04` on purpose: they stand in for GitHub's hosted
-  `ubuntu-24.04` workers.
+  stand in for GitHub's hosted Ubuntu workers. GitHub hosts LTS releases
+  only (`ubuntu-24.04` and `ubuntu-26.04`).
 - The one docker entry in `.github/dependabot.yml` covered the root
   directory and both runner directories, so Dependabot proposed
   `ubuntu:25.10` for both runners (PRs #55 and #56, closed).
-- 25.10 is an interim release, so the runners would no longer match the
-  hosted workers. Dependabot also changes only the `FROM` line, and the
+- 25.10 is an interim release, so the runners would no longer match any
+  hosted worker. Dependabot also changes only the `FROM` line, and the
   upstream image installs `libicu74`, the 24.04 package name. That build
-  fails on 25.10, and CI builds neither runner image.
+  fails on any other release, and CI builds neither runner image.
 
 ## Fix
 
@@ -24,9 +24,11 @@ Status: fixed 2026-11-20 (issue #102).
 - The runner entry ignores `semver-major` and `semver-minor` updates of
   `ubuntu`. Dependabot reads `24.04` -> `24.10` as minor and `25.10` /
   `26.04` as major, so it proposes no new base release for either runner.
-- This also blocks the next LTS. That is deliberate: moving the base also
-  means moving the `libicu` pin and building and running both runners. A
-  comment in the config says so.
+- Dependabot's `ignore` rules match update types and version ranges. They
+  cannot tell an LTS release from an interim one, so the rule blocks the
+  next LTS as well. LTS moves are manual: update the `libicu` package, then
+  build and run both images on the new base. The config comment says this.
+  Issue #105 tracks 26.04.
 
 ## Evidence
 
