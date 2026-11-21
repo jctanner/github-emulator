@@ -1,18 +1,29 @@
-# Ubuntu 24.04 because that is what Fullsend asks for: DefaultGHRunner is
-# "ubuntu-24.04" and its reusable dispatch defaults runner_image to the same.
-# This image is the stack's stand-in for a GitHub-hosted runner, so its label
-# list has to describe what it actually is.
-FROM ubuntu:24.04
+# Ubuntu 24.04 by default, or 26.04 with --build-arg UBUNTU_VERSION=26.04:
+# the two LTS releases GitHub hosts. Fullsend asks for 24.04 (DefaultGHRunner
+# is "ubuntu-24.04" and its reusable dispatch defaults runner_image to the
+# same), while ubuntu-latest is now 26.04. This image is the stack's stand-in
+# for a GitHub-hosted runner, so its label list has to describe the release
+# it was built on.
+ARG UBUNTU_VERSION=24.04
+FROM ubuntu:${UBUNTU_VERSION}
 
 ARG RUNNER_VERSION=2.317.0
 
-RUN apt-get update && \
+# ICU's package name carries its version: libicu74 on 24.04, libicu78 on
+# 26.04. Any other base stops here rather than building without ICU.
+RUN . /etc/os-release && \
+    case "$VERSION_ID" in \
+        24.04) icu=libicu74 ;; \
+        26.04) icu=libicu78 ;; \
+        *) echo "no ICU package known for Ubuntu $VERSION_ID" >&2; exit 1 ;; \
+    esac && \
+    apt-get update && \
     DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
         ca-certificates \
         curl \
         git \
         jq \
-        libicu74 \
+        "$icu" \
         python3 \
         tar \
     && rm -rf /var/lib/apt/lists/*
