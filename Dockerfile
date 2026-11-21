@@ -1,4 +1,4 @@
-FROM node:22-slim AS frontend-build
+FROM node:25-slim AS frontend-build
 
 WORKDIR /frontend
 COPY src/frontend/package.json src/frontend/package-lock.json ./
